@@ -1,0 +1,278 @@
+@import "tailwindcss";
+
+/* ============================================================
+   HitBox Admin Console — design tokens
+   School: Modern Tool / Builder SaaS (Linear recipe)
+   Restraint as confidence: hairline borders, one accent,
+   radius never above 16, motion under 300ms.
+   ============================================================ */
+
+:root {
+  /* Ground & surfaces — warm near-black, never pure #000 */
+  --ground: #08090a;
+  --surface-1: #16171c;
+  --surface-2: #1e1f25;
+  --surface-3: #26272e;
+
+  /* Hairlines */
+  --hairline: rgba(255, 255, 255, 0.06);
+  --hairline-strong: rgba(255, 255, 255, 0.1);
+
+  /* Text */
+  --text-1: #f7f8f8;
+  --text-2: #9ca3af;
+  --text-3: #6b7280;
+
+  /* The single accent. Under 5% of pixels. */
+  --accent: #5e6ad2;
+  --accent-hover: #6e79d6;
+  --accent-dim: rgba(94, 106, 210, 0.14);
+  --accent-text: #a5adee;
+
+  /* Semantic — desaturated to sit inside the warm dark ground */
+  --positive: #4ea674;
+  --positive-dim: rgba(78, 166, 116, 0.14);
+  --warning: #c99a3f;
+  --warning-dim: rgba(201, 154, 63, 0.14);
+  --danger: #cc5c5c;
+  --danger-dim: rgba(204, 92, 92, 0.14);
+  --info: #4d8bbf;
+  --info-dim: rgba(77, 139, 191, 0.14);
+  --neutral-dim: rgba(255, 255, 255, 0.06);
+
+  /* Radius — modest, precise, never gummy */
+  --r-sm: 6px;
+  --r-md: 12px;
+  --r-lg: 16px;
+
+  /* Shadow — barely there. Never glow, never colored. */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-3: 0 16px 48px rgba(0, 0, 0, 0.55);
+
+  /* Motion — snappy, not bouncy */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+@theme inline {
+  --color-ground: var(--ground);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-hairline: var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
+  --color-text-1: var(--text-1);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-dim: var(--accent-dim);
+  --color-accent-text: var(--accent-text);
+  --color-positive: var(--positive);
+  --color-positive-dim: var(--positive-dim);
+  --color-warning: var(--warning);
+  --color-warning-dim: var(--warning-dim);
+  --color-danger: var(--danger);
+  --color-danger-dim: var(--danger-dim);
+  --color-info: var(--info);
+  --color-info-dim: var(--info-dim);
+
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+
+  --shadow-e1: var(--shadow-1);
+  --shadow-e2: var(--shadow-2);
+  --shadow-e3: var(--shadow-3);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  /* Spacing scale: 4 / 8 / 12 / 16 / 24 / 40 / 64 / 96 */
+  --spacing-gutter: 24px;
+}
+
+* {
+  border-color: var(--hairline);
+}
+
+html {
+  color-scheme: dark;
+  background: var(--ground);
+}
+
+body {
+  background: var(--ground);
+  color: var(--text-1);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Display type: tight tracking, weight 600. Never plain Inter at default weight. */
+h1, h2, h3, h4 {
+  letter-spacing: -0.02em;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+/* Tabular numbers everywhere a figure can change — stops column jitter */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* ---------- Focus ---------- */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* ---------- Scrollbar ---------- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  border: 3px solid var(--ground);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* ---------- Pressable: instant feedback on every pressable element ---------- */
+.pressable {
+  transition: transform 160ms var(--ease-out), background-color 150ms var(--ease-out),
+    border-color 150ms var(--ease-out), color 150ms var(--ease-out);
+}
+.pressable:active {
+  transform: scale(0.97);
+}
+
+/* ---------- Entrances ---------- */
+@keyframes fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-rise {
+  animation: fade-rise 320ms var(--ease-quint) both;
+}
+
+/* Radix overlay/content: scale from 0.97, never from 0 */
+@keyframes overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes content-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes content-out {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(0.97); }
+}
+
+[data-radix-popper-content-wrapper] {
+  z-index: 60;
+}
+
+.rx-overlay[data-state="open"] { animation: overlay-in 200ms var(--ease-out); }
+.rx-content[data-state="open"] { animation: content-in 200ms var(--ease-out); }
+.rx-content[data-state="closed"] { animation: content-out 140ms var(--ease-out); }
+
+/* Popovers/menus scale from their trigger, not from center. Modals stay centered. */
+.rx-anchored {
+  transform-origin: var(--radix-popper-transform-origin);
+}
+
+/* ---------- Hero aurora ----------
+   An electric bloom rising from the bottom edge of the hero. Built from
+   soft radial gradients rather than a video, so it costs no network and
+   scales to any viewport. Only transforms animate, so the work stays on
+   the compositor; the global prefers-reduced-motion rule freezes it. */
+@keyframes aurora-a {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50%      { transform: translate3d(6%, -7%, 0) scale(1.18); }
+}
+@keyframes aurora-b {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1.08); }
+  50%      { transform: translate3d(-9%, -4%, 0) scale(0.9); }
+}
+@keyframes aurora-c {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(0.94); }
+  50%      { transform: translate3d(7%, -12%, 0) scale(1.24); }
+}
+@keyframes aurora-d {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1.12); }
+  50%      { transform: translate3d(-6%, -9%, 0) scale(0.96); }
+}
+
+/* ---------- Marketing marquee ---------- */
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+/* ---------- Loading screen ---------- */
+@keyframes mark-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.94); }
+  50%      { opacity: 1;    transform: scale(1); }
+}
+
+/* ---------- Shimmer for skeletons ---------- */
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.04),
+    transparent
+  );
+  animation: shimmer 1.4s infinite;
+}
+
+/* ---------- Ambient mesh: extremely controlled, hero only ---------- */
+.ambient {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(60% 100% at 15% 0%, rgba(94, 106, 210, 0.07), transparent 70%),
+    radial-gradient(50% 90% at 85% 0%, rgba(77, 139, 191, 0.045), transparent 70%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
