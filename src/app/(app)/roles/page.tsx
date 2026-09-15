@@ -2,8 +2,8 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { KeyRound, Lock, Plus } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { KeyRound, Lock, Plus } from "lucide-react";
 import { useRoles } from "@/lib/api/hooks";
 import { formatNumber, humanize } from "@/lib/format";
 import { PageActions, usePageChrome } from "@/components/layout/app-shell";
@@ -94,16 +94,11 @@ function RolesView() {
       numeric: true,
       cell: (r) => formatNumber(r.permissions.length),
     },
-    {
-      key: "assignments",
-      header: "Assigned to",
-      numeric: true,
-      cell: (r) => (
-        <span className={r.assignmentCount ? undefined : "text-[var(--text-3)]"}>
-          {formatNumber(r.assignmentCount ?? 0)}
-        </span>
-      ),
-    },
+    // No "Assigned to" column. The roles endpoint carries no assignment
+    // count, and the only way to derive one is a paginated sweep of
+    // /admin/authz/team, which undercounts past the first page. A number
+    // that is quietly wrong is worse than no column — Team shows who holds
+    // what.
     {
       key: "state",
       header: "State",
@@ -151,9 +146,9 @@ function RolesView() {
         <DataTable
           columns={columns}
           rows={rows}
-          getRowKey={(r) => r.roleId}
+          getRowKey={(r) => r.id}
           onRowClick={(r) => {
-            router.push(`/roles/${r.roleId}`);
+            router.push(`/roles/${r.id}`);
           }}
           emptyState={
             <EmptyState

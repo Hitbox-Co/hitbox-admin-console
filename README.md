@@ -14,13 +14,31 @@ TanStack Query.
 
 ## Running it
 
+**The backend must be running.** There is no mock and no offline mode — every
+screen reads live data. Start the API on port 8000 first, then:
+
 ```bash
 npm install
 npm run dev
 ```
 
-`.env.local` already carries the Clerk dev keys. Sign in at `/sign-in`; there is
-no local password store — Clerk holds identity, this app holds a projection.
+`.env` carries the Clerk keys and the backend origin:
+
+```bash
+HITBOX_API_URL=http://localhost:8000
+```
+
+Every request is proxied through `/api/hitbox/*` to
+`<HITBOX_API_URL>/api/v1/...` with the Clerk session JWT attached
+**server-side**, so the token never enters the browser bundle. `getToken()` is
+called per request, never cached — Clerk tokens live ~60s and the SDK refreshes
+them transparently.
+
+If `HITBOX_API_URL` is unset the proxy returns a `502` saying so, rather than
+failing in a way that looks like a backend outage.
+
+Sign in at `/sign-in`; there is no local password store — Clerk holds identity,
+this app holds a projection.
 
 | Script | What it does |
 |---|---|
@@ -28,23 +46,7 @@ no local password store — Clerk holds identity, this app holds a projection.
 | `npm run build` | Production build |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint |
-| `npm run verify:gating` | Asserts the permission-gating contract (see below) |
-
-### Pointing at the real backend
-
-```bash
-# .env.local
-HITBOX_API_URL=https://api.hitbox.example
-```
-
-With that set, every request is proxied to `<HITBOX_API_URL>/api/v1/...` with the
-Clerk session JWT attached **server-side** — the token never enters the browser
-bundle. Leave it blank and the console runs against built-in demo data instead,
-so the whole surface is usable with no backend at all.
-
-Demo mode adds a **View as** control in the header. It re-requests every
-endpoint as another role, which is the fastest way to confirm a section is being
-*omitted* rather than zeroed.
+| `npm run verify:gating` | Asserts the permission logic (see below) |
 
 ---
 
@@ -93,18 +95,26 @@ gives each currency its own column.
   the UI. A permission can never be typed by hand.
 - A person holds a **list** of roles — the assignment UI is additive with
   per-row revoke, not a single-select.
-- Media assets sit in a "processing" state until the scanner marks them `CLEAN`;
-  the list polls while any are pending. Signed URLs are fetched at render and
-  never cached (60s expiry). `storageRef` is an S3 key and is never turned into
-  a URL.
+- Media has no scan pipeline in this deployment — every asset is created
+  `SKIPPED` and is immediately servable, so the console never shows a
+  "processing" state or polls. `publicUrl` is permanent for `DROP_IMAGE`/
+  `PROFILE_IMAGE` and rendered directly; every other type fetches a signed URL
+  at render and never caches it (60s expiry). `storageRef` is an S3 key and is
+  never turned into a URL by hand.
 - `STORAGE_UNAVAILABLE` (503) is surfaced as a configuration fact, not a crash.
 
-### Verifying the contract
+### Verifying the permission logic
 
-`npm run verify:gating` exercises the gating rules end to end against the demo
-router — section presence per role, the Order-Manager-sees-counts-not-amounts
-case, per-row field redaction, role immutability, domain violations, range
-validation and the media 503. 32 assertions, all passing.
+`npm run verify:gating` pins down the part of the contract this console owns:
+how a permission key parses, how `manage` subsumes `read`, how scope width is
+compared (`own < organization < global`), and which navigation entries a given
+grant set produces. 38 assertions, all passing.
+
+It deliberately does **not** assert endpoint response shapes. It used to — via
+an in-process mock of the backend — but that mock has been removed now that the
+console talks to the real API, so those assertions no longer had a subject.
+Shape conformance is the backend's contract to keep; verifying it from here
+would need the API running and is better done as an integration test against it.
 
 ---
 
@@ -192,13 +202,12 @@ src/
     ui/                 primitives, states, table, money, loading screen
   lib/
     api/                client + typed React Query hooks
-    demo/               in-process API stand-in (catalog, data, router)
     authz.ts            Permissions helper + permission-driven navigation
     format.ts           money, numbers, dates — the formatting contract
     types.ts            API shapes; every gated section is optional
 public/brand/           the source mark
 scripts/
-  verify-gating.ts      the contract test
+  verify-gating.ts      permission-logic assertions
   build-icons.mjs       composites the mark onto the brand ground for favicons
 ```
 
@@ -255,11 +264,194 @@ curl -s "https://sharing-kit-7.clerk.accounts.dev/v1/environment?__clerk_api_ver
    The documented API surface has no organization-list endpoint; swap in a live
    fetch as soon as one exists, or an `ORGANIZATION`-scoped assignment can be
    made against a stale id and 403 with `SCOPE_MISMATCH`.
-5. **Media upload is read-only in the UI.** The three-step presigned flow is
-   modelled and the 503 path is handled, but no upload form ships — the backend's
-   own presign calls are documented as never having run against a live bucket.
+5. **Media upload is read-only in the UI.** The two-step presigned flow
+   (`POST /admin/media/upload-url` → `PUT` to S3) is modelled and the 503 path
+   is handled, but no upload form ships — the backend's own presign calls are
+   documented as never having run against a live bucket.
 6. **No CSV export.** `reports-dashboards:export:global` exists in the catalog
    and nothing consumes it yet.
 7. **`notifications` and `platformConfig`** are not implemented, by design —
    `PLATFORM_CONFIG` is TECHNICAL-domain and this dashboard is BUSINESS-domain.
    Technical-only roles get an explicit notice instead of an empty dashboard.
+8. **Publish drop still has no page — but the reason has narrowed.**
+   `packages/releases` now exists, so submit / amend / approve / reject are
+   live and are driven from **Release approvals**. What is still missing is
+   the publish step itself: there is no `APPROVED → PUBLISHED/ACTIVE`
+   transition, no endpoint to join an uploaded `MediaAsset` to a product as a
+   `ProductImage`, and no `ProductPrice` upsert. A wizard whose final button
+   cannot publish is worse than no wizard, so the page stays absent until
+   those three endpoints exist (admin-console-api.md §14).
+9. **Resale and Supply show real gaps, not filled-in fakes.** Resale items
+   carry a SKU id only — no product name, no seller. Supply items carry no
+   product name, no status enum, and no ordered-vs-received split; the
+   original four-state pipeline design cannot be built against this endpoint.
+   Both screens say so in-page rather than inventing the missing fields.
+10. **`follows` on Demand signals counts the product's *artist*,** not the
+    product itself — the backend's own query does this, not a labelling
+    choice made here. The screen names it "Artist follows" and explains why.
+
+---
+
+## Aligning against the real backend docs
+
+This console was built once against inferred shapes, then re-verified against
+three backend docs handed off directly by the API team
+(`admin-api-reference.md`, `admin-console-api.md`, `authentication.md`). That
+pass changed real behaviour, not just types:
+
+- **Media's scan pipeline was removed entirely.** There is no virus scanner in
+  this deployment — no SQS, no worker, no callback. Every asset is created
+  `SKIPPED` and is immediately servable. The console no longer shows a
+  "processing" banner or polls the media list; both would have described a
+  pipeline that does not run.
+- **Team became a dedicated, server-searched endpoint** — `GET
+  /admin/authz/team` — rather than a client-side join of roles and
+  assignments. It returns "anyone holding at least one live role," one row
+  per person, roles nested as a union.
+- **Roles list ≠ roles detail.** `GET /admin/authz/roles` returns
+  `permissionCount`/`assignedCount`, not the full permission array; the full
+  list comes from `GET /admin/authz/roles/:roleId`. `RoleSummary` and `Role`
+  in `src/lib/types.ts` model that split.
+- **Revoking a role now disambiguates by organization.** A person can hold
+  the same role at several organizations at once, so `(roleId,
+  organizationId)` — not `roleId` alone — is the real uniqueness key. `DELETE
+  .../roles/:roleId` takes an optional `?organizationId=`.
+- **New `AUTH_*` error codes** from the `requireAuth` pipeline
+  (`authentication.md` §3) get distinct screens: `AUTH_ACCOUNT_NOT_FOUND` (the
+  Clerk↔local-user webhook hasn't landed yet — a real race right after
+  sign-up) shows a calm "still provisioning" wait with a bounded retry, never
+  a tight loop; `AUTH_ACCOUNT_SUSPENDED` is terminal and offers sign-out.
+
+### A real conflict between the two docs, resolved
+
+`admin-console-api.md`'s role-create example uses `permissionIds:
+["p-1…", "p-2…"]`. `admin-api-reference.md`'s uses `permissions:
+["content-unlock:manage:organization", …]` — permission **key** strings.
+These cannot both be literal: the permission catalog
+(`GET /admin/authz/permissions`) returns entries keyed by `key` only, with no
+separate `id` field anywhere in either doc. `permissionIds` has nothing to
+reference. This build uses `permissions: string[]`, documented at the top of
+`src/lib/types.ts` for whoever hits this next.
+
+---
+
+## The write surface
+
+Everything above reports. These screens change state, and all of them read
+live from the backend — there is no local fixture behind any of them.
+
+| Screen | Endpoints | Gate |
+|---|---|---|
+| Markets → Configuration | `GET/POST/PATCH/DELETE /admin/markets` | read `reports-dashboards:read`; **writes `drop:manage` at `:global`** |
+| Orders | `GET /admin/orders`, `GET /admin/orders/:id`, `PATCH /admin/orders/:id/status` | `order:read`; status change `order:manage` |
+| Products | `GET /admin/products/:id`, `POST/PATCH/DELETE /admin/products` | read `drop:read`; **writes `drop:manage` at `:global`** |
+| Release approvals | `GET /admin/releases`, `GET /admin/releases/:id`, `POST /admin/releases`, `PATCH /admin/releases/:id`, `POST /admin/releases/:id/decision` | read `release-approval:read`; decide `release-approval:manage` |
+| Media | `GET /admin/media?archived=live\|archived\|all` | `assets-documents-upload:read` |
+| Team | `GET /admin/authz/team?internalOnly=` | `employee-role-mgmt:read` |
+
+Four behaviours worth knowing, because they are decisions rather than
+plumbing:
+
+- **Order actions come from `allowedTransitions`,** which the server computes
+  per order. The console never hardcodes the lifecycle graph, so it cannot
+  offer a button that 400s. `PAID` and `REFUNDED` never appear there — they
+  are written by the payment and refund pipelines, and an operator typing one
+  would decouple the order from the transaction that justifies it.
+- **A `409` on a status change means someone else moved it first.** The
+  drawer refetches and says so rather than retrying, which would fight the
+  other operator. A repeat of the *current* status is a `200` no-op, so a
+  double-clicked button never reads as a failure.
+- **`canDecide` / `blockedReason` drive the approve and reject buttons,** not
+  the approval's `status`. The real rule includes whether the caller holds
+  `release-approval:override:global`, which only the server knows.
+- **`globalOnly` gates hide rather than disable.** An org-scoped Brand Admin
+  can read the market list but every write 403s, so the buttons are not
+  rendered at all — offering an action that is certain to be refused is worse
+  than not offering it.
+
+### Where the docs and the backend disagreed
+
+The four handed-off docs are accurate for the newer modules (markets, orders,
+products, releases — the shapes were checked against each service's
+`toResponse`). Two older areas had drifted, and in both cases **the service
+mapper won**:
+
+- **Roles.** `admin-console-api.md` §15 shows `roleId`, `permissionCount` and
+  `assignedCount`. None of those three fields exist. `role.service.ts`
+  returns `{ id, name, displayName, entityGroup, domain, isSystem, isActive,
+  createdAt, permissions: [{key, description}] }` — the list already carries
+  every permission, so the edit screen needs no second call. The assignment
+  rows drifted the same way: they are `id` / `roleDisplayName` / `grantedAt`,
+  not `assignmentId` / `displayName` / `assignedAt`. The console had been
+  written against the documented shape, so the Roles, Team and role-assignment
+  screens were reading fields that are never sent.
+- **Products.** `admin-console-api.md` §7 says `/admin/dashboard/products`
+  returns "the same inventory shape the dashboard previews", with
+  `sold`/`available`/`claimed`. It does not — `listProducts()` selects the
+  catalog columns and no counts at all. The Sold, Available and Sell-through
+  columns were therefore rendering from fields that never arrive. Those
+  counts are real on `GET /admin/products/:id → performance`, one product at a
+  time, so they now live in the product drawer and the list links into it.
+
+There is no "Assigned to" column on Roles for the same reason: the endpoint
+carries no assignment count, and deriving one would need a paginated sweep of
+`/admin/authz/team` that undercounts past the first page. A number that is
+quietly wrong is worse than no column.
+
+---
+
+## Loading behaviour
+
+Every screen reads live data, so the work is in not making the operator wait
+for it twice. Four things do the lifting, all TanStack Query:
+
+**The sign-in waterfall is gone.** `AuthzGate` renders nothing until
+`/authz/me` answers — the navigation is derived from it, and flashing a menu
+the operator is not entitled to is worse than a brief wait. But that meant the
+landing page did not mount, so its own request queued *behind* authz.
+`BootstrapPrefetch` sits above the gate and starts the dashboard request while
+authz is still in flight, turning two serial round trips into one.
+
+**Rows warm on hover.** `DataTable` takes an `onRowIntent` callback that fires
+on pointer-enter and keyboard focus; Orders, Products and Release approvals
+use it to `prefetchQuery` the row's detail. By the time the click lands the
+drawer usually paints from cache instead of a skeleton. `prefetchQuery` is a
+no-op while an entry is fresh, so crossing a row repeatedly costs one request.
+
+**The next page is already there.** `useNextPageWarm` fetches page N+1 as soon
+as page N lands, and stops at the last page — one spare request per list, not
+one per row.
+
+**Answers survive navigation.** `gcTime` is 30 minutes (the default is 5), so
+leaving Orders and coming back repaints instantly with a quiet refetch behind
+it. `refetchOnWindowFocus` stays off — an operator alt-tabbing all day should
+not re-request every panel — but `refetchOnReconnect` is on, so a laptop
+waking from sleep does not show stale figures.
+
+### Query keys are the whole trick
+
+A prefetch that writes to a key nobody reads is invisible waste: no error, no
+warning, just a duplicate request and a skeleton anyway. Two things keep that
+from happening.
+
+Each detail endpoint has **one** option factory — `orderDetailOptions`,
+`productDetailOptions`, `releaseDetailOptions` — used by both the hook and its
+prefetch, so the key and the fetcher cannot drift apart.
+
+Where a key still has to be built twice (the drawer's default SKU page versus
+what the list prefetches), the equality is *checked* rather than assumed:
+`hashKey` from `@tanstack/query-core` confirms that
+`{skuPage: 1, skuLimit: 50}` and
+`{skuPage: 1, skuLimit: 50, claimedStatus: undefined}` hash identically, that
+`{...params, page: page + 1}` matches what `useListState` produces on the next
+page, and that key order does not matter — against a control pair that must
+differ.
+
+### What is deliberately not done
+
+**The cache is not persisted to `localStorage`.** It is the obvious next
+"faster loading" step and it is the wrong one here: this cache holds
+permission-filtered admin data — order amounts, buyer emails, finance
+figures — and writing it to disk would outlive both the session and the
+grants that authorised it. A revoked Finance Admin would still have last
+week's revenue in their browser. Instant reloads are not worth that.

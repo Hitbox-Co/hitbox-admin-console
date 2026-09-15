@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Repeat } from "lucide-react";
+import { Info, Repeat } from "lucide-react";
 import { useResale } from "@/lib/api/hooks";
 import { formatCurrency, formatDate, formatNumber, humanize } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
@@ -36,21 +36,13 @@ function ResaleView() {
   });
 
   const canMoney = perms.canRead("payment-royalty");
-  const canBuyer = perms.canRead("buyer-profile");
 
   const columns = React.useMemo<Column<ResaleRow>[]>(() => {
     const cols: Column<ResaleRow>[] = [
       {
-        key: "product",
-        header: "Product",
-        cell: (r) => (
-          <div>
-            <p className="text-[13px] font-medium text-[var(--text-1)]">
-              {r.productName}
-            </p>
-            <Mono className="mt-0.5 text-[10px]">{r.skuId}</Mono>
-          </div>
-        ),
+        key: "sku",
+        header: "SKU",
+        cell: (r) => <Mono className="text-[11px]">{r.skuId}</Mono>,
       },
       {
         key: "status",
@@ -78,25 +70,24 @@ function ResaleView() {
           ),
       });
     }
-    if (canBuyer) {
-      cols.push({
-        key: "seller",
-        header: "Seller",
-        cell: (r) => (r.sellerId ? <Mono className="text-[11px]">{r.sellerId}</Mono> : "—"),
-      });
-    }
     cols.push({
       key: "listed",
       header: "Listed",
-      cell: (r) => <span className="tnum text-[12px]">{formatDate(r.listedAt)}</span>,
+      cell: (r) => <span className="tnum text-[12px]">{formatDate(r.createdAt)}</span>,
     });
     return cols;
-  }, [canMoney, canBuyer]);
+  }, [canMoney]);
 
   const counts = query.data?.counts;
 
   return (
     <div className="space-y-4">
+      <p className="flex items-start gap-2 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--text-3)]">
+        <Info className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
+        This endpoint returns a SKU id only — no product name and no seller
+        id. Look the SKU up in Products if you need the item&rsquo;s name.
+      </p>
+
       {counts ? (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {Object.entries(counts).map(([status, count]) => (
@@ -122,7 +113,7 @@ function ResaleView() {
         </FilterRow>
 
         {query.isLoading ? (
-          <TableSkeleton rows={10} cols={5} />
+          <TableSkeleton rows={10} cols={4} />
         ) : query.isError ? (
           <ErrorState error={query.error} onRetry={() => query.refetch()} />
         ) : (

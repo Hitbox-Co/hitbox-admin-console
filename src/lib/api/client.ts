@@ -35,6 +35,12 @@ export class ApiError extends Error {
     switch (this.code) {
       case "AUTH_UNAUTHENTICATED":
         return "Your session has expired. Sign in again to continue.";
+      case "AUTH_INVALID_TOKEN":
+        return "Your session token could not be verified. Reconnecting…";
+      case "AUTH_ACCOUNT_NOT_FOUND":
+        return "Your account is still being provisioned. This usually takes a few seconds.";
+      case "AUTH_ACCOUNT_SUSPENDED":
+        return "This account has been suspended. Contact an administrator.";
       case "AUTH_EMAIL_UNVERIFIED":
         return "Verify your email address before using the console.";
       case "AUTHZ_FORBIDDEN":
@@ -53,6 +59,46 @@ export class ApiError extends Error {
         return "The start of the range must come before the end.";
       case "STORAGE_UNAVAILABLE":
         return "Media storage is not configured on this deployment.";
+
+      /* Markets — the three invariants, in the operator's words. */
+      case "MARKETS_CODE_TAKEN":
+        return "A market with that code already exists.";
+      case "MARKETS_COUNTRY_TAKEN":
+        return "One or more of those countries is already mapped to another market.";
+      case "MARKETS_IN_USE":
+        return "This market still has product prices against it. Repoint them before archiving.";
+      case "MARKETS_DEFAULT_REQUIRED":
+        return "Exactly one market must be the default. Promote another one instead of clearing this.";
+      case "MARKETS_NOT_FOUND":
+        return "Market not found — or outside your scope.";
+
+      /* Orders — the lifecycle graph is the server's, not ours. */
+      case "ORDERS_STATUS_NOT_SETTABLE":
+        return "Paid and refunded are written by the payment pipelines, not by hand.";
+      case "ORDERS_INVALID_TRANSITION":
+        return "That status change is not allowed from where this order is now.";
+      case "ORDERS_NOT_FOUND":
+        return "Order not found — or outside your scope.";
+
+      /* Releases — the compliance refusals. */
+      case "RELEASES_ALREADY_PENDING":
+        return "This drop already has an open review. Decide that one first.";
+      case "RELEASES_ALREADY_DECIDED":
+        return "This review is already decided. Reversing it needs the override permission.";
+      case "RELEASES_COMMENT_REQUIRED":
+        return "A rejection needs a comment saying why.";
+      case "RELEASES_COMPLIANCE_INCOMPLETE":
+        return "An age-restricted drop cannot be approved until it carries a minimum age.";
+      case "RELEASES_NOT_FOUND":
+        return "Review not found — or outside your scope.";
+
+      /* Role assignment. */
+      case "ACCESS_CONTROL_ASSIGNMENT_EXISTS":
+        return "This person already holds that role at that scope.";
+      case "ACCESS_CONTROL_MISSING_ORG_SCOPE":
+        return "This role is organization-scoped — choose an organization.";
+      case "ACCESS_CONTROL_ROLE_NOT_FOUND":
+        return "That role no longer exists, or has been deactivated.";
       case "NETWORK_ERROR":
         return this.message;
       default:
@@ -75,18 +121,6 @@ function buildUrl(path: string, query?: Record<string, QueryValue>): string {
   return url.pathname + url.search;
 }
 
-/** Storage key backing the demo role switcher; sent as the x-demo-role header. */
-export const PREVIEW_ROLE_KEY = "hitbox.demoRole";
-
-function getPreviewRole(): string | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return window.localStorage.getItem(PREVIEW_ROLE_KEY);
-  } catch {
-    return null;
-  }
-}
-
 async function request<T>(
   method: string,
   path: string,
@@ -94,8 +128,6 @@ async function request<T>(
 ): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
-  const preview = getPreviewRole();
-  if (preview) headers["x-demo-role"] = preview;
 
   let res: Response;
   try {

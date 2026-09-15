@@ -117,7 +117,7 @@ function ProvenanceView() {
     <div className="space-y-4">
       {summary ? (
         <div className="grid grid-cols-3 gap-3">
-          {Object.entries(summary).map(([status, count]) => (
+          {Object.entries(summary.cases).map(([status, count]) => (
             <Panel key={status} className="px-4 py-3">
               <p className="flex items-center gap-1.5 text-[11px] text-[var(--text-3)]">
                 <span

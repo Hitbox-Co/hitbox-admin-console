@@ -1,30 +1,37 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
-import { handleDemo } from "@/lib/demo/router";
 
 /**
  * Single ingress to the HitBox Collectibles admin API.
  *
- * The Clerk session JWT is attached here, server-side, so it never reaches
- * the browser bundle. When HITBOX_API_URL is unset the request is served by
- * the in-process demo router instead, which enforces the same permission
- * gating as the real service.
+ * Everything the console fetches goes through here so the Clerk session JWT
+ * is attached server-side and never reaches the browser bundle.
+ *
+ * `getToken()` is called per request, never cached — Clerk session tokens are
+ * short-lived (~60s) and the SDK refreshes them transparently, so a token
+ * captured once would start returning AUTH_INVALID_TOKEN within a minute
+ * (authentication.md §2).
  */
 
 export const dynamic = "force-dynamic";
 
 const API_URL = process.env.HITBOX_API_URL?.replace(/\/+$/, "") ?? "";
 
-function demoRole(req: Request): string {
-  // The header lets the role switcher preview another role without a restart.
-  return (
-    req.headers.get("x-demo-role") ||
-    process.env.NEXT_PUBLIC_DEMO_ROLE ||
-    "HITBOX_SYSTEM_ADMIN"
-  );
-}
-
 async function proxy(req: Request, ctx: { params: Promise<{ path: string[] }> }) {
+  if (!API_URL) {
+    return NextResponse.json(
+      {
+        error: {
+          code: "NETWORK_ERROR",
+          message:
+            "HITBOX_API_URL is not set. Point it at the backend (e.g. http://localhost:8000) and restart the dev server.",
+          details: null,
+        },
+      },
+      { status: 502 }
+    );
+  }
+
   const { userId, getToken } = await auth();
 
   if (!userId) {
@@ -65,22 +72,6 @@ async function proxy(req: Request, ctx: { params: Promise<{ path: string[] }> })
     }
   }
 
-  /* ---------- demo mode ---------- */
-  if (!API_URL) {
-    const result = await handleDemo(
-      pathname,
-      req.method,
-      search,
-      body,
-      demoRole(req)
-    );
-    return NextResponse.json(result.body, {
-      status: result.status,
-      headers: { "x-hitbox-source": "demo" },
-    });
-  }
-
-  /* ---------- live backend ---------- */
   const token = await getToken();
   const target = `${API_URL}/api/v1/${pathname}${search.toString() ? `?${search}` : ""}`;
 
@@ -99,10 +90,7 @@ async function proxy(req: Request, ctx: { params: Promise<{ path: string[] }> })
     const text = await upstream.text();
     const payload = text ? safeParse(text) : null;
 
-    return NextResponse.json(payload, {
-      status: upstream.status,
-      headers: { "x-hitbox-source": "live" },
-    });
+    return NextResponse.json(payload, { status: upstream.status });
   } catch (err) {
     return NextResponse.json(
       {
@@ -110,8 +98,8 @@ async function proxy(req: Request, ctx: { params: Promise<{ path: string[] }> })
           code: "NETWORK_ERROR",
           message:
             err instanceof Error
-              ? `Could not reach the HitBox Collectibles API: ${err.message}`
-              : "Could not reach the HitBox Collectibles API.",
+              ? `Could not reach the HitBox Collectibles API at ${API_URL}: ${err.message}`
+              : `Could not reach the HitBox Collectibles API at ${API_URL}.`,
           details: { target },
         },
       },

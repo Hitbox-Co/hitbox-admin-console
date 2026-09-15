@@ -1,34 +1,23 @@
 /**
- * Verifies the console's core contract: a section the caller cannot see is
- * OMITTED from the dashboard payload, not zeroed.
+ * Verifies the permission logic this console owns.
  *
- *   npx tsx scripts/verify-gating.ts
+ *   npm run verify:gating
  *
- * Runs against the in-process demo router, which mirrors the real service's
- * gating rules. Exits non-zero on any mismatch.
+ * Scope note: this used to also assert the response SHAPES of every endpoint,
+ * against an in-process mock of the backend. That mock is gone — the console
+ * now talks to the real API — so those assertions lost their subject and were
+ * removed rather than left testing a fiction.
+ *
+ * What remains is the part that is still genuinely ours: how a permission key
+ * is parsed, how `manage` subsumes `read`, how scope width is compared, and
+ * which navigation entries a given grant set produces. Those decisions live in
+ * src/lib/authz.ts and are what the whole UI keys off, so they are worth
+ * pinning down.
+ *
+ * Response-shape conformance is now the backend's contract to keep; this
+ * cannot verify it without the backend running.
  */
-import { handleDemo } from "../src/lib/demo/router";
 import { Permissions, visibleNav } from "../src/lib/authz";
-import { permissionsForRole } from "../src/lib/demo/catalog";
-import type { DashboardResponse } from "../src/lib/types";
-
-const EXPECTED: Record<string, string[]> = {
-  HITBOX_SYSTEM_ADMIN: [
-    "period", "summary", "users", "orders", "finance", "payments", "refunds",
-    "markets", "products", "content", "artists", "organizations", "operations",
-    "provenance", "paymentGatewayConfig", "activity",
-  ],
-  HITBOX_ORDER_MANAGER: [
-    "period", "summary", "users", "orders", "refunds", "markets",
-    "operations", "provenance",
-  ],
-  HITBOX_FINANCE_ADMIN: [
-    "period", "summary", "orders", "finance", "payments", "refunds",
-    "markets", "operations", "paymentGatewayConfig",
-  ],
-  HITBOX_PLATFORM_ENGINEER: ["period", "summary"],
-  HITBOX_FULL_STACK_ENGINEER: ["period", "summary"],
-};
 
 let failures = 0;
 
@@ -45,197 +34,183 @@ function check(label: string, actual: unknown, expected: unknown) {
   }
 }
 
-async function dashboardFor(role: string): Promise<DashboardResponse> {
-  const res = await handleDemo(
-    "admin/dashboard",
-    "GET",
-    new URLSearchParams({ period: "month" }),
-    undefined,
-    role
-  );
-  if (res.status !== 200) throw new Error(`status ${res.status} for ${role}`);
-  return res.body as DashboardResponse;
-}
+/** The seeded platform roles, as documented in admin-api-reference.md §7. */
+const ROLE_GRANTS: Record<string, string[]> = {
+  HITBOX_SYSTEM_ADMIN: [
+    "order:manage:global",
+    "payment-royalty:manage:global",
+    "buyer-profile:manage:global",
+    "drop:manage:global",
+    "release-approval:approve:global",
+    "content-unlock:manage:global",
+    "brand-artist-record:manage:global",
+    "nfc-tag-claim:manage:global",
+    "collectible-instance:manage:global",
+    "employee-role-mgmt:manage:global",
+    "audit-log:read:global",
+    "reports-dashboards:read:global",
+    "assets-documents-upload:manage:global",
+  ],
+  HITBOX_ORDER_MANAGER: [
+    "order:manage:global",
+    "order:refund:global",
+    "buyer-profile:read:global",
+    "nfc-tag-claim:read:global",
+    "reports-dashboards:read:global",
+  ],
+  HITBOX_FINANCE_ADMIN: [
+    "payment-royalty:manage:global",
+    "order:read:global",
+    "reports-dashboards:read:global",
+  ],
+  BRAND_ADMIN: [
+    "order:read:organization",
+    "payment-royalty:read:organization",
+    "drop:manage:organization",
+    "assets-documents-upload:manage:organization",
+    "employee-role-mgmt:read:organization",
+    "reports-dashboards:read:organization",
+  ],
+  ARTIST: [
+    "drop:read:own",
+    "brand-artist-record:manage:own",
+    "assets-documents-upload:manage:own",
+    "collectible-instance:read:own",
+  ],
+  HITBOX_PLATFORM_ENGINEER: [
+    "platform-config:manage:global",
+    "service-health:manage:global",
+    "feature-flag:manage:global",
+  ],
+};
 
-async function main() {
-  console.log("\nSection presence per role\n");
-  for (const [role, expected] of Object.entries(EXPECTED)) {
-    const d = await dashboardFor(role);
-    check(`${role} keys`, Object.keys(d).sort(), [...expected].sort());
-  }
+const permsFor = (role: string) => new Permissions(ROLE_GRANTS[role]);
+const navFor = (role: string) => visibleNav(permsFor(role)).map((n) => n.href);
 
-  console.log("\nThe canonical case: Order Manager sees refund counts, not amounts\n");
-  const om = await dashboardFor("HITBOX_ORDER_MANAGER");
-  check("refunds.processed present", typeof om.refunds?.processed, "number");
-  check("refunds.amount absent", "amount" in (om.refunds ?? {}), false);
+function main() {
+  console.log("\nPermission keys parse as resource:action:scope\n");
+  const admin = permsFor("HITBOX_SYSTEM_ADMIN");
+  check("reads a granted resource", admin.canRead("order"), true);
+  check("rejects an ungranted resource", admin.canRead("platform-config"), false);
+  check("malformed keys are ignored", new Permissions(["nonsense"]).isEmpty, true);
   check(
-    "operations.paymentsNeedingReview absent",
-    "paymentsNeedingReview" in (om.operations ?? {}),
+    "an unknown scope word is not a valid grant",
+    new Permissions(["order:read:everywhere"]).canRead("order"),
     false
   );
-  check("summary has no revenue", "grossRevenue" in om.summary, false);
-  check("summary has no profit", "profit" in om.summary, false);
 
-  console.log("\nFinance Admin: money yes, buyers and products no\n");
-  const fa = await dashboardFor("HITBOX_FINANCE_ADMIN");
-  check("refunds.amount present", "amount" in (fa.refunds ?? {}), true);
+  console.log("\n`manage` subsumes the non-destructive actions, but not itself\n");
+  const dropManager = new Permissions(["drop:manage:global"]);
+  check("manage implies read", dropManager.canRead("drop"), true);
+  check("manage implies approve", dropManager.can("drop", "approve"), true);
   check(
-    "operations.paymentsNeedingReview present",
-    "paymentsNeedingReview" in (fa.operations ?? {}),
-    true
+    "read does NOT imply manage",
+    new Permissions(["drop:read:global"]).can("drop", "manage"),
+    false
   );
-  check("summary.totalUsers absent", "totalUsers" in fa.summary, false);
-  check("summary.totalProducts absent", "totalProducts" in fa.summary, false);
-  check("users section absent", "users" in fa, false);
 
-  console.log("\nMoney is never a bare number\n");
-  const sa = await dashboardFor("HITBOX_SYSTEM_ADMIN");
-  const gross = sa.finance!.grossRevenue;
-  check("grossRevenue is an object", typeof gross, "object");
+  console.log("\nScope width is ordered own < organization < global\n");
+  const orgScoped = new Permissions(["order:read:organization"]);
+  check("organization satisfies an own-scope need", orgScoped.can("order", "read", "own"), true);
+  check("organization satisfies organization", orgScoped.can("order", "read", "organization"), true);
+  check("organization does NOT satisfy global", orgScoped.can("order", "read", "global"), false);
+  check("widestScope reports the widest held", orgScoped.widestScope("order"), "organization");
   check(
-    "every value is a string",
-    Object.values(gross).every((v) => typeof v === "string"),
-    true
-  );
-  check("more than one currency", Object.keys(gross).length > 1, true);
-
-  console.log("\nTechnical roles get no business sections\n");
-  const pe = await dashboardFor("HITBOX_PLATFORM_ENGINEER");
-  check("summary is empty", Object.keys(pe.summary).length, 0);
-  check(
-    "Permissions.isTechnicalOnly",
-    new Permissions(permissionsForRole("HITBOX_PLATFORM_ENGINEER")).isTechnicalOnly,
-    true
+    "widestScope is null for an ungranted resource",
+    orgScoped.widestScope("drop"),
+    null
   );
   check(
-    "nav offers only the dashboard",
-    visibleNav(new Permissions(permissionsForRole("HITBOX_PLATFORM_ENGINEER"))).map(
-      (n) => n.href
-    ),
+    "the widest of several grants wins",
+    new Permissions(["order:read:own", "order:read:global"]).widestScope("order"),
+    "global"
+  );
+
+  console.log("\nTechnical-only roles hold nothing the dashboard is built from\n");
+  check(
+    "platform engineer is technical-only",
+    permsFor("HITBOX_PLATFORM_ENGINEER").isTechnicalOnly,
+    true
+  );
+  check("system admin is not", permsFor("HITBOX_SYSTEM_ADMIN").isTechnicalOnly, false);
+  check("artist is not", permsFor("ARTIST").isTechnicalOnly, false);
+
+  console.log("\nNavigation is derived from grants, never from a role name\n");
+  check(
+    "a technical role is offered only the dashboard",
+    navFor("HITBOX_PLATFORM_ENGINEER"),
     ["/dashboard"]
   );
 
-  console.log("\nSub-endpoints 403 instead of omitting\n");
-  const forbidden = await handleDemo(
-    "admin/dashboard/finance",
-    "GET",
-    new URLSearchParams(),
-    undefined,
-    "HITBOX_ORDER_MANAGER"
-  );
-  check("finance sub-endpoint status", forbidden.status, 403);
+  const orderManagerNav = navFor("HITBOX_ORDER_MANAGER");
+  check("order manager gets Orders", orderManagerNav.includes("/orders"), true);
+  check("order manager gets Buyers", orderManagerNav.includes("/users"), true);
+  check("order manager does NOT get Finance", orderManagerNav.includes("/finance"), false);
+  check("order manager does NOT get Products", orderManagerNav.includes("/products"), false);
+  check("order manager does NOT get Media", orderManagerNav.includes("/media"), false);
+
+  const financeNav = navFor("HITBOX_FINANCE_ADMIN");
+  check("finance admin gets Finance", financeNav.includes("/finance"), true);
+  check("finance admin gets Orders", financeNav.includes("/orders"), true);
+  check("finance admin does NOT get Buyers", financeNav.includes("/users"), false);
+  check("finance admin does NOT get Roles", financeNav.includes("/roles"), false);
+
+  const artistNav = navFor("ARTIST");
+  check("artist gets Products", artistNav.includes("/products"), true);
+  check("artist gets Media", artistNav.includes("/media"), true);
+  check("artist does NOT get Finance", artistNav.includes("/finance"), false);
+  check("artist does NOT get Team", artistNav.includes("/team"), false);
   check(
-    "finance sub-endpoint code",
-    (forbidden.body as { error: { code: string } }).error.code,
-    "AUTHZ_FORBIDDEN"
+    "artist does NOT get Markets (no reports grant)",
+    artistNav.includes("/markets"),
+    false
   );
 
-  console.log("\nOrder rows drop fields the caller may not see\n");
-  const omOrders = await handleDemo(
-    "admin/dashboard/orders",
-    "GET",
-    new URLSearchParams({ limit: "1" }),
-    undefined,
-    "HITBOX_ORDER_MANAGER"
-  );
-  const omRow = (omOrders.body as { items: Record<string, unknown>[] }).items[0];
-  check("order.amount absent for Order Manager", "amount" in omRow, false);
-  check("order.buyerId present for Order Manager", "buyerId" in omRow, true);
-
-  const faOrders = await handleDemo(
-    "admin/dashboard/orders",
-    "GET",
-    new URLSearchParams({ limit: "1" }),
-    undefined,
-    "HITBOX_FINANCE_ADMIN"
-  );
-  const faRow = (faOrders.body as { items: Record<string, unknown>[] }).items[0];
-  check("order.amount present for Finance Admin", "amount" in faRow, true);
-  check("order.buyerId absent for Finance Admin", "buyerId" in faRow, false);
-
-  console.log("\nRole immutability and domain rules\n");
-  const editSeeded = await handleDemo(
-    "admin/authz/roles/r-sys-01",
-    "PATCH",
-    new URLSearchParams(),
-    { permissions: ["order:read:global"] },
-    "HITBOX_SYSTEM_ADMIN"
-  );
-  check("editing a seeded role", editSeeded.status, 403);
+  const brandAdminNav = navFor("BRAND_ADMIN");
+  check("brand admin gets Finance (org-scoped royalties)", brandAdminNav.includes("/finance"), true);
+  check("brand admin gets Team (org-scoped)", brandAdminNav.includes("/team"), true);
   check(
-    "immutable code",
-    (editSeeded.body as { error: { code: string } }).error.code,
-    "AUTHZ_ROLE_IMMUTABLE"
+    "brand admin does NOT get the audit log",
+    brandAdminNav.includes("/activity"),
+    false
   );
 
-  const deactivate = await handleDemo(
-    "admin/authz/roles/r-sys-01",
-    "PATCH",
-    new URLSearchParams(),
-    { isActive: false },
-    "HITBOX_SYSTEM_ADMIN"
-  );
-  check("deactivating a seeded role is allowed", deactivate.status, 200);
-
-  const mixed = await handleDemo(
-    "admin/authz/roles",
-    "POST",
-    new URLSearchParams(),
-    {
-      name: "MIXED_DOMAIN_ROLE",
-      displayName: "Mixed",
-      entityGroup: "hitbox",
-      domain: "BUSINESS",
-      permissions: ["order:read:global", "feature-flag:manage:global"],
-    },
-    "HITBOX_SYSTEM_ADMIN"
-  );
-  check("mixing domains", mixed.status, 400);
+  console.log("\nMedia keys off a read grant, which `manage` subsumes\n");
+  const hrefs = (keys: string[]) =>
+    visibleNav(new Permissions(keys)).map((n) => n.href);
   check(
-    "domain violation code",
-    (mixed.body as { error: { code: string } }).error.code,
-    "AUTHZ_DOMAIN_VIOLATION"
+    "a manage grant yields Media",
+    hrefs(["assets-documents-upload:manage:own"]).includes("/media"),
+    true
+  );
+  check(
+    "a read grant yields Media",
+    hrefs(["assets-documents-upload:read:own"]).includes("/media"),
+    true
+  );
+  check(
+    "no media grant means no Media entry",
+    hrefs(["order:read:global"]).includes("/media"),
+    false
   );
 
-  console.log("\nCustom range validation\n");
-  const badRange = await handleDemo(
-    "admin/dashboard",
-    "GET",
-    new URLSearchParams({ period: "custom", from: "2026-09-10", to: "2026-09-01" }),
-    undefined,
-    "HITBOX_SYSTEM_ADMIN"
-  );
-  check("reversed range", badRange.status, 422);
+  // The review workflow now exists (/admin/releases), so this is no longer
+  // "no backend" — it is specifically the publish transition that is missing:
+  // there is no APPROVED -> PUBLISHED/ACTIVE endpoint, no product-image join
+  // and no price upsert (admin-console-api.md §14). Approving a drop is done
+  // from Release approvals; a wizard ending in a button that cannot publish
+  // would be worse than no wizard.
+  console.log("\nPublish drop has no nav entry — the publish step does not exist\n");
   check(
-    "reversed range code",
-    (badRange.body as { error: { code: string } }).error.code,
-    "INVALID_RANGE"
-  );
-
-  console.log("\nMedia storage is reported unavailable, not broken\n");
-  const upload = await handleDemo(
-    "admin/media/upload-url",
-    "POST",
-    new URLSearchParams(),
-    {},
-    "HITBOX_SYSTEM_ADMIN"
-  );
-  check("upload-url status", upload.status, 503);
-  check(
-    "upload-url code",
-    (upload.body as { error: { code: string } }).error.code,
-    "STORAGE_UNAVAILABLE"
+    "no role is offered a publish-drop route",
+    Object.keys(ROLE_GRANTS).some((r) => navFor(r).includes("/publish-drop")),
+    false
   );
 
   console.log(
-    failures === 0
-      ? "\nAll checks passed.\n"
-      : `\n${failures} check(s) FAILED.\n`
+    failures === 0 ? "\nAll checks passed.\n" : `\n${failures} check(s) FAILED.\n`
   );
   process.exit(failures === 0 ? 0 : 1);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main();

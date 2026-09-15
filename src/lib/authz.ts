@@ -5,7 +5,8 @@ import type { AuthzMe, PermissionDomain } from "./types";
  *
  * Navigation and section visibility are derived from these keys, never from
  * role names. Hardcoding a role -> menu map in the frontend re-introduces
- * exactly the coupling the backend removed.
+ * exactly the coupling the backend removed. Driven from admin-console-api.md
+ * §0's "Sidebar item / Show when" table.
  */
 
 export type Scope = "own" | "organization" | "global";
@@ -128,6 +129,7 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Dashboard",
     icon: "LayoutDashboard",
     group: "Overview",
+    // "always — the payload itself is filtered" (admin-console-api.md §0)
     visible: () => true,
   },
   {
@@ -207,7 +209,8 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Media",
     icon: "Image",
     group: "Catalog",
-    visible: (p) => p.hasResource("assets-documents-upload"),
+    // Docs table is explicit: assets-documents-upload:READ, not "any grant".
+    visible: (p) => p.canRead("assets-documents-upload"),
   },
   {
     href: "/provenance",
@@ -225,13 +228,6 @@ export const NAV_ITEMS: NavItem[] = [
     visible: (p) => p.canRead("audit-log"),
   },
   {
-    href: "/publish-drop",
-    label: "Publish drop",
-    icon: "Rocket",
-    group: "Administration",
-    visible: (p) => p.can("drop", "manage") || p.can("employee-role-mgmt", "manage"),
-  },
-  {
     href: "/roles",
     label: "Roles",
     icon: "KeyRound",
@@ -246,6 +242,10 @@ export const NAV_ITEMS: NavItem[] = [
     visible: (p) => p.canRead("employee-role-mgmt"),
   },
 ];
+
+// "Publish drop" is deliberately absent: admin-console-api.md §14 marks the
+// screen "Not built" — packages/releases is schema-only, no service, no
+// controller, no router. Do not add a nav entry with nothing behind it.
 
 export const NAV_GROUP_ORDER = [
   "Overview",
@@ -263,7 +263,10 @@ export function visibleNav(p: Permissions): NavItem[] {
 /* Display helpers                                                     */
 /* ------------------------------------------------------------------ */
 
-export function humanizeRoleName(name: string): string {
+export function humanizeRoleName(name: string | null | undefined): string {
+  // Nullable at the source: audit events raised by the system carry no role
+  // snapshot. Callers decide what to show for "" — this does not invent one.
+  if (!name) return "";
   return name
     .replace(/^HITBOX_/, "")
     .split("_")

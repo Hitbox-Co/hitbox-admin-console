@@ -21,24 +21,27 @@ import {
   Tooltip,
 } from "@/components/ui/primitives";
 import { EmptyState, ErrorState } from "@/components/ui/states";
-import type { AdminUserRow, Role, ScopeType } from "@/lib/types";
+import type { Role, ScopeType, TeamMember } from "@/lib/types";
 import { ORGANIZATION_OPTIONS } from "./organizations";
 
 /**
  * Role assignment.
  *
  * A person holds a LIST of roles, not one — so this is an additive list with
- * per-row revoke, never a single-select dropdown.
+ * per-row revoke, never a single-select dropdown. Revoking sends
+ * `?organizationId=` when the assignment has one, since the same role can be
+ * held at several organizations at once (authentication.md §5) and that pair
+ * is the real uniqueness key, not roleId alone.
  */
 export function AssignmentDrawer({
   user,
   onClose,
 }: {
-  user: AdminUserRow;
+  user: TeamMember;
   onClose: () => void;
 }) {
   const assignments = useUserRoles(user.userId);
-  const roles = useRoles();
+  const rolesQuery = useRoles();
   const assign = useAssignRole(user.userId);
   const revoke = useRevokeRole(user.userId);
 
@@ -47,7 +50,9 @@ export function AssignmentDrawer({
   const [organizationId, setOrganizationId] = React.useState("");
   const [errors, setErrors] = React.useState<Record<string, string>>({});
 
-  const selectedRole: Role | undefined = roles.data?.find((r) => r.roleId === roleId);
+  const selectedRole: Role | undefined = rolesQuery.data?.find(
+    (r) => r.id === roleId
+  );
 
   // `scopeType` is optional — it defaults to the role's natural scope.
   const naturalScope: ScopeType = selectedRole
@@ -60,8 +65,15 @@ export function AssignmentDrawer({
 
   const effectiveScope = (scopeType || naturalScope) as ScopeType;
 
-  const held = new Set((assignments.data ?? []).map((a) => a.roleId));
-  const available = (roles.data ?? []).filter((r) => !held.has(r.roleId) && r.isActive);
+  const liveAssignments = (assignments.data ?? []).filter((a) => !a.revokedAt);
+  // A role may be held again at a DIFFERENT organization, so it is only
+  // fully "held" for the picker when every org-scoped slot isn't relevant —
+  // simplest honest rule: still offer it, since (roleId, organizationId) is
+  // the real uniqueness key and the backend enforces duplicates itself.
+  const held = new Set(liveAssignments.map((a) => a.roleId));
+  const available = (rolesQuery.data ?? []).filter(
+    (r) => r.isActive && (r.entityGroup === "brand_artist" || !held.has(r.id))
+  );
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,7 +119,7 @@ export function AssignmentDrawer({
           <div className="flex items-start justify-between gap-3 border-b border-[var(--hairline)] px-4 py-3.5">
             <div className="min-w-0">
               <Dialog.Title className="text-[14px] font-semibold tracking-[-0.01em] text-[var(--text-1)]">
-                {user.displayName}
+                {user.fullName}
               </Dialog.Title>
               <Dialog.Description className="mt-0.5 truncate text-[12px] text-[var(--text-3)]">
                 {user.email}
@@ -138,21 +150,21 @@ export function AssignmentDrawer({
                   error={assignments.error}
                   onRetry={() => assignments.refetch()}
                 />
-              ) : (assignments.data ?? []).length === 0 ? (
+              ) : liveAssignments.length === 0 ? (
                 <EmptyState
                   title="No roles assigned"
                   description="This person can sign in but will see an empty console."
                 />
               ) : (
                 <ul className="space-y-2">
-                  {assignments.data!.map((a) => (
+                  {liveAssignments.map((a) => (
                     <li
-                      key={a.assignmentId}
+                      key={a.id}
                       className="flex items-start justify-between gap-3 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2.5"
                     >
                       <div className="min-w-0">
                         <p className="text-[13px] font-medium text-[var(--text-1)]">
-                          {a.displayName}
+                          {a.roleDisplayName}
                         </p>
                         <Mono className="mt-0.5 text-[10px]">{a.roleName}</Mono>
                         <p className="mt-1.5 flex flex-wrap items-center gap-1.5">
@@ -167,7 +179,7 @@ export function AssignmentDrawer({
                             </Badge>
                           ) : null}
                           <span className="text-[10px] text-[var(--text-3)]">
-                            since {formatDate(a.assignedAt)}
+                            since {formatDate(a.grantedAt)}
                           </span>
                         </p>
                       </div>
@@ -177,17 +189,25 @@ export function AssignmentDrawer({
                           <Button
                             variant="ghost"
                             size="sm"
-                            loading={revoke.isPending && revoke.variables === a.roleId}
+                            loading={
+                              revoke.isPending &&
+                              revoke.variables?.roleId === a.roleId &&
+                              (revoke.variables?.organizationId ?? null) ===
+                                a.organizationId
+                            }
                             onClick={() =>
-                              revoke.mutate(a.roleId, {
-                                onSuccess: () => toast.success("Role revoked"),
-                                onError: (err) =>
-                                  toast.error(
-                                    err instanceof ApiError
-                                      ? err.friendly
-                                      : "Could not revoke the role."
-                                  ),
-                              })
+                              revoke.mutate(
+                                { roleId: a.roleId, organizationId: a.organizationId },
+                                {
+                                  onSuccess: () => toast.success("Role revoked"),
+                                  onError: (err) =>
+                                    toast.error(
+                                      err instanceof ApiError
+                                        ? err.friendly
+                                        : "Could not revoke the role."
+                                    ),
+                                }
+                              )
                             }
                           >
                             Revoke
@@ -220,7 +240,7 @@ export function AssignmentDrawer({
                 >
                   <option value="">Select a role…</option>
                   {available.map((r) => (
-                    <option key={r.roleId} value={r.roleId}>
+                    <option key={r.id} value={r.id}>
                       {r.displayName} ({r.domain === "TECHNICAL" ? "technical" : "business"})
                     </option>
                   ))}
@@ -279,7 +299,7 @@ export function AssignmentDrawer({
                 Assign role
               </Button>
 
-              {available.length === 0 && !roles.isLoading ? (
+              {available.length === 0 && !rolesQuery.isLoading ? (
                 <p className="text-[11px] text-[var(--text-3)]">
                   This person already holds every active role.
                 </p>

@@ -2,12 +2,13 @@
 
 import * as React from "react";
 import { BadgeCheck, FileWarning, ShieldAlert } from "lucide-react";
-import { useReleaseApprovals } from "@/lib/api/hooks";
+import { usePrefetchRelease, useReleases } from "@/lib/api/hooks";
 import { formatDate, humanize } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
 import { PageGuard } from "@/components/layout/page-guard";
 import {
   Badge,
+  Button,
   Mono,
   Panel,
   Tooltip,
@@ -16,7 +17,8 @@ import {
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterRow, FilterSelect, useListState } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
-import type { ReleaseApprovalRow } from "@/lib/types";
+import { ReleaseDrawer } from "@/components/releases/release-drawer";
+import type { ReleaseApproval } from "@/lib/types";
 
 export default function ReleaseApprovalsPage() {
   return (
@@ -31,24 +33,37 @@ export default function ReleaseApprovalsPage() {
 }
 
 function ReleaseApprovalsView() {
-  const list = useListState<{ status?: string }>({ status: "PENDING" });
-  const query = useReleaseApprovals(list.params);
+  const list = useListState<{ status?: string; complianceStatus?: string }>({
+    status: "PENDING",
+    complianceStatus: undefined,
+  });
+  /**
+   * `latestOnly` collapses to the newest version per product — that is the
+   * review queue. Turning it off shows every version, which is the audit
+   * view: an append-only trail where a twice-bounced drop appears three times.
+   */
+  const [latestOnly, setLatestOnly] = React.useState(true);
+  const [openId, setOpenId] = React.useState<string | null>(null);
+  const prefetchRelease = usePrefetchRelease();
+
+  const query = useReleases({ ...list.params, latestOnly });
 
   usePageChrome({
     title: "Release approvals",
     description: "Compliance sign-off before a drop goes live.",
   });
 
-  const columns: Column<ReleaseApprovalRow>[] = [
+  const columns: Column<ReleaseApproval>[] = [
     {
       key: "product",
       header: "Product",
       cell: (r) => (
-        <div>
-          <p className="text-[13px] font-medium text-[var(--text-1)]">
+        <div className="min-w-0">
+          <p className="truncate text-[13px] font-medium text-[var(--text-1)]">
             {r.product.name}
           </p>
-          <p className="mt-0.5 text-[11px] text-[var(--text-3)]">
+          <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--text-3)]">
+            <Mono className="text-[10px]">{r.product.groupCode}</Mono>
             v{r.version} · {humanize(r.product.status)}
           </p>
         </div>
@@ -78,10 +93,10 @@ function ReleaseApprovalsView() {
       header: "Age restriction",
       cell: (r) =>
         r.product.isAgeSpecific ? (
-          <Tooltip content="This drop is age-restricted. Confirm the minimum age before approving.">
+          <Tooltip content="Age-restricted. Approving without a minimum age is refused.">
             <span className="inline-flex items-center gap-1.5 rounded-[6px] bg-[var(--warning-dim)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--warning)]">
               <ShieldAlert className="h-3 w-3" aria-hidden />
-              {r.product.minimumAge ? `${r.product.minimumAge}+` : "Age-specific"}
+              {r.product.minimumAge ? `${r.product.minimumAge}+` : "No minimum set"}
             </span>
           </Tooltip>
         ) : (
@@ -95,12 +110,24 @@ function ReleaseApprovalsView() {
         r.oddsDisclosureRef ? (
           <Mono className="text-[11px]">{r.oddsDisclosureRef}</Mono>
         ) : (
-          <Tooltip content="A chance-based drop without an odds disclosure cannot be cleared.">
-            <span className="inline-flex cursor-help items-center gap-1 text-[12px] text-[var(--danger)]">
+          <Tooltip content="Clearing compliance without one logs a warning; a non-randomised drop legitimately has none.">
+            <span className="inline-flex cursor-help items-center gap-1 text-[12px] text-[var(--text-3)]">
               <FileWarning className="h-3 w-3" aria-hidden />
-              Missing
+              None
             </span>
           </Tooltip>
+        ),
+    },
+    {
+      key: "approver",
+      header: "Approver",
+      cell: (r) =>
+        r.approverEmail ? (
+          <span className="text-[12px] text-[var(--text-2)]">
+            {r.approverName ?? r.approverEmail}
+          </span>
+        ) : (
+          <span className="text-[12px] text-[var(--text-3)]">Unassigned</span>
         ),
     },
     {
@@ -117,52 +144,91 @@ function ReleaseApprovalsView() {
         </span>
       ),
     },
+    {
+      key: "actions",
+      header: "",
+      cell: (r) => (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpenId(r.id);
+          }}
+        >
+          Review
+        </Button>
+      ),
+    },
   ];
 
   return (
-    <Panel className="overflow-hidden">
-      <FilterRow onReset={list.reset} active={list.filters.status !== "PENDING"}>
-        <FilterSelect
-          label="Status"
-          value={list.filters.status}
-          onChange={(v) => list.setFilter("status", v)}
-          options={["PENDING", "APPROVED", "REJECTED", "CHANGES_REQUESTED"]}
-          allLabel="All statuses"
-        />
-        <p className="text-[11px] text-[var(--text-3)]">
-          Age restriction and odds disclosure are the compliance facts you sign
-          off on.
-        </p>
-      </FilterRow>
+    <>
+      <Panel className="overflow-hidden">
+        <FilterRow onReset={list.reset} active={list.filters.status !== "PENDING"}>
+          <FilterSelect
+            label="Status"
+            value={list.filters.status}
+            onChange={(v) => list.setFilter("status", v)}
+            options={["PENDING", "APPROVED", "REJECTED"]}
+            allLabel="All statuses"
+          />
+          <FilterSelect
+            label="Compliance"
+            value={list.filters.complianceStatus}
+            onChange={(v) => list.setFilter("complianceStatus", v)}
+            options={["PENDING", "CLEARED", "FLAGGED"]}
+            allLabel="Any"
+          />
+          <label className="flex items-center gap-2 text-[12px] text-[var(--text-2)]">
+            <input
+              type="checkbox"
+              checked={latestOnly}
+              onChange={(e) => {
+                setLatestOnly(e.target.checked);
+                list.setPage(1);
+              }}
+              className="h-3.5 w-3.5 accent-[var(--accent)]"
+            />
+            Latest version only
+          </label>
+        </FilterRow>
 
-      {query.isLoading ? (
-        <TableSkeleton rows={8} cols={7} />
-      ) : query.isError ? (
-        <ErrorState error={query.error} onRetry={() => query.refetch()} />
-      ) : (
-        <>
-          <DataTable
-            columns={columns}
-            rows={query.data?.items ?? []}
-            getRowKey={(r) => r.id}
-            dimmed={query.isFetching}
-            emptyState={
-              <EmptyState
-                icon={BadgeCheck}
-                title="Nothing waiting for approval"
-                description="Every submitted release in your scope has been decided."
-              />
-            }
-          />
-          <Pagination
-            page={query.data?.page ?? 1}
-            limit={query.data?.limit ?? 20}
-            total={query.data?.total ?? 0}
-            onPageChange={list.setPage}
-            onLimitChange={list.setLimit}
-          />
-        </>
-      )}
-    </Panel>
+        {query.isLoading ? (
+          <TableSkeleton rows={8} cols={9} />
+        ) : query.isError ? (
+          <ErrorState error={query.error} onRetry={() => query.refetch()} />
+        ) : (
+          <>
+            <DataTable
+              columns={columns}
+              rows={query.data?.items ?? []}
+              getRowKey={(r) => r.id}
+              onRowClick={(r) => setOpenId(r.id)}
+              onRowIntent={(r) => prefetchRelease(r.id)}
+              dimmed={query.isFetching}
+              emptyState={
+                <EmptyState
+                  icon={BadgeCheck}
+                  title="Nothing waiting for approval"
+                  description="Every submitted release in your scope has been decided."
+                />
+              }
+            />
+            <Pagination
+              page={query.data?.page ?? 1}
+              limit={query.data?.limit ?? 20}
+              total={query.data?.total ?? 0}
+              onPageChange={list.setPage}
+              onLimitChange={list.setLimit}
+            />
+          </>
+        )}
+      </Panel>
+
+      {openId ? (
+        <ReleaseDrawer approvalId={openId} onClose={() => setOpenId(null)} />
+      ) : null}
+    </>
   );
 }
