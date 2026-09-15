@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { BadgeCheck, FileWarning, ShieldAlert } from "lucide-react";
+import { BadgeCheck, FileWarning } from "lucide-react";
 import { usePrefetchRelease, useReleases } from "@/lib/api/hooks";
 import { formatDate, humanize } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
@@ -49,14 +49,14 @@ function ReleaseApprovalsView() {
   const query = useReleases({ ...list.params, latestOnly });
 
   usePageChrome({
-    title: "Release approvals",
+    title: "Approvals",
     description: "Compliance sign-off before a drop goes live.",
   });
 
   const columns: Column<ReleaseApproval>[] = [
     {
       key: "product",
-      header: "Product",
+      header: "Drop",
       cell: (r) => (
         <div className="min-w-0">
           <p className="truncate text-[13px] font-medium text-[var(--text-1)]">
@@ -86,22 +86,6 @@ function ReleaseApprovalsView() {
           {humanize(r.complianceStatus)}
         </Badge>
       ),
-    },
-    {
-      // The three fields the approver is personally accountable for.
-      key: "age",
-      header: "Age restriction",
-      cell: (r) =>
-        r.product.isAgeSpecific ? (
-          <Tooltip content="Age-restricted. Approving without a minimum age is refused.">
-            <span className="inline-flex items-center gap-1.5 rounded-[6px] bg-[var(--warning-dim)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--warning)]">
-              <ShieldAlert className="h-3 w-3" aria-hidden />
-              {r.product.minimumAge ? `${r.product.minimumAge}+` : "No minimum set"}
-            </span>
-          </Tooltip>
-        ) : (
-          <span className="text-[12px] text-[var(--text-3)]">None</span>
-        ),
     },
     {
       key: "odds",

@@ -283,6 +283,7 @@ export function Field({
   hint,
   error,
   htmlFor,
+  required,
   children,
   className,
 }: {
@@ -290,6 +291,13 @@ export function Field({
   hint?: string;
   error?: string;
   htmlFor?: string;
+  /**
+   * Marks the label with an asterisk. Pass the result of `isRequired()`
+   * (src/lib/required-fields.ts) rather than a hand-typed boolean, so the
+   * mark tracks the zod schema that actually validates the form instead of
+   * becoming a second, driftable copy of "which fields matter".
+   */
+  required?: boolean;
   children: React.ReactNode;
   className?: string;
 }) {
@@ -300,6 +308,12 @@ export function Field({
         className="block text-[12px] font-medium text-[var(--text-2)]"
       >
         {label}
+        {required ? (
+          <span className="ml-0.5 text-[var(--danger)]" aria-hidden>
+            *
+          </span>
+        ) : null}
+        {required ? <span className="sr-only"> (required)</span> : null}
       </label>
       {children}
       {error ? (

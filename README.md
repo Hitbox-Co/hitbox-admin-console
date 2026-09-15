@@ -107,8 +107,13 @@ gives each currency its own column.
 
 `npm run verify:gating` pins down the part of the contract this console owns:
 how a permission key parses, how `manage` subsumes `read`, how scope width is
-compared (`own < organization < global`), and which navigation entries a given
-grant set produces. 38 assertions, all passing.
+compared (`own < organization < public < masked < masked-partial < global`),
+which navigation entries a given grant set produces, and which grants reach
+the serialized-unit surface. 49 assertions, all passing.
+
+Its grant fixtures are copied verbatim from the backend's
+`role-catalog.ts` — approximating them is how the masked-scope bug below went
+unnoticed.
 
 It deliberately does **not** assert endpoint response shapes. It used to — via
 an in-process mock of the backend — but that mock has been removed now that the
@@ -275,18 +280,18 @@ curl -s "https://sharing-kit-7.clerk.accounts.dev/v1/environment?__clerk_api_ver
    Technical-only roles get an explicit notice instead of an empty dashboard.
 8. **Publish drop still has no page — but the reason has narrowed.**
    `packages/releases` now exists, so submit / amend / approve / reject are
-   live and are driven from **Release approvals**. What is still missing is
+   live and are driven from **Approvals**. What is still missing is
    the publish step itself: there is no `APPROVED → PUBLISHED/ACTIVE`
    transition, no endpoint to join an uploaded `MediaAsset` to a product as a
    `ProductImage`, and no `ProductPrice` upsert. A wizard whose final button
    cannot publish is worse than no wizard, so the page stays absent until
    those three endpoints exist (admin-console-api.md §14).
-9. **Resale and Supply show real gaps, not filled-in fakes.** Resale items
-   carry a SKU id only — no product name, no seller. Supply items carry no
+9. **Resale and Vendors show real gaps, not filled-in fakes.** Resale items
+   carry a SKU id only — no product name, no seller. Vendor supply items carry no
    product name, no status enum, and no ordered-vs-received split; the
    original four-state pipeline design cannot be built against this endpoint.
    Both screens say so in-page rather than inventing the missing fields.
-10. **`follows` on Demand signals counts the product's *artist*,** not the
+10. **`follows` on Product demand counts the product's *artist*,** not the
     product itself — the backend's own query does this, not a labelling
     choice made here. The screen names it "Artist follows" and explains why.
 
@@ -345,7 +350,7 @@ live from the backend — there is no local fixture behind any of them.
 | Markets → Configuration | `GET/POST/PATCH/DELETE /admin/markets` | read `reports-dashboards:read`; **writes `drop:manage` at `:global`** |
 | Orders | `GET /admin/orders`, `GET /admin/orders/:id`, `PATCH /admin/orders/:id/status` | `order:read`; status change `order:manage` |
 | Products | `GET /admin/products/:id`, `POST/PATCH/DELETE /admin/products` | read `drop:read`; **writes `drop:manage` at `:global`** |
-| Release approvals | `GET /admin/releases`, `GET /admin/releases/:id`, `POST /admin/releases`, `PATCH /admin/releases/:id`, `POST /admin/releases/:id/decision` | read `release-approval:read`; decide `release-approval:manage` |
+| Approvals | `GET /admin/releases`, `GET /admin/releases/:id`, `POST /admin/releases`, `PATCH /admin/releases/:id`, `POST /admin/releases/:id/decision` | read `release-approval:read`; decide `release-approval:manage` |
 | Media | `GET /admin/media?archived=live\|archived\|all` | `assets-documents-upload:read` |
 | Team | `GET /admin/authz/team?internalOnly=` | `employee-role-mgmt:read` |
 
@@ -413,7 +418,7 @@ landing page did not mount, so its own request queued *behind* authz.
 authz is still in flight, turning two serial round trips into one.
 
 **Rows warm on hover.** `DataTable` takes an `onRowIntent` callback that fires
-on pointer-enter and keyboard focus; Orders, Products and Release approvals
+on pointer-enter and keyboard focus; Orders, Products and Approvals
 use it to `prefetchQuery` the row's detail. By the time the click lands the
 drawer usually paints from cache instead of a skeleton. `prefetchQuery` is a
 no-op while an entry is fresh, so crossing a row repeatedly costs one request.
@@ -455,3 +460,142 @@ permission-filtered admin data — order amounts, buyer emails, finance
 figures — and writing it to disk would outlive both the session and the
 grants that authorised it. A revoked Finance Admin would still have last
 week's revenue in their browser. Instant reloads are not worth that.
+
+---
+
+## Serialized units
+
+A drop is two records: the `Product` (the catalog entry — "this drop exists")
+and its `Sku` rows (the physical objects — "#14 of 500 exists, here is its tag
+and who holds it"). The product drawer carries both.
+
+| Surface | Endpoint | Gate |
+|---|---|---|
+| Unit list + filters | `GET /admin/products/:id/skus` | `collectible-instance:read` |
+| Header counts | `GET /admin/products/:id/skus/summary` | same |
+| Mint an edition | `POST /admin/products/:id/skus` | `collectible-instance:manage` |
+| Bind NFC tags | the `tagIds` field on that mint | **additionally** `nfc-tag-claim:manage` |
+| One unit | `GET /admin/skus/:id`, `/admin/skus/code/:skuCode` | `collectible-instance:read` |
+| Every unit | `GET /admin/skus` | global-breadth grant only |
+
+### Columns come from the response, never from the role
+
+A block the caller may not see is **absent from the JSON** — not `null`, not
+`{}`. A SKU row carries three secrets with three different audiences, each
+gated by its own resource: `tag` by `nfc-tag-claim`, `owner` by
+`buyer-profile`, `trust` by `collectible-instance` at full visibility, and any
+money inside by `payment-royalty` on top.
+
+So the units table builds its columns from `"tag" in unit`, and renders an
+absent block as *nothing* — no column, no label, no "—". Against the seeded
+catalog that means a Brand Admin sees every unit of their own edition and no
+tag column at all (brands own the edition; HitBox owns the anti-counterfeiting
+material), while Support sees real tag UIDs and server-masked owner emails.
+Neither is special-cased.
+
+The distinction the `—` would destroy: `owner` **absent** means "you may not
+see owners", while `owner: { ownerId: null }` means "this unit is genuinely
+unowned". Those are different facts and they look different.
+
+### Two refusals a capability check waves through
+
+`collectible-instance:read` alone is not enough to reach these screens, and
+`Permissions.canReadUnits()` mirrors the server's `buildSkuAccess()` rather
+than re-deriving the rule:
+
+- **`:public` is refused.** `BUYER_COLLECTOR` holds
+  `collectible-instance:read:public`, and PUBLIC scope has *all* breadth — so
+  a plain "do they hold a collectible-instance grant" test admits every
+  signed-in buyer on the platform.
+- **`:own` is refused.** An own-scoped grant is a collector looking at their
+  own shelf, not an operator.
+
+`HITBOX_CONTENT_MANAGER` is refused for a third reason: it holds
+`collectible-instance:**update**:global`, and `update` does not imply `read`
+(only `manage` does). It still holds `drop:read`, so the drawer falls back to
+the flat `skuUnits` page the product detail returns — rather than showing it a
+403.
+
+### The scope vocabulary had three values and needed six
+
+`parsePermission` accepted `own | organization | global` and returned `null`
+for anything else, silently dropping the grant. The seeded catalog uses
+**six** tokens — `own`, `organization`, `public`, `masked`, `masked-partial`,
+`global` — so this was discarding real grants:
+
+| Role | Grant that was being dropped | Consequence |
+|---|---|---|
+| `HITBOX_SUPPORT` | `buyer-profile:read:masked`, `collectible-instance:read:masked` | Appeared to hold neither; lost the Buyer column it is entitled to (masked) |
+| `HITBOX_ORDER_MANAGER` | `buyer-profile:read:masked-partial` | Lost its **Buyers** nav entry, which `admin-api-reference.md` §7 says it should have |
+
+The masking scopes reach *every* record and differ from `global` only in how
+much of each record comes back, so they rank above `organization` for breadth
+and carry a separate `Visibility` — `Permissions.visibility(resource)` reports
+`FULL | PARTIAL | MASKED | PUBLIC` alongside `widestScope()`.
+
+`verify:gating` now uses grant lists copied verbatim from
+`role-catalog.ts`. It previously listed Order Manager with
+`buyer-profile:read:global`, and that one substitution is exactly why these
+assertions never caught the bug.
+
+---
+
+## Creating a drop
+
+```
+Products → Add product → Product information → SKUs → Save
+                                                  ↓
+                                   opens the new drop, where
+                                   Add SKUs mints more units
+```
+
+**Add product** is the primary action on Products, gated on `drop:manage` at
+`:global` so an org-scoped Brand Admin browses the catalog without being
+offered a button that would 403.
+
+It is two steps and **one request**. `POST /admin/products` accepts an optional
+`skus` block and writes the drop and its opening edition in a single
+transaction, so the form either produces a drop with N units or produces
+nothing. Creating the product and then minting would leave a half-made drop on
+screen every time the second call failed.
+
+On success the new drop opens straight into its detail, where **Add SKUs**
+lives — the workflow continues instead of dumping the operator back on the
+list. Adding more units is deliberately not on the create form: it belongs
+where the existing edition is visible.
+
+### SKU means serialized unit here, not variation
+
+Worth being precise, because the words pull in different directions:
+
+| | `Product` | `ProductVariant` | `Sku` |
+|---|---|---|---|
+| Means | the drop | size / colour / material | one physical object |
+| Code | `groupCode` — `123456780042` | `variantCode` | `skuCode` — `123456780042-000014` |
+| Count | one per drop | a handful | one row per item, `#1…#totalSupply` |
+| Write API | ✅ `POST /admin/products` | ❌ **none** | ✅ `POST /admin/products/:id/skus` |
+
+So "add multiple SKUs under a product" is fully supported and each unit does
+get its own unique code — but they are *serial numbers*, not size/colour
+variations.
+
+**Variants have no create endpoint.** `ProductVariant` is a real table with
+`optionName`/`optionValue` (exactly "Size: L"), it comes back on every product
+read, and the product DTO states the reason outright: *"a drop being created
+right now has no variants yet"*. So the console can only **target** a variant
+when minting — the Add SKUs dialog shows a variant picker when the drop has
+any, and says nothing when it does not. It deliberately does not offer a
+variant field that would silently do nothing.
+
+Authoring variants needs one endpoint that does not exist yet
+(`POST /admin/products/:id/variants`). It sits alongside the three
+`admin-console-api.md` §14 already lists as missing before the publish wizard
+is buildable end to end.
+
+### Naming
+
+The sidebar says **Vendors**, **Approvals** and **Product demand** where it
+used to say Supply, Release approvals and Demand signals. Only the labels and
+page titles moved — the routes (`/supply`, `/release-approvals`, `/demand`)
+are unchanged, because they are the stable identity that guards, deep links
+from the dashboard, and the gating assertions all key on.

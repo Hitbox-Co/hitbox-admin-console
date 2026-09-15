@@ -38,6 +38,19 @@ import type {
   ReleaseApprovalRow,
   ReleaseDecisionInput,
   ResaleListResponse,
+  AssetType,
+  BindTagsInput,
+  BindTagsResult,
+  ProductGallery,
+  ProductImageInput,
+  RetagUnitInput,
+  UploadUrlResponse,
+  MintResult,
+  MintSkusInput,
+  SkuListParams,
+  SkuListResponse,
+  SkuSummary,
+  SkuUnitDetail,
   Role,
   RoleAssignment,
   ScopeType,
@@ -842,6 +855,342 @@ export function useReleaseDecision(approvalId: string) {
     onSuccess: (detail) => {
       qc.setQueryData(["release", approvalId], detail);
       invalidateReleases(qc);
+    },
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Serialized units (sku-api.md)                                        */
+/*                                                                      */
+/* Reads need collectible-instance:read, resolved against the DROP's    */
+/* organization — so a Brand Admin reaches their own edition through    */
+/* /admin/products/:id/skus while the global /admin/skus refuses them.  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The list envelope here is `{ data, meta }`, not the dashboard's
+ * `{ page, limit, total, items }` and not the aggregates' bare `{ data }`.
+ * Three envelopes in one API; this is the third. Do not run it through
+ * `unwrap`, which would drop `meta` and take the paging with it.
+ */
+export const productSkusOptions = (productId: string, params: SkuListParams = {}) => ({
+  ...baseOptions,
+  queryKey: ["product-skus", productId, params] as const,
+  queryFn: () => api.get<SkuListResponse>(`admin/products/${productId}/skus`, { ...params }),
+});
+
+export function useProductSkus(
+  productId: string | undefined,
+  params: SkuListParams = {},
+  enabled = true
+) {
+  return useQuery({
+    ...productSkusOptions(productId ?? "", params),
+    enabled: !!productId && enabled,
+    placeholderData: (prev) => prev,
+  });
+}
+
+/**
+ * The header counts. Read separately from the rows because it is one grouped
+ * query — counting a paged list client-side would be both slower and wrong
+ * past page one.
+ */
+export function useProductSkuSummary(productId: string | undefined, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["product-sku-summary", productId],
+    enabled: !!productId && enabled,
+    queryFn: () =>
+      api
+        .get<unknown>(`admin/products/${productId}/skus/summary`)
+        .then(unwrap<SkuSummary>),
+  });
+}
+
+/**
+ * Mint units onto an existing edition. Serials continue from the highest
+ * already minted.
+ *
+ * `tagIds` must be exactly `count` long or absent — a shorter list would
+ * silently leave the tail of the batch untagged, and "silently" is not a
+ * property you want in the table that proves authenticity. Sending it at all
+ * additionally requires nfc-tag-claim:manage.
+ */
+export function useMintSkus(productId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: MintSkusInput) =>
+      api
+        .post<unknown>(`admin/products/${productId}/skus`, payload)
+        .then(unwrap<MintResult>),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["product-skus", productId] });
+      qc.invalidateQueries({ queryKey: ["product-sku-summary", productId] });
+      // The drop's own performance counts move with the edition.
+      qc.invalidateQueries({ queryKey: ["admin-product", productId] });
+      qc.invalidateQueries({ queryKey: ["products"] });
+    },
+  });
+}
+
+/**
+ * One unit. Prefer the `code` form from an operator's hands — the code is
+ * printed on the item, the uuid is not written anywhere physical.
+ */
+export function useSkuUnit(skuId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["sku", skuId],
+    enabled: !!skuId,
+    queryFn: () => api.get<unknown>(`admin/skus/${skuId}`).then(unwrap<SkuUnitDetail>),
+  });
+}
+
+export function useSkuUnitByCode(skuCode: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["sku-by-code", skuCode],
+    enabled: !!skuCode,
+    queryFn: () =>
+      api
+        .get<unknown>(`admin/skus/code/${encodeURIComponent(skuCode ?? "")}`)
+        .then(unwrap<SkuUnitDetail>),
+    retry: false,
+  });
+}
+
+/**
+ * Every unit across every drop. Carries no product in its path, so there is
+ * no organization to check against and only a globally-scoped grant matches —
+ * an org-scoped caller gets 403 here and reaches their units through
+ * useProductSkus instead. Gate the call site on that rather than letting the
+ * refusal be the discovery.
+ */
+export function useAllSkus(params: SkuListParams = {}, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["skus", params],
+    enabled,
+    queryFn: () => api.get<SkuListResponse>("admin/skus", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Product gallery — /admin/products/:id/images                        */
+/*                                                                      */
+/* Read needs drop:read; every write needs drop:manage at GLOBAL.       */
+/* Each mutation returns the WHOLE gallery because positions and the    */
+/* primary flag are normalised server-side on every write, so the       */
+/* response is written straight into the cache rather than merged.      */
+/* ------------------------------------------------------------------ */
+
+export function useProductImages(productId: string | undefined, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["product-images", productId],
+    enabled: !!productId && enabled,
+    queryFn: () =>
+      api
+        .get<unknown>(`admin/products/${productId}/images`)
+        .then(unwrap<ProductGallery>),
+  });
+}
+
+/** Shared by every gallery mutation: the response IS the new gallery. */
+function useGalleryMutation<TVars>(
+  productId: string,
+  run: (vars: TVars) => Promise<ProductGallery>
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: run,
+    onSuccess: (gallery) => {
+      qc.setQueryData(["product-images", productId], gallery);
+      // The product body carries `images` as a URL array, so it moves too.
+      qc.invalidateQueries({ queryKey: ["admin-product", productId] });
+      qc.invalidateQueries({ queryKey: ["products"] });
+    },
+  });
+}
+
+/** Append. A duplicate assetId is 409 PRODUCTS_IMAGE_DUPLICATE, not a move. */
+export function useAttachProductImages(productId: string) {
+  return useGalleryMutation(productId, (images: ProductImageInput[]) =>
+    api
+      .post<unknown>(`admin/products/${productId}/images`, { images })
+      .then(unwrap<ProductGallery>)
+  );
+}
+
+/**
+ * Replace the gallery wholesale — **this is what a drag-and-drop reorder
+ * calls**. After a reorder the client knows the final state, not the sequence
+ * of moves that produced it, and an empty array (clear the gallery) cannot be
+ * expressed by a merge at all.
+ */
+export function useReplaceProductImages(productId: string) {
+  return useGalleryMutation(productId, (images: ProductImageInput[]) =>
+    api
+      .put<unknown>(`admin/products/${productId}/images`, { images })
+      .then(unwrap<ProductGallery>)
+  );
+}
+
+export function useUpdateProductImage(productId: string) {
+  return useGalleryMutation(
+    productId,
+    ({
+      imageId,
+      ...patch
+    }: { imageId: string } & Pick<
+      ProductImageInput,
+      "position" | "isPrimary" | "altText"
+    >) =>
+      api
+        .patch<unknown>(`admin/products/${productId}/images/${imageId}`, patch)
+        .then(unwrap<ProductGallery>)
+  );
+}
+
+/**
+ * Soft-removes the placement; the MediaAsset is never touched. If the removed
+ * image was primary the next one is promoted automatically — which is another
+ * reason to re-render from the response rather than splicing locally.
+ */
+export function useRemoveProductImage(productId: string) {
+  return useGalleryMutation(productId, (imageId: string) =>
+    api
+      .delete<unknown>(`admin/products/${productId}/images/${imageId}`)
+      .then(unwrap<ProductGallery>)
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Media upload — presign, then PUT the bytes straight to S3           */
+/* ------------------------------------------------------------------ */
+
+export interface UploadUrlInput {
+  assetType: AssetType;
+  fileName: string;
+  mimeType: string;
+  ownerType: string;
+  ownerId: string;
+  /** REQUIRED. Bound into the signature as Content-Length; absent is a 422. */
+  sizeBytes: number;
+}
+
+export function useRequestUploadUrl() {
+  return useMutation({
+    mutationFn: (payload: UploadUrlInput) =>
+      api
+        .post<unknown>("admin/media/upload-url", payload)
+        .then(unwrap<UploadUrlResponse>),
+  });
+}
+
+/**
+ * The whole two-step upload, as one call site.
+ *
+ * Step 2 is a direct browser -> S3 `PUT`; the bytes never pass through the
+ * API, so it goes out with `fetch` rather than the console's client, which
+ * would proxy it and attach a Clerk token S3 has no use for.
+ *
+ * The `Content-Type` MUST match what was declared at presign time and the body
+ * must be exactly `sizeBytes` long — both are bound into the signature, and
+ * either mismatch is a `403 SignatureDoesNotMatch` from S3 rather than a
+ * readable API error.
+ */
+export function useUploadAsset() {
+  const qc = useQueryClient();
+  const presign = useRequestUploadUrl();
+
+  return useMutation({
+    mutationFn: async ({
+      file,
+      assetType,
+      ownerType,
+      ownerId,
+    }: {
+      file: File;
+      assetType: AssetType;
+      ownerType: string;
+      ownerId: string;
+    }): Promise<UploadUrlResponse> => {
+      const presigned = await presign.mutateAsync({
+        assetType,
+        fileName: file.name,
+        mimeType: file.type,
+        ownerType,
+        ownerId,
+        sizeBytes: file.size,
+      });
+
+      const res = await fetch(presigned.uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": file.type },
+        body: file,
+      });
+      if (!res.ok) {
+        throw new ApiError(
+          res.status,
+          "STORAGE_UPLOAD_FAILED",
+          res.status === 403
+            ? "S3 rejected the upload signature. The file changed size or type between presigning and sending."
+            : `The storage service rejected the upload (${res.status}).`,
+          null
+        );
+      }
+      // Servable the moment the PUT returns — there is no scanner to wait for.
+      return presigned;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["media"] }),
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* NFC tag manifests — sku-api.md §3a                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Bind tags to already-minted units from a vendor manifest.
+ *
+ * This is the NORMAL path for any real edition: units are minted when the drop
+ * is planned, and the physical tags arrive weeks later in boxes with a CSV.
+ * Passing 500 UIDs to the mint call would mean knowing all 500 before a single
+ * unit exists.
+ *
+ * Capability is `nfc-tag-claim:manage`, deliberately NOT the minting one — a
+ * Drop Manager mints the edition; whoever holds tag custody binds the tags.
+ */
+export function useBindTags(productId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: BindTagsInput) =>
+      api
+        .post<unknown>(`admin/products/${productId}/skus/tags`, payload)
+        .then(unwrap<BindTagsResult>),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["product-skus", productId] });
+      qc.invalidateQueries({ queryKey: ["product-sku-summary", productId] });
+      qc.invalidateQueries({ queryKey: ["admin-product", productId] });
+    },
+  });
+}
+
+/** One unit, same rules — a chip failed, or an item was re-tagged after repair. */
+export function useRetagUnit(skuId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: RetagUnitInput) =>
+      api
+        .patch<unknown>(`admin/skus/${skuId}/tag`, payload)
+        .then(unwrap<SkuUnitDetail>),
+    onSuccess: (unit) => {
+      qc.setQueryData(["sku", skuId], unit);
+      qc.invalidateQueries({ queryKey: ["product-skus"] });
+      qc.invalidateQueries({ queryKey: ["product-sku-summary"] });
     },
   });
 }

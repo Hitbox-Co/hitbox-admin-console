@@ -272,7 +272,7 @@ function SummaryRow({ data }: { data: NonNullable<ReturnType<typeof useDashboard
     cards.push(
       <StatCard
         key="products"
-        label="Products"
+        label="Drops"
         value={formatNumber(s.totalProducts)}
         hint={`${formatNumber(data.products?.active)} active drops`}
       />
@@ -676,7 +676,7 @@ function ProductsPanel({ data }: { data: NonNullable<ReturnType<typeof useDashbo
           <table className="w-full text-[12px]">
             <thead>
               <tr className="border-b border-[var(--hairline)] text-[10px] uppercase tracking-[0.04em] text-[var(--text-3)]">
-                <th className="py-1.5 text-left font-medium">Product</th>
+                <th className="py-1.5 text-left font-medium">Drop</th>
                 <th className="py-1.5 text-right font-medium">Supply</th>
                 <th className="py-1.5 text-right font-medium">Sold</th>
                 <th className="py-1.5 text-right font-medium">Reserved</th>
@@ -896,7 +896,7 @@ const SECTION_LABELS: Record<string, { label: string; requires: string }> = {
   payments: { label: "Payments", requires: "payment-royalty:read" },
   refunds: { label: "Refunds", requires: "order:read" },
   markets: { label: "Markets", requires: "reports-dashboards:read" },
-  products: { label: "Products", requires: "drop:read" },
+  products: { label: "Drops", requires: "drop:read" },
   content: { label: "Content", requires: "content-unlock:read" },
   artists: { label: "Artists", requires: "brand-artist-record:read" },
   organizations: { label: "Organizations", requires: "brand-artist-record:read" },

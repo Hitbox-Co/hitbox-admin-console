@@ -9,12 +9,52 @@ import type { AuthzMe, PermissionDomain } from "./types";
  * §0's "Sidebar item / Show when" table.
  */
 
-export type Scope = "own" | "organization" | "global";
+/**
+ * The catalog emits SIX scope tokens, not three.
+ *
+ * `public`, `masked` and `masked-partial` are real, seeded scopes —
+ * HITBOX_SUPPORT holds `buyer-profile:read:masked` and
+ * `collectible-instance:read:masked`, HITBOX_ORDER_MANAGER holds
+ * `buyer-profile:read:masked-partial`, BUYER_COLLECTOR holds
+ * `collectible-instance:read:public`. Verified against
+ * packages/access-control/src/domain/role-catalog.ts.
+ *
+ * This list used to be `own | organization | global`, and `parsePermission`
+ * dropped anything else — so Support appeared to hold no buyer-profile grant
+ * at all and lost the Buyer column it is entitled to (masked).
+ */
+export type Scope =
+  | "own"
+  | "organization"
+  | "public"
+  | "masked"
+  | "masked-partial"
+  | "global";
 
+/**
+ * Breadth, mirroring SCOPE_RANK in packages/skus/src/domain/sku-access.ts.
+ * The masking scopes reach EVERY record — they differ from `global` in how
+ * much of each record comes back, not in how many records do.
+ */
 const SCOPE_RANK: Record<Scope, number> = {
   own: 1,
   organization: 2,
-  global: 3,
+  public: 3,
+  masked: 4,
+  "masked-partial": 5,
+  global: 6,
+};
+
+/** How much of each reached record is visible, per scope. */
+export type Visibility = "FULL" | "PARTIAL" | "MASKED" | "PUBLIC";
+
+const SCOPE_VISIBILITY: Record<Scope, Visibility> = {
+  own: "FULL",
+  organization: "FULL",
+  global: "FULL",
+  "masked-partial": "PARTIAL",
+  masked: "MASKED",
+  public: "PUBLIC",
 };
 
 export interface ParsedPermission {
@@ -83,6 +123,44 @@ export class Permissions {
     return best;
   }
 
+  /** How much of each record the caller sees on this resource. */
+  visibility(resource: string): Visibility | null {
+    const scope = this.widestScope(resource);
+    return scope ? SCOPE_VISIBILITY[scope] : null;
+  }
+
+  /**
+   * May the caller reach the serialized-unit admin surface?
+   *
+   * Mirrors `buildSkuAccess()` in packages/skus/src/domain/sku-access.ts,
+   * which refuses two cases a plain capability check waves through:
+   *
+   *  - PUBLIC visibility — BUYER_COLLECTOR holds
+   *    `collectible-instance:read:public`, and PUBLIC has ALL breadth, so a
+   *    bare "has a collectible-instance grant" test admits every signed-in
+   *    buyer on the platform.
+   *  - OWN scope — an own-scoped grant is a collector looking at their own
+   *    shelf, not an operator.
+   *
+   * Getting this wrong in the UI means offering a screen that answers 403.
+   */
+  canReadUnits(): boolean {
+    if (!this.can("collectible-instance", "read")) return false;
+    const scope = this.widestScope("collectible-instance");
+    if (scope === null || scope === "own") return false;
+    return SCOPE_VISIBILITY[scope] !== "PUBLIC";
+  }
+
+  /** Minting units. Binding NFC tags additionally needs nfc-tag-claim:manage. */
+  canMintUnits(): boolean {
+    return this.canReadUnits() && this.can("collectible-instance", "manage");
+  }
+
+  /** Only this may put a physical tag UID into the authenticity table. */
+  canBindTags(): boolean {
+    return this.can("nfc-tag-claim", "manage");
+  }
+
   /** True when the caller holds no BUSINESS-domain grant worth a dashboard. */
   get isTechnicalOnly(): boolean {
     return !BUSINESS_RESOURCES.some((r) => this.hasResource(r));
@@ -141,6 +219,15 @@ export const NAV_ITEMS: NavItem[] = [
       p.canRead("reports-dashboards") &&
       (p.canRead("order") || p.canRead("buyer-profile")),
   },
+  // Commerce reads buyer -> order -> money -> aftermarket: the person, what
+  // they bought, what it was worth, what happened to it next.
+  {
+    href: "/users",
+    label: "Buyers",
+    icon: "Users",
+    group: "Commerce",
+    visible: (p) => p.canRead("buyer-profile"),
+  },
   {
     href: "/orders",
     label: "Orders",
@@ -163,50 +250,46 @@ export const NAV_ITEMS: NavItem[] = [
     visible: (p) => p.canRead("order"),
   },
   {
-    href: "/users",
-    label: "Buyers",
-    icon: "Users",
-    group: "Commerce",
-    visible: (p) => p.canRead("buyer-profile"),
-  },
-  {
+    // "Drop" is the word the backend uses throughout — DropStatus, drop:read,
+    // drop:manage. The route stays /products because that is what the guards,
+    // deep links and gating assertions key on.
     href: "/products",
-    label: "Products",
+    label: "Drops",
     icon: "Package",
     group: "Catalog",
     visible: (p) => p.canRead("drop"),
   },
   {
     href: "/release-approvals",
-    label: "Release approvals",
+    label: "Approvals",
     icon: "BadgeCheck",
     group: "Catalog",
     visible: (p) => p.canRead("release-approval"),
   },
   {
     href: "/supply",
-    label: "Supply",
+    label: "Vendors",
     icon: "Truck",
     group: "Catalog",
     visible: (p) => p.canRead("drop"),
   },
   {
     href: "/demand",
-    label: "Demand signals",
+    label: "Product demand",
     icon: "TrendingUp",
     group: "Catalog",
     visible: (p) => p.canRead("drop"),
   },
   {
     href: "/content",
-    label: "Content",
+    label: "Exclusive content",
     icon: "Sparkles",
     group: "Catalog",
     visible: (p) => p.canRead("content-unlock"),
   },
   {
     href: "/media",
-    label: "Media",
+    label: "Media management",
     icon: "Image",
     group: "Catalog",
     // Docs table is explicit: assets-documents-upload:READ, not "any grant".

@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { z } from "zod";
 import { toast } from "sonner";
 import { Plus, X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
@@ -12,6 +13,7 @@ import {
   useUserRoles,
 } from "@/lib/api/hooks";
 import { formatDate, humanize } from "@/lib/format";
+import { requiredKeys } from "@/lib/required-fields";
 import {
   Badge,
   Button,
@@ -23,6 +25,16 @@ import {
 import { EmptyState, ErrorState } from "@/components/ui/states";
 import type { Role, ScopeType, TeamMember } from "@/lib/types";
 import { ORGANIZATION_OPTIONS } from "./organizations";
+
+/**
+ * `roleId` is always required (POST body, admin-write-apis.md §7).
+ * `organizationId` is required only for an ORGANIZATION-scoped assignment —
+ * conditional on `effectiveScope`, so it is asserted directly at its Field
+ * rather than folded into this schema, the same way the create form handles
+ * its own checkbox-gated field.
+ */
+const assignmentSchema = z.object({ roleId: z.string().min(1) });
+const REQUIRED_ASSIGNMENT = requiredKeys(assignmentSchema);
 
 /**
  * Role assignment.
@@ -228,7 +240,11 @@ export function AssignmentDrawer({
                 Assign another role
               </h3>
 
-              <Field label="Role" error={errors.roleId}>
+              <Field
+                label="Role"
+                error={errors.roleId}
+                required={REQUIRED_ASSIGNMENT.has("roleId")}
+              >
                 <select
                   value={roleId}
                   onChange={(e) => {
@@ -272,7 +288,7 @@ export function AssignmentDrawer({
 
               {/* organizationId is required for ORGANIZATION and rejected otherwise. */}
               {effectiveScope === "ORGANIZATION" && selectedRole ? (
-                <Field label="Organization" error={errors.organizationId}>
+                <Field label="Organization" error={errors.organizationId} required>
                   <select
                     value={organizationId}
                     onChange={(e) => setOrganizationId(e.target.value)}

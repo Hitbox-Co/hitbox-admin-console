@@ -77,6 +77,28 @@ export type ErrorCode =
   | "RELEASES_ALREADY_PENDING"
   | "RELEASES_COMMENT_REQUIRED"
   | "RELEASES_COMPLIANCE_INCOMPLETE"
+  // product upload / gallery (product-upload-api.md §4)
+  | "BODY_REQUIRED"
+  | "PRODUCTS_NOT_FOUND"
+  | "PRODUCTS_CODE_TAKEN"
+  | "PRODUCTS_MEDIA_UNAVAILABLE"
+  | "PRODUCTS_IMAGE_ASSET_INVALID"
+  | "PRODUCTS_IMAGE_DUPLICATE"
+  | "PRODUCTS_IMAGE_NOT_FOUND"
+  // tag manifests (sku-api.md §3a)
+  | "SKUS_UNIT_NOT_IN_PRODUCT"
+  | "SKUS_TAG_ALREADY_BOUND"
+  | "SKUS_TAG_REPLACE_REFUSED"
+  // serialized units (sku-api.md §7)
+  | "SKUS_NOT_FOUND"
+  | "SKUS_PRODUCT_NOT_FOUND"
+  | "SKUS_SUPPLY_EXCEEDED"
+  | "SKUS_TAG_TAKEN"
+  | "SKUS_SERIAL_TAKEN"
+  | "SKUS_VARIANT_MISMATCH"
+  | "SKUS_FORBIDDEN"
+  | "PRODUCTS_MINTING_UNAVAILABLE"
+  | "PRODUCTS_SUPPLY_EXCEEDED"
   // role assignment
   | "ACCESS_CONTROL_ASSIGNMENT_EXISTS"
   | "ACCESS_CONTROL_MISSING_ORG_SCOPE"
@@ -874,8 +896,27 @@ export interface AdminProductDetail {
   artistId: string | null;
   organizationId: string | null;
   performance: ProductPerformance;
+  /**
+   * Size / colour / material, as `optionName`:`optionValue` pairs.
+   *
+   * READ-ONLY: `ProductVariant` is a real table and comes back on every
+   * product read, but the backend exposes no endpoint to create or edit one —
+   * the product DTO says so outright ("a drop being created right now has no
+   * variants yet"). A variant can therefore only be TARGETED when minting, not
+   * authored here.
+   */
+  variants: ProductVariantRef[];
   /** Paginated — a 10,000-unit edition is a legitimate drop. */
   skuUnits: Paginated<ProductSkuUnit>;
+}
+
+export interface ProductVariantRef {
+  id: string;
+  label: string;
+  /** e.g. "Size" */
+  optionName: string;
+  /** e.g. "L" */
+  optionValue: string;
 }
 
 export interface ProductInput {
@@ -897,6 +938,25 @@ export interface ProductInput {
   oddsDisclosureRef?: string | null;
   /** Create only — a 4-digit suffix; the server prefixes 8 random digits. */
   groupCode?: string;
+  /**
+   * Create only. Mints the edition in the SAME transaction as the product, so
+   * the request either produces a drop with N units or produces nothing.
+   * Omit the block entirely to create a catalog entry with no units.
+   *
+   * There is deliberately no `tagIds` here: binding a physical tag needs
+   * nfc-tag-claim:manage, which this route does not check. Mint tags through
+   * POST /admin/products/:id/skus instead.
+   */
+  skus?: { count: number; variantId?: string | null };
+  /**
+   * Create only. Attaches already-uploaded assets as the gallery, in the SAME
+   * transaction as the product and its units — so the request produces a
+   * complete drop (catalog row, units, gallery) or produces nothing.
+   *
+   * Asset ids are validated BEFORE the product is written, so one typo'd uuid
+   * fails the request without creating anything.
+   */
+  images?: ProductImageInput[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -970,3 +1030,249 @@ export interface ReleaseDecisionInput {
 
 /** GET /admin/media?archived=… — `live` is the default, deliberately. */
 export type ArchivedFilter = "live" | "archived" | "all";
+
+/* ------------------------------------------------------------------ */
+/* Serialized units — /admin/products/:id/skus and /admin/skus         */
+/* (sku-api.md)                                                         */
+/*                                                                      */
+/* CAREFUL: this is NOT the same shape as AdminProductDetail.skuUnits.  */
+/* That one is flat (ownerEmail, tagId at the top level) and comes from */
+/* the product detail endpoint. THIS one is nested, and each nested     */
+/* block is OMITTED ENTIRELY when the caller lacks the grant behind it. */
+/* Two endpoints, two shapes, both real — do not unify them.            */
+/* ------------------------------------------------------------------ */
+
+export type ClaimedStatus = "UNCLAIMED" | "CLAIMED" | "IN_TRANSFER" | "FLAGGED";
+
+export type TagLifecycleState =
+  | "UNPROVISIONED"
+  | "BOUND"
+  | "ACTIVE"
+  | "LOST"
+  | "REVOKED"
+  | "DISPUTED";
+
+/** Gated by `collectible-instance` at FULL visibility. */
+export interface SkuTrustBlock {
+  resaleBlocked: boolean;
+  resaleBlockedReason: string | null;
+  tamperStatus: string | null;
+}
+
+/** Gated by `nfc-tag-claim`. `lastTapCounter` is FULL-visibility only. */
+export interface SkuTagBlock {
+  tagId: string | null;
+  tagLifecycleState: TagLifecycleState | null;
+  lastTapCounter?: number | null;
+}
+
+/** Gated by `buyer-profile`. The email arrives already masked when the
+ *  caller's grant is `:masked` — the server does the masking, not the UI. */
+export interface SkuOwnerBlock {
+  ownerId: string | null;
+  email: string | null;
+  handle: string | null;
+}
+
+/** Gated by `nfc-tag-claim`. Money inside additionally needs payment-royalty. */
+export interface SkuProvenanceBlock {
+  claimCount: number;
+  ledgerEntries: number;
+  firstClaimedAt: string | null;
+  currentHolderSince: string | null;
+  currentHolderPaid?: { amount: string; currency: string };
+}
+
+/** Gated by `order`. Money inside additionally needs payment-royalty. */
+export interface SkuCommerceBlock {
+  allocatedOrderId: string | null;
+  allocatedOrderStatus: string | null;
+  reservationStatus: string | null;
+  amount?: string;
+  currency?: string;
+}
+
+/**
+ * The identity fields are always present; every optional property below is a
+ * whole block that is absent — not null, not {} — when the grant behind it is
+ * missing. Branch with `'owner' in sku`, never on a role name, and render an
+ * absent block as NOTHING: no label, no row, no empty state.
+ */
+export interface SkuUnit {
+  skuId: string;
+  skuCode: string;
+  serialNumber: number;
+  claimedStatus: ClaimedStatus;
+  variantId: string | null;
+  isActive: boolean;
+  archivedAt: string | null;
+  createdAt: string;
+  trust?: SkuTrustBlock;
+  tag?: SkuTagBlock;
+  owner?: SkuOwnerBlock;
+}
+
+/** GET /admin/skus/:skuId and /admin/skus/code/:skuCode. */
+export interface SkuUnitDetail extends SkuUnit {
+  product: {
+    productId: string;
+    groupCode: string;
+    name: string;
+    organizationId: string | null;
+    status: string;
+    totalSupply: number;
+  };
+  provenance?: SkuProvenanceBlock;
+  commerce?: SkuCommerceBlock;
+}
+
+/**
+ * A THIRD envelope shape. The dashboard uses `{page, limit, total, items}` at
+ * the top level and the aggregates use `{data}` — the SKU list uses
+ * `{data, meta}` with the paging under `meta`. Do not reuse Paginated<T> here.
+ */
+export interface SkuListResponse {
+  data: SkuUnit[];
+  meta: { page: number; limit: number; total: number; totalPages: number };
+}
+
+/**
+ * `byTagLifecycleState`, `tagged` and `untagged` are omitted entirely for a
+ * caller without `nfc-tag-claim`.
+ *
+ * `remainingSupply` is null when totalSupply is 0 — "no cap declared" is a
+ * different fact from "cap reached", and both would render as 0.
+ */
+export interface SkuSummary {
+  productId: string;
+  total: number;
+  byClaimedStatus: Record<string, number>;
+  byTagLifecycleState?: Record<string, number>;
+  tagged?: number;
+  untagged?: number;
+  remainingSupply: number | null;
+}
+
+export interface SkuListParams {
+  page?: number;
+  limit?: number;
+  claimedStatus?: string;
+  tagLifecycleState?: string;
+  variantId?: string;
+  tagged?: boolean;
+  resaleBlocked?: boolean;
+  includeArchived?: boolean;
+  /** Matches serial number, skuCode fragment, or a full tag UID. */
+  search?: string;
+  sort?: "serial_asc" | "serial_desc" | "newest";
+}
+
+export interface MintSkusInput {
+  /** 1–1000. Larger editions are minted in sequential batches. */
+  count: number;
+  variantId?: string | null;
+  /**
+   * Exactly `count` entries or omitted entirely — a shorter list would
+   * silently leave the tail of the batch untagged. Requires
+   * nfc-tag-claim:manage on top of the mint gate.
+   */
+  tagIds?: string[];
+  vendorId?: string | null;
+  provisioningBatchId?: string | null;
+  isActive?: boolean;
+}
+
+export interface MintResult {
+  productId?: string;
+  minted: number;
+  firstSerial: number;
+  lastSerial: number;
+  skuCodes: string[];
+  tagsBound: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* Product gallery — /admin/products/:id/images                        */
+/* (product-upload-api.md §3)                                           */
+/* ------------------------------------------------------------------ */
+
+export interface ProductImage {
+  imageId: string;
+  assetId: string;
+  /** null on a deployment with no bucket configured. */
+  url: string | null;
+  /** Always present, so a client can build its own URL if it must. */
+  storageRef: string;
+  position: number;
+  isPrimary: boolean;
+  altText: string | null;
+  createdAt: string;
+}
+
+/**
+ * `assetId` is the only required field: the FILE belongs to the media module,
+ * and these endpoints only arrange where it sits on the drop.
+ *
+ * Omit `position` entirely unless the operator reordered — arrival order is
+ * respected, and sending stale positions fights the server's normalisation.
+ */
+export interface ProductImageInput {
+  assetId: string;
+  position?: number;
+  isPrimary?: boolean;
+  altText?: string | null;
+}
+
+/**
+ * Every gallery mutation returns the WHOLE gallery, because the server
+ * normalises two invariants on every write and a response carrying only the
+ * touched row would leave the client guessing what cascaded:
+ *
+ *  1. Positions are made contiguous and 0-first (`0,5,5,11` -> `0,1,2,3`).
+ *  2. Exactly one image is primary — two claimants and the first wins; none
+ *     and position 0 gets it. Deleting the primary promotes the next.
+ *
+ * So: re-render from the response, never from local optimism.
+ */
+export type ProductGallery = ProductImage[];
+
+/* ------------------------------------------------------------------ */
+/* NFC tag manifests — sku-api.md §3a                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One row of a vendor manifest. Exactly one of `serialNumber` or `skuCode`
+ * per row — the CSV that arrives with a box of tags has one or the other.
+ */
+export interface TagBinding {
+  serialNumber?: number;
+  skuCode?: string;
+  /** Hex, any separator style; normalised and upper-cased server-side. */
+  tagId: string;
+}
+
+export interface BindTagsInput {
+  /** Up to 1000 per call. A 10,000-unit edition is ten calls. */
+  bindings: TagBinding[];
+  vendorId?: string | null;
+  provisioningBatchId?: string | null;
+  /** Allow overwriting a tag already bound. Default false. */
+  replace?: boolean;
+}
+
+export interface BindTagsResult {
+  productId: string;
+  bound: number;
+  items: {
+    skuCode: string;
+    serialNumber: number;
+    tagId: string;
+    replaced: boolean;
+  }[];
+}
+
+export interface RetagUnitInput {
+  tagId: string;
+  replace?: boolean;
+  provisioningBatchId?: string | null;
+}

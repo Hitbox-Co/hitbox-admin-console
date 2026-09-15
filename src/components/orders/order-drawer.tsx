@@ -133,7 +133,7 @@ export function OrderDrawer({
               <>
                 <Facts
                   rows={[
-                    ["Product", `${order.productName} · ${order.productCode}`],
+                    ["Drop", `${order.productName} · ${order.productCode}`],
                     ["Quantity", String(order.quantity)],
                     [
                       "Market",

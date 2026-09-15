@@ -85,7 +85,7 @@ function ResaleView() {
       <p className="flex items-start gap-2 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--text-3)]">
         <Info className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
         This endpoint returns a SKU id only — no product name and no seller
-        id. Look the SKU up in Products if you need the item&rsquo;s name.
+        id. Look the SKU up in Drops if you need the item&rsquo;s name.
       </p>
 
       {counts ? (

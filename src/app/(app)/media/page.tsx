@@ -11,8 +11,10 @@ import {
   Loader2,
   ServerCrash,
   Sheet,
+  Upload,
 } from "lucide-react";
 import { useArchiveAsset, useAssetUrl, useMedia } from "@/lib/api/hooks";
+import { UploadAssetDialog } from "@/components/media/upload-asset-dialog";
 import { ApiError } from "@/lib/api/client";
 import { formatBytes, formatDate, formatNumber, humanize } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
@@ -76,9 +78,10 @@ function MediaView() {
   const query = useMedia({ ...list.params, archived });
   const archive = useArchiveAsset();
   const [preview, setPreview] = React.useState<MediaAsset | null>(null);
+  const [uploading, setUploading] = React.useState(false);
 
   usePageChrome({
-    title: "Media",
+    title: "Media management",
     description: "The asset registry. Every upload is servable immediately.",
   });
 
@@ -236,7 +239,24 @@ function MediaView() {
               { value: "all" as ArchivedFilter, label: "All" },
             ]}
           />
-          {canManage ? <UploadNotice /> : null}
+          {/*
+            The two-step presigned upload is live now. The notice stays for
+            callers who cannot upload — a 503 STORAGE_UNAVAILABLE on a deploy
+            with no bucket is still a configuration fact worth naming.
+          */}
+          {canManage ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              className="ml-auto"
+              onClick={() => setUploading(true)}
+            >
+              <Upload className="h-3.5 w-3.5" />
+              Upload asset
+            </Button>
+          ) : (
+            <UploadNotice />
+          )}
         </FilterRow>
 
         {query.isLoading ? (
@@ -268,6 +288,8 @@ function MediaView() {
           </>
         )}
       </Panel>
+
+      {uploading ? <UploadAssetDialog onClose={() => setUploading(false)} /> : null}
 
       {preview ? (
         <PreviewDialog asset={preview} onClose={() => setPreview(null)} />

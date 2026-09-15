@@ -16,7 +16,7 @@ export default function DemandPage() {
   return (
     <PageGuard
       can={(p) => p.canRead("drop")}
-      what="Demand signals"
+      what="Product demand"
       requires="drop:read"
     >
       <DemandView />
@@ -34,14 +34,14 @@ function DemandView() {
   const rows = query.data ?? [];
 
   usePageChrome({
-    title: "Demand signals",
-    description: "Top 10 products by wishlist count — no pagination on this endpoint.",
+    title: "Product demand",
+    description: "Top 10 drops by wishlist count — no pagination on this endpoint.",
   });
 
   const columns: Column<DemandSignalRow>[] = [
     {
       key: "product",
-      header: "Product",
+      header: "Drop",
       cell: (r) => (
         <span className="text-[13px] font-medium text-[var(--text-1)]">{r.name}</span>
       ),
@@ -49,7 +49,7 @@ function DemandView() {
     {
       key: "follows",
       header: (
-        <Tooltip content="This counts follows of the product's ARTIST, not the product itself — that is what the underlying query does.">
+        <Tooltip content="This counts follows of the drop's ARTIST, not the drop itself — that is what the underlying query does.">
           <span className="inline-flex cursor-help items-center gap-1">
             Artist follows
             <Info className="h-3 w-3" />
@@ -124,7 +124,7 @@ function DemandView() {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Panel className="overflow-hidden lg:col-span-2">
-          <PanelHeader title="By product" />
+          <PanelHeader title="By drop" />
           <DataTable columns={columns} rows={rows} getRowKey={(r) => r.productId} />
         </Panel>
 

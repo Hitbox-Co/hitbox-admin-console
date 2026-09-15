@@ -51,13 +51,26 @@ const ROLE_GRANTS: Record<string, string[]> = {
     "reports-dashboards:read:global",
     "assets-documents-upload:manage:global",
   ],
+  // Copied verbatim from packages/access-control/src/domain/role-catalog.ts.
+  // These used to be hand-written approximations — Order Manager was listed
+  // with `buyer-profile:read:global` when the catalog actually grants
+  // `masked-partial`, and that substitution is precisely what stopped these
+  // assertions from catching a parser that dropped every masked scope.
   HITBOX_ORDER_MANAGER: [
     "order:manage:global",
     "order:refund:global",
-    "buyer-profile:read:global",
+    "buyer-profile:read:masked-partial",
+    "address:read:global",
     "nfc-tag-claim:read:global",
-    "reports-dashboards:read:global",
   ],
+  HITBOX_SUPPORT: [
+    "buyer-profile:read:masked",
+    "order:read:global",
+    "collectible-instance:read:masked",
+    "nfc-tag-claim:read:global",
+    "nfc-tag-claim:update:global",
+  ],
+  BUYER_COLLECTOR: ["collectible-instance:read:public"],
   HITBOX_FINANCE_ADMIN: [
     "payment-royalty:manage:global",
     "order:read:global",
@@ -191,6 +204,73 @@ function main() {
   check(
     "no media grant means no Media entry",
     hrefs(["order:read:global"]).includes("/media"),
+    false
+  );
+
+  console.log("\nThe catalog has six scopes, not three\n");
+  check(
+    "a masked scope parses instead of being dropped",
+    permsFor("HITBOX_SUPPORT").canRead("buyer-profile"),
+    true
+  );
+  check(
+    "masked-partial parses too",
+    permsFor("HITBOX_ORDER_MANAGER").canRead("buyer-profile"),
+    true
+  );
+  check(
+    "Order Manager therefore keeps its Buyers entry",
+    navFor("HITBOX_ORDER_MANAGER").includes("/users"),
+    true
+  );
+  check(
+    "masked reaches every record, so it outranks organization",
+    new Permissions(["buyer-profile:read:masked"]).can(
+      "buyer-profile",
+      "read",
+      "organization"
+    ),
+    true
+  );
+  check(
+    "visibility is reported distinctly from breadth",
+    permsFor("HITBOX_SUPPORT").visibility("buyer-profile"),
+    "MASKED"
+  );
+
+  console.log("\nSerialized units refuse the two cases a capability check waves through\n");
+  check(
+    "Support reaches units (masked)",
+    permsFor("HITBOX_SUPPORT").canReadUnits(),
+    true
+  );
+  check(
+    "a buyer holding :public is refused",
+    permsFor("BUYER_COLLECTOR").canReadUnits(),
+    false
+  );
+  check(
+    "an own-scoped collector is refused",
+    new Permissions(["collectible-instance:read:own"]).canReadUnits(),
+    false
+  );
+  check(
+    "update does not imply read, so Content Manager is refused",
+    new Permissions([
+      "collectible-instance:update:global",
+      "drop:read:global",
+    ]).canReadUnits(),
+    false
+  );
+  check(
+    "System Admin may mint and bind tags",
+    permsFor("HITBOX_SYSTEM_ADMIN").canMintUnits() &&
+      permsFor("HITBOX_SYSTEM_ADMIN").canBindTags(),
+    true
+  );
+  check(
+    "Support may not mint",
+    permsFor("HITBOX_SUPPORT").canMintUnits(),
     false
   );
 

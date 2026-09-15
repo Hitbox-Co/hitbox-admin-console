@@ -1,10 +1,11 @@
 "use client";
 
 import * as React from "react";
-import { Package, ShieldAlert } from "lucide-react";
+import { Package, Plus, ShieldAlert } from "lucide-react";
 import { usePrefetchProduct, useProducts } from "@/lib/api/hooks";
 import { formatDate, formatNumber, humanize } from "@/lib/format";
-import { usePageChrome } from "@/components/layout/app-shell";
+import { PageActions, usePageChrome } from "@/components/layout/app-shell";
+import { usePermissions } from "@/components/layout/authz-provider";
 import { PageGuard } from "@/components/layout/page-guard";
 import {
   Badge,
@@ -18,6 +19,7 @@ import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterRow, FilterSelect, useListState } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { ProductDrawer } from "@/components/products/product-drawer";
+import { ProductFormDrawer } from "@/components/products/product-form-drawer";
 import type { ProductRow } from "@/lib/types";
 
 const DROP_STATUSES = [
@@ -34,7 +36,7 @@ const DROP_STATUSES = [
 
 export default function ProductsPage() {
   return (
-    <PageGuard can={(p) => p.canRead("drop")} what="The catalog" requires="drop:read">
+    <PageGuard can={(p) => p.canRead("drop")} what="The drop catalog" requires="drop:read">
       <ProductsView />
     </PageGuard>
   );
@@ -44,10 +46,17 @@ function ProductsView() {
   const list = useListState<{ status?: string }>({ status: undefined });
   const query = useProducts(list.params);
   const [openId, setOpenId] = React.useState<string | null>(null);
+  const [creating, setCreating] = React.useState(false);
   const prefetchProduct = usePrefetchProduct();
+  const perms = usePermissions();
+
+  // Creating a drop needs drop:manage at GLOBAL scope (admin-write-apis.md
+  // §0), so an org-scoped Brand Admin browses the catalog without being
+  // offered a button that would 403.
+  const canCreate = perms.widestScope("drop") === "global" && perms.can("drop", "manage");
 
   usePageChrome({
-    title: "Products",
+    title: "Drops",
     description:
       "Every drop in your scope, across all nine lifecycle states. Open one for its units and sales.",
   });
@@ -62,7 +71,7 @@ function ProductsView() {
   const columns: Column<ProductRow>[] = [
     {
       key: "name",
-      header: "Product",
+      header: "Drop",
       cell: (r) => (
         <div className="min-w-0">
           <p className="truncate text-[13px] font-medium text-[var(--text-1)]">{r.name}</p>
@@ -128,7 +137,7 @@ function ProductsView() {
     },
     {
       key: "actions",
-      header: "",
+      header: "Action",
       cell: (r) => (
         <Button
           variant="ghost"
@@ -138,7 +147,7 @@ function ProductsView() {
             setOpenId(r.id);
           }}
         >
-          Open
+          Action
         </Button>
       ),
     },
@@ -146,6 +155,15 @@ function ProductsView() {
 
   return (
     <>
+      {canCreate ? (
+        <PageActions>
+          <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
+            <Plus className="h-3.5 w-3.5" />
+            Add drop
+          </Button>
+        </PageActions>
+      ) : null}
+
       <Panel className="overflow-hidden">
         <FilterRow onReset={list.reset} active={list.active}>
           <FilterSelect
@@ -175,11 +193,18 @@ function ProductsView() {
               emptyState={
                 <EmptyState
                   icon={Package}
-                  title="No products match these filters"
+                  title="No drops match these filters"
                   description={
                     list.active
                       ? "Try a different lifecycle state."
                       : "No drops exist in your scope yet."
+                  }
+                  action={
+                    canCreate && !list.active ? (
+                      <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
+                        Add the first drop
+                      </Button>
+                    ) : undefined
                   }
                 />
               }
@@ -194,6 +219,15 @@ function ProductsView() {
           </>
         )}
       </Panel>
+
+      {creating ? (
+        <ProductFormDrawer
+          onClose={() => setCreating(false)}
+          // Straight into the new drop, where Add SKUs lives — the workflow
+          // continues rather than dumping the operator back on the list.
+          onCreated={(id) => setOpenId(id)}
+        />
+      ) : null}
 
       {openId ? (
         <ProductDrawer productId={openId} onClose={() => setOpenId(null)} />

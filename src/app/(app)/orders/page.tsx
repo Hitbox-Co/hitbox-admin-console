@@ -65,7 +65,7 @@ function OrdersView() {
     const cols: Column<AdminOrderRow>[] = [
       {
         key: "product",
-        header: "Product",
+        header: "Drop",
         cell: (r) => (
           <div className="min-w-0">
             <p className="truncate text-[13px] font-medium text-[var(--text-1)]">
@@ -176,7 +176,7 @@ function OrdersView() {
           <SearchInput
             value={list.filters.productCode ?? ""}
             onChange={(v) => list.setFilter("productCode", v || undefined)}
-            placeholder="Product code"
+            placeholder="Drop code"
             className="w-[150px]"
           />
 

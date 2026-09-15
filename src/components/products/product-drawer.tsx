@@ -25,6 +25,8 @@ import { MoneyValue } from "@/components/ui/money";
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { ErrorState } from "@/components/ui/states";
 import { FilterSelect } from "@/components/ui/filters";
+import { ProductGalleryPanel } from "./product-gallery-panel";
+import { SkuUnitsPanel } from "./sku-units-panel";
 import type { ProductSkuUnit } from "@/lib/types";
 
 /**
@@ -61,6 +63,8 @@ export function ProductDrawer({
   // Writes need drop:manage platform-wide (admin-write-apis.md §0).
   const canWrite = perms.widestScope("drop") === "global" && perms.can("drop", "manage");
   const canSubmit = perms.can("release-approval", "manage");
+  // Mirrors buildSkuAccess: refuses PUBLIC visibility and OWN scope.
+  const canReadUnits = perms.canReadUnits();
 
   const columns: Column<ProductSkuUnit>[] = [
     {
@@ -138,7 +142,7 @@ export function ProductDrawer({
           <div className="flex items-start justify-between gap-3 border-b border-[var(--hairline)] px-4 py-3.5">
             <div className="min-w-0">
               <Dialog.Title className="truncate text-[14px] font-semibold tracking-[-0.01em] text-[var(--text-1)]">
-                {product ? product.name : "Product"}
+                {product ? product.name : "Drop"}
               </Dialog.Title>
               <Dialog.Description className="mt-0.5 flex flex-wrap items-center gap-2 text-[12px] text-[var(--text-3)]">
                 {product ? (
@@ -269,6 +273,24 @@ export function ProductDrawer({
                   </dl>
                 </Panel>
 
+                <ProductGalleryPanel productId={productId} />
+
+                {/*
+                  Two sources for the same idea, and the richer one is gated
+                  separately. /admin/products/:id/skus carries filters, a
+                  summary and per-grant blocks, but needs
+                  collectible-instance:read — HITBOX_CONTENT_MANAGER holds
+                  drop:read and only collectible-instance:UPDATE, which does
+                  not imply read, so it lands on the flat fallback below
+                  rather than on a 403.
+                */}
+                {canReadUnits ? (
+                  <SkuUnitsPanel
+                    productId={productId}
+                    totalSupply={product.totalSupply}
+                    variants={product.variants ?? []}
+                  />
+                ) : (
                 <Panel className="overflow-hidden">
                   <div className="flex flex-wrap items-center gap-3 border-b border-[var(--hairline)] px-3 py-2.5">
                     <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-3)]">
@@ -302,6 +324,7 @@ export function ProductDrawer({
                     }}
                   />
                 </Panel>
+                )}
               </>
             ) : null}
           </div>
@@ -355,14 +378,14 @@ export function ProductDrawer({
                       onClick={() =>
                         archive.mutate(productId, {
                           onSuccess: () => {
-                            toast.success("Product archived");
+                            toast.success("Drop archived");
                             onClose();
                           },
                           onError: (err) =>
                             toast.error(
                               err instanceof ApiError
                                 ? err.friendly
-                                : "Could not archive the product."
+                                : "Could not archive the drop."
                             ),
                         })
                       }

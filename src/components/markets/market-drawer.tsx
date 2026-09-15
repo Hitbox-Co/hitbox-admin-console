@@ -2,13 +2,30 @@
 
 import * as React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { z } from "zod";
 import { toast } from "sonner";
 import { AlertTriangle, X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
 import { useArchiveMarket, useCreateMarket, useUpdateMarket } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/format";
+import { requiredKeys } from "@/lib/required-fields";
 import { Badge, Button, Field, Input, Tooltip } from "@/components/ui/primitives";
 import type { AdminMarket, MarketCurrency } from "@/lib/types";
+
+/**
+ * Required-ness on CREATE, per admin-write-apis.md §1: `code`, `name` and
+ * `currency` are the fields the POST body actually needs; `isActive` /
+ * `isDefault` default server-side and `countryCodes` may be empty. On EDIT
+ * nothing is required — the docs say so explicitly ("all fields optional") —
+ * so this schema is deliberately not reused there.
+ */
+const createSchema = z.object({
+  code: z.string().min(1),
+  name: z.string().min(1),
+  currency: z.string().min(1),
+  countryCodes: z.string().optional(),
+});
+const REQUIRED_CREATE = requiredKeys(createSchema);
 
 /**
  * Create / edit a market.
@@ -152,7 +169,7 @@ export function MarketDrawer({
               <Dialog.Description className="mt-0.5 text-[12px] text-[var(--text-3)]">
                 {isEdit
                   ? "A market is the pricing region a buyer shops in."
-                  : "Products carry one price per market; orders record the market they were placed in."}
+                  : "Drops carry one price per market; orders record the market they were placed in."}
               </Dialog.Description>
             </div>
             <Dialog.Close asChild>
@@ -168,6 +185,9 @@ export function MarketDrawer({
                 label="Code"
                 htmlFor="market-code"
                 error={errors.code}
+                // Required on create only; disabled (and so unmarked) on edit
+                // — code is immutable once a market exists.
+                required={REQUIRED_CREATE.has("code") && !isEdit}
                 hint={
                   isEdit
                     ? "Immutable — saved reports reference it. Create a new market instead of renaming."
@@ -184,7 +204,12 @@ export function MarketDrawer({
                 />
               </Field>
 
-              <Field label="Name" htmlFor="market-name" error={errors.name}>
+              <Field
+                label="Name"
+                htmlFor="market-name"
+                error={errors.name}
+                required={REQUIRED_CREATE.has("name")}
+              >
                 <Input
                   id="market-name"
                   value={name}
@@ -194,7 +219,11 @@ export function MarketDrawer({
                 />
               </Field>
 
-              <Field label="Currency" htmlFor="market-currency">
+              <Field
+                label="Currency"
+                htmlFor="market-currency"
+                required={REQUIRED_CREATE.has("currency")}
+              >
                 <select
                   id="market-currency"
                   value={currency}

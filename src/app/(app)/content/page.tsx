@@ -35,7 +35,7 @@ function ContentView() {
   const query = useDashboard({ period });
 
   usePageChrome({
-    title: "Content",
+    title: "Exclusive content",
     description: "Exclusive bundles and how often they are unlocked.",
   });
 

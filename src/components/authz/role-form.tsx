@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
+import { z } from "zod";
 import { toast } from "sonner";
 import { ArrowLeft, Lock, Trash2 } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
@@ -12,6 +13,7 @@ import {
   useUpdateRole,
 } from "@/lib/api/hooks";
 import { humanize } from "@/lib/format";
+import { requiredKeys } from "@/lib/required-fields";
 import {
   Badge,
   Button,
@@ -26,6 +28,18 @@ import { PermissionTree } from "./permission-tree";
 import type { PermissionDomain, Role } from "@/lib/types";
 
 const ENTITY_GROUPS = ["hitbox", "brand_artist", "end_user"];
+
+/**
+ * `name` and `displayName` are the fields this form's own `validate()`
+ * actually refuses to submit without — `entityGroup`/`domain` are pickers
+ * that always carry a value, and `permissions` is validated separately (its
+ * own "select at least one" message) rather than through a text Field.
+ */
+const roleSchema = z.object({
+  name: z.string().trim().min(1),
+  displayName: z.string().trim().min(1),
+});
+const REQUIRED_ROLE = requiredKeys(roleSchema);
 
 export function RoleForm({ role }: { role?: Role }) {
   const router = useRouter();
@@ -145,6 +159,7 @@ export function RoleForm({ role }: { role?: Role }) {
               label="Name"
               htmlFor="role-name"
               error={errors.name}
+              required={REQUIRED_ROLE.has("name")}
               hint="SCREAMING_SNAKE_CASE. Cannot be changed after creation."
             >
               <Input
@@ -158,7 +173,12 @@ export function RoleForm({ role }: { role?: Role }) {
               />
             </Field>
 
-            <Field label="Display name" htmlFor="role-display" error={errors.displayName}>
+            <Field
+              label="Display name"
+              htmlFor="role-display"
+              error={errors.displayName}
+              required={REQUIRED_ROLE.has("displayName")}
+            >
               <Input
                 id="role-display"
                 value={displayName}

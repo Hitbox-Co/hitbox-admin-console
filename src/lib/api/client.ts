@@ -18,16 +18,65 @@ export class ApiError extends Error {
     this.details = details;
   }
 
-  /** Field-level errors from a 422, when the backend supplied them. */
+  /**
+   * Field-level errors from a 422, keyed by field path.
+   *
+   * `details` arrives in two shapes and this used to understand only one of
+   * them. The product endpoints send an ARRAY of issues:
+   *
+   *   [{ path: "totalSupply", message: "Expected number, received nan",
+   *      code: "invalid_type", receivedType: "string", received: "lots" }]
+   *
+   * The old implementation bailed on `Array.isArray(details)` and returned
+   * `{}`, so a 422 from Add product highlighted no field at all and the
+   * operator saw only the bare "Request validation failed".
+   *
+   * `received` is appended when present — product-upload-api.md's checklist
+   * says to read it before changing the payload by guesswork, which is only
+   * possible if the UI actually shows it.
+   */
   get fieldErrors(): Record<string, string> {
-    if (this.details && typeof this.details === "object" && !Array.isArray(this.details)) {
-      const out: Record<string, string> = {};
-      for (const [k, v] of Object.entries(this.details as Record<string, unknown>)) {
-        if (typeof v === "string") out[k] = v;
+    if (!this.details || typeof this.details !== "object") return {};
+    const out: Record<string, string> = {};
+
+    if (Array.isArray(this.details)) {
+      for (const raw of this.details) {
+        if (!raw || typeof raw !== "object") continue;
+        const issue = raw as {
+          path?: unknown;
+          message?: unknown;
+          received?: unknown;
+        };
+        // A nested path arrives as an array: ["skus", "count"].
+        const path = Array.isArray(issue.path)
+          ? issue.path.join(".")
+          : typeof issue.path === "string"
+            ? issue.path
+            : "";
+        if (typeof issue.message !== "string") continue;
+        const shown =
+          issue.received === undefined || issue.received === null
+            ? issue.message
+            : `${issue.message} (received ${JSON.stringify(issue.received)})`;
+        // The first issue on a field wins; later ones are usually cascades.
+        if (!(path in out)) out[path] = shown;
       }
       return out;
     }
-    return {};
+
+    for (const [k, v] of Object.entries(this.details as Record<string, unknown>)) {
+      if (typeof v === "string") out[k] = v;
+    }
+    return out;
+  }
+
+  /** A one-line summary of a 422, for a toast that would otherwise say nothing. */
+  get validationSummary(): string | null {
+    const fields = Object.entries(this.fieldErrors);
+    if (!fields.length) return null;
+    const [first, msg] = fields[0];
+    const rest = fields.length - 1;
+    return `${first ? `${first}: ` : ""}${msg}${rest ? ` (+${rest} more)` : ""}`;
   }
 
   /** A sentence to show the operator, chosen per documented error code. */
@@ -91,6 +140,54 @@ export class ApiError extends Error {
         return "An age-restricted drop cannot be approved until it carries a minimum age.";
       case "RELEASES_NOT_FOUND":
         return "Review not found — or outside your scope.";
+
+      /* Product upload and the image gallery. */
+      case "BODY_REQUIRED":
+        // Express 5 leaves req.body undefined when no parser matched. This
+        // used to surface as a 422 pointing at no field at all.
+        return "The request reached the server without a JSON body. This is a client bug, not a permissions problem.";
+      case "PRODUCTS_IMAGE_ASSET_INVALID":
+        // The server names EVERY bad asset at once, so a twelve-image gallery
+        // does not need twelve submissions to surface twelve problems.
+        return this.message;
+      case "PRODUCTS_IMAGE_DUPLICATE":
+        return "That image is already in this gallery.";
+      case "PRODUCTS_IMAGE_NOT_FOUND":
+        return "That image is not on this drop — it may already have been removed.";
+      case "PRODUCTS_MEDIA_UNAVAILABLE":
+        return "No storage bucket is configured on this deployment, so images cannot be attached.";
+      case "PRODUCTS_CODE_TAKEN":
+        return "Could not allocate a unique product code. Try again.";
+      case "PRODUCTS_NOT_FOUND":
+        return "Drop not found — or outside your scope.";
+
+      /* Tag manifests. The server names the offending rows; show them. */
+      case "SKUS_UNIT_NOT_IN_PRODUCT":
+      case "SKUS_TAG_ALREADY_BOUND":
+      case "SKUS_TAG_REPLACE_REFUSED":
+        return this.message;
+
+      /* Serialized units. */
+      case "SKUS_FORBIDDEN":
+        return "Reading serialized units needs an operator-grade collectible-instance grant.";
+      case "SKUS_SUPPLY_EXCEEDED":
+        return "That would mint past the edition's declared supply.";
+      case "PRODUCTS_SUPPLY_EXCEEDED":
+        return "The requested unit count is larger than the drop's own total supply.";
+      case "SKUS_TAG_TAKEN":
+        // The server names the conflicting tag and the unit holding it, which
+        // is the only way an operator can go and find it.
+        return this.message;
+      case "SKUS_SERIAL_TAKEN":
+        return "Serial numbers collided repeatedly — another operator is minting this edition. Try again.";
+      case "SKUS_VARIANT_MISMATCH":
+        return "That variant belongs to a different product.";
+      case "PRODUCTS_MINTING_UNAVAILABLE":
+        return "Minting is not wired up on this deployment.";
+      case "SKUS_NOT_FOUND":
+        return "Unit not found — or outside your scope.";
+      case "SKUS_PRODUCT_NOT_FOUND":
+        return "Drop not found — or outside your scope.";
 
       /* Role assignment. */
       case "ACCESS_CONTROL_ASSIGNMENT_EXISTS":
@@ -177,6 +274,8 @@ export const api = {
   post: <T>(path: string, body?: unknown, query?: Record<string, QueryValue>) =>
     request<T>("POST", path, { body, query }),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, { body }),
+  /** Wholesale replace — the product gallery's reorder path. */
+  put: <T>(path: string, body?: unknown) => request<T>("PUT", path, { body }),
   delete: <T>(path: string) => request<T>("DELETE", path),
 };
 

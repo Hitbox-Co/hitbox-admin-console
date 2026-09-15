@@ -16,7 +16,7 @@ export default function SupplyPage() {
   return (
     <PageGuard
       can={(p) => p.canRead("drop")}
-      what="Supply"
+      what="Vendors"
       /* Gated on drop:read, not an ops-infra permission — supply is
          business-domain data about products. */
       requires="drop:read"
@@ -31,7 +31,7 @@ function SupplyView() {
   const query = useSupply(list.params);
 
   usePageChrome({
-    title: "Supply",
+    title: "Vendors",
     description: "Intake batches by vendor.",
   });
 
