@@ -174,21 +174,34 @@ export function Badge({
   );
 }
 
-/** Maps the API's status vocabularies onto the semantic palette. */
+/**
+ * Maps the API's status vocabularies onto the semantic palette.
+ *
+ * The finance and payments modules add four more vocabularies to the ones
+ * already here — royalty entry, payout, refund and dispute status — and they
+ * do not agree with each other on what a word means. `ACCEPTED` on a dispute
+ * is a LOSS the platform chose not to fight; `PAID` on a payout is the good
+ * outcome; `REVERSED` is neither an error nor a success but a correction that
+ * happened. Each is placed on the tone an operator should read it as, not on
+ * the tone the word sounds like.
+ */
 export function toneForStatus(status: string): BadgeTone {
   const s = status.toUpperCase();
   if (
-    ["DELIVERED", "PAID", "SUCCESS", "CLEAN", "ACTIVE", "APPROVED", "RESOLVED", "CLAIMED", "CLEARED", "RECEIVED", "SUCCEEDED", "PROCESSED", "PUBLISHED"].includes(s)
+    ["DELIVERED", "PAID", "SUCCESS", "CLEAN", "ACTIVE", "APPROVED", "RESOLVED", "CLAIMED", "CLEARED", "RECEIVED", "SUCCEEDED", "PROCESSED", "PUBLISHED", "WON", "INTACT", "CREDIT"].includes(s)
   )
     return "positive";
   if (
-    ["PENDING", "PENDING_PAYMENT", "IN_REVIEW", "SUBMITTED", "INVESTIGATING", "AWAITING_RETURN", "PARTIAL", "IN_TRANSIT", "INITIATED", "PROCESSING", "REQUESTED"].includes(s)
+    ["PENDING", "PENDING_PAYMENT", "IN_REVIEW", "SUBMITTED", "INVESTIGATING", "AWAITING_RETURN", "PARTIAL", "IN_TRANSIT", "INITIATED", "PROCESSING", "REQUESTED", "NEEDS_REVIEW", "UNDER_REVIEW", "SCHEDULED", "PENDING_PAYOUT", "EVIDENCE_SUBMITTED"].includes(s)
   )
     return "warning";
-  if (["FAILED", "REJECTED", "CANCELLED", "INFECTED", "BLOCKED", "DISPUTED", "FLAGGED", "CRITICAL", "TAMPERED", "DELAYED"].includes(s))
+  if (
+    ["FAILED", "REJECTED", "CANCELLED", "INFECTED", "BLOCKED", "DISPUTED", "FLAGGED", "CRITICAL", "TAMPERED", "DELAYED", "LOST", "DAMAGED", "MISSING"].includes(s)
+  )
     return "danger";
-  if (["SHIPPED", "REFUNDED", "BOUND", "OPEN", "DRAFT", "WARNING"].includes(s)) return "info";
-  if (["ARCHIVED", "ENDED", "WITHDRAWN", "SKIPPED", "UNCLAIMED", "INACTIVE"].includes(s))
+  if (["SHIPPED", "REFUNDED", "BOUND", "OPEN", "DRAFT", "WARNING", "ACCRUED", "REVERSED", "DEBIT"].includes(s))
+    return "info";
+  if (["ARCHIVED", "ENDED", "WITHDRAWN", "SKIPPED", "UNCLAIMED", "INACTIVE", "ACCEPTED"].includes(s))
     return "neutral";
   return "neutral";
 }

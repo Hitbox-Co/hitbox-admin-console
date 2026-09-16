@@ -99,6 +99,30 @@ export type ErrorCode =
   | "SKUS_FORBIDDEN"
   | "PRODUCTS_MINTING_UNAVAILABLE"
   | "PRODUCTS_SUPPLY_EXCEEDED"
+  // finance — royalties, payouts, adjustments (docs/finance/api-reference.md)
+  | "FINANCE_NOT_FOUND"
+  | "FINANCE_FORBIDDEN"
+  | "FINANCE_NO_RULE"
+  | "FINANCE_NOT_ACCRUABLE"
+  | "FINANCE_INVALID_RULE"
+  | "FINANCE_IMMUTABLE"
+  | "FINANCE_INVALID_TRANSITION"
+  | "FINANCE_NOTHING_TO_PAY"
+  | "FINANCE_ALREADY_REVERSED"
+  // payments — charges, refunds, disputes, gateways
+  | "PAYMENTS_NOT_FOUND"
+  | "PAYMENTS_FORBIDDEN"
+  | "PAYMENTS_NOT_PURCHASABLE"
+  | "PAYMENTS_OUT_OF_STOCK"
+  | "PAYMENTS_NO_PRICE"
+  | "PAYMENTS_RESERVATION_EXPIRED"
+  | "PAYMENTS_INVALID_SIGNATURE"
+  | "PAYMENTS_NO_GATEWAY"
+  | "PAYMENTS_INVALID_TRANSITION"
+  | "PAYMENTS_NOT_REFUNDABLE"
+  | "PAYMENTS_RETURN_NOT_CONFIRMED"
+  | "PAYMENTS_AMOUNT_EXCEEDS_CAPTURE"
+  | "PAYMENTS_GATEWAY_UNAVAILABLE"
   // role assignment
   | "ACCESS_CONTROL_ASSIGNMENT_EXISTS"
   | "ACCESS_CONTROL_MISSING_ORG_SCOPE"
@@ -1275,4 +1299,524 @@ export interface RetagUnitInput {
   tagId: string;
   replace?: boolean;
   provisioningBatchId?: string | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Finance & payments (docs/finance/api-reference.md)                   */
+/*                                                                      */
+/* Two modules, one capability family. Shapes verified against          */
+/* packages/finance/src/dto/finance.dto.ts and                          */
+/* packages/payments/src/dto/payments.dto.ts rather than the prose, so  */
+/* nullable columns stay nullable here.                                 */
+/*                                                                      */
+/* THE RULE THAT GOVERNS THIS WHOLE SECTION: every monetary value is a  */
+/* STRING with two decimal places, in and out. A royalty of 11.25 sent  */
+/* as a JSON number is a float by the time it reaches the browser, and  */
+/* two of them added together give 22.499999999999996. Nothing in the   */
+/* console parses one except for chart geometry and sorting.            */
+/* ------------------------------------------------------------------ */
+
+/** The three currencies the finance DTOs accept. There is no FX rate. */
+export type FinanceCurrency = "USD" | "INR" | "GBP";
+
+export const FINANCE_CURRENCIES: FinanceCurrency[] = ["USD", "INR", "GBP"];
+
+/* ---- Royalty rules ------------------------------------------------ */
+
+export type RoyaltyBasis = "NET_PROFIT" | "GROSS_REVENUE";
+
+export type PayoutFrequency = "WEEKLY" | "BIWEEKLY" | "MONTHLY" | "QUARTERLY";
+
+/**
+ * One payee's share, as it is stored inside `splitConfig`.
+ *
+ * `splitsOf()` in packages/finance/src/domain/royalty-calculation.ts accepts
+ * `percentage` as either a number or a string and skips any entry naming no
+ * payee — so both are declared here rather than assumed away.
+ */
+export interface RoyaltySplit {
+  payeeType: "ARTIST" | "ORGANIZATION";
+  artistId?: string | null;
+  organizationId?: string | null;
+  percentage: string | number;
+}
+
+export interface RoyaltyRule {
+  id: string;
+  scope: {
+    organizationId: string | null;
+    artistId: string | null;
+    collectionId: string | null;
+    productId: string | null;
+  };
+  basis: RoyaltyBasis | string;
+  splitType: string;
+  /** Null on a multi-party deal — the shares live in `splitConfig`. */
+  percentage: string | null;
+  /** `{ splits: RoyaltySplit[] }`, or something else entirely. Parse defensively. */
+  splitConfig: unknown;
+  payoutThreshold: string | null;
+  payoutFrequency: PayoutFrequency | string | null;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  /** Server-computed: in force at the moment of the read. */
+  isInForce: boolean;
+  createdAt: string;
+}
+
+export interface RoyaltyRuleInput {
+  organizationId?: string;
+  artistId?: string;
+  collectionId?: string;
+  productId?: string;
+  basis: RoyaltyBasis;
+  splitType?: string;
+  percentage?: string;
+  splits?: RoyaltySplit[];
+  payoutThreshold?: string;
+  payoutFrequency?: PayoutFrequency;
+  effectiveFrom?: string;
+  effectiveTo?: string;
+}
+
+export interface CloseRuleInput {
+  effectiveTo: string;
+  reason: string;
+}
+
+/* ---- Royalty ledger ----------------------------------------------- */
+
+export type RoyaltyEntryStatus = "ACCRUED" | "PENDING_PAYOUT" | "PAID" | "REVERSED";
+
+export type RoyaltyEntryType = "ORIGINAL" | "ADJUSTMENT";
+
+export type ReversalReasonCode =
+  | "REFUND_REVERSAL"
+  | "DISPUTE_LOSS"
+  | "CALCULATION_ERROR"
+  | "RULE_CORRECTION"
+  | "MANUAL_CORRECTION";
+
+export interface RoyaltyPayee {
+  type: string;
+  artistId: string | null;
+  organizationId: string | null;
+  name: string | null;
+}
+
+export interface RoyaltyEntry {
+  id: string;
+  orderId: string;
+  ruleId: string;
+  skuId: string | null;
+  claimId: string | null;
+  payee: RoyaltyPayee;
+  /**
+   * The arithmetic that produced `amount`, carried on the row itself.
+   *
+   * This is the reliable way for an artist to see the terms applied to them:
+   * rule listing filters by ORGANIZATION ids, so a rule scoped to the artist
+   * alone is invisible to them even though it is the rule pricing their
+   * royalties (api-reference.md, "Endpoints an artist can reach").
+   */
+  calculation: {
+    basis: RoyaltyBasis | string;
+    percentage: string | null;
+    grossRevenue: string | null;
+    costOfGoods: string | null;
+    netProfit: string | null;
+  };
+  amount: string;
+  currency: string;
+  entryType: RoyaltyEntryType | string;
+  status: RoyaltyEntryStatus | string;
+  adjustsEntryId: string | null;
+  payoutId: string | null;
+  accruedAt: string;
+  paidAt: string | null;
+  createdAt: string;
+}
+
+/** The detail view adds every adjustment posted against the entry. */
+export interface RoyaltyEntryDetail extends RoyaltyEntry {
+  adjustments: Adjustment[];
+}
+
+export interface ReverseEntryInput {
+  reasonCode: ReversalReasonCode;
+  reason: string;
+}
+
+/* ---- Balances and payouts ----------------------------------------- */
+
+export interface RoyaltyBalance {
+  payeeType: string;
+  payeeId: string | null;
+  payeeName: string | null;
+  currency: string;
+  accrued: string;
+  pendingPayout: string;
+  paid: string;
+  reversed: string;
+  /** accrued + pendingPayout — owed but not yet in the bank. */
+  outstanding: string;
+  entryCount: number;
+  threshold: string;
+  thresholdMet: boolean;
+}
+
+export type PayoutStatus = "SCHEDULED" | "APPROVED" | "PAID" | "FAILED" | "CANCELLED";
+
+export interface Payout {
+  id: string;
+  payee: RoyaltyPayee;
+  amount: string;
+  currency: string;
+  entryCount: number;
+  thresholdApplied: string | null;
+  status: PayoutStatus | string;
+  scheduledAt: string;
+  approvedById: string | null;
+  approvedAt: string | null;
+  gatewayPayoutRef: string | null;
+  paidAt: string | null;
+  failureReason: string | null;
+}
+
+export interface SchedulePayoutsInput {
+  artistId?: string;
+  organizationId?: string;
+  currency?: FinanceCurrency;
+  /** Explicit, never a default — pays a balance that has not reached the bar. */
+  thresholdOverride?: string;
+  dryRun?: boolean;
+}
+
+/**
+ * `skipped` matters as much as `scheduled`: a payee below their threshold is
+ * reported with the reason rather than silently dropped, which is what makes
+ * a dry run worth reading.
+ */
+export interface SchedulePayoutsResult {
+  scheduled: Payout[];
+  skipped: { payeeId: string; reason: string }[];
+}
+
+export interface ExecutePayoutInput {
+  gatewayPayoutRef: string;
+  paidAt?: string;
+}
+
+/* ---- Adjustments and the platform ledger -------------------------- */
+
+export type AdjustmentTargetType =
+  | "ROYALTY_LEDGER_ENTRY"
+  | "FINANCE_LEDGER_ENTRY"
+  | "ORDER"
+  | "PAYMENT_TRANSACTION"
+  | "ROYALTY_PAYOUT";
+
+export type AdjustmentReasonCode =
+  | "REFUND_REVERSAL"
+  | "DISPUTE_LOSS"
+  | "CHARGEBACK_FEE"
+  | "CALCULATION_ERROR"
+  | "RULE_CORRECTION"
+  | "GOODWILL"
+  | "MANUAL_CORRECTION";
+
+export interface Adjustment {
+  id: string;
+  targetType: AdjustmentTargetType | string;
+  targetId: string;
+  orderId: string | null;
+  /** Signed: "-11.25" reverses, "5.00" posts a make-good. */
+  amountAdjustment: string;
+  currency: string;
+  reasonCode: AdjustmentReasonCode | string;
+  reason: string;
+  actorId: string | null;
+  refundRequestId: string | null;
+  disputeCaseId: string | null;
+  resultingEntryId: string | null;
+  createdAt: string;
+}
+
+export interface AdjustmentInput {
+  targetType: AdjustmentTargetType;
+  targetId: string;
+  orderId?: string;
+  amountAdjustment: string;
+  currency: FinanceCurrency;
+  reasonCode: AdjustmentReasonCode;
+  reason: string;
+  metadata?: Record<string, unknown>;
+}
+
+export type FinanceCategory =
+  | "SALE_REVENUE"
+  | "COST_OF_GOODS"
+  | "GATEWAY_FEE"
+  | "REFUND"
+  | "CHARGEBACK"
+  | "ROYALTY_EXPENSE"
+  | "ROYALTY_PAYOUT"
+  | "ADJUSTMENT";
+
+export type FinanceDirection = "CREDIT" | "DEBIT";
+
+export interface FinanceEntry {
+  id: string;
+  orderId: string | null;
+  entryType: string;
+  direction: FinanceDirection | string;
+  category: FinanceCategory | string;
+  amount: string;
+  currency: string;
+  costOfGoods: string | null;
+  gatewayFee: string | null;
+  description: string | null;
+  createdAt: string;
+}
+
+/**
+ * ONE ROW PER CURRENCY, never summed across them. There is no FX rate in this
+ * system and a "total revenue" that adds dollars to rupees is worse than no
+ * total at all.
+ */
+export interface RevenueSummaryRow {
+  currency: string;
+  grossRevenue: string;
+  costOfGoods: string;
+  gatewayFees: string;
+  refunds: string;
+  chargebacks: string;
+  royaltyExpense: string;
+  /** gross less cogs, fees, refunds, chargebacks and royalties. */
+  netMargin: string;
+  orderCount: number;
+}
+
+/* ---- Payment transactions ----------------------------------------- */
+
+export type PaymentStatus =
+  | "INITIATED"
+  | "PENDING"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "NEEDS_REVIEW";
+
+export interface PaymentTransaction {
+  id: string;
+  orderId: string;
+  gateway: string;
+  gatewayRef: string | null;
+  status: PaymentStatus | string;
+  amount: string;
+  currency: string;
+  /**
+   * NEEDS_REVIEW exists so a transaction with something wrong about it —
+   * settled but unfulfillable, mismatched amount — stops rather than failing.
+   */
+  needsReview: boolean;
+  reviewedById: string | null;
+  reviewedAt: string | null;
+  reviewNote: string | null;
+  failureReason: string | null;
+  settledAt: string | null;
+  createdAt: string;
+}
+
+/** The note is required: clearing a parked charge is a decision with a name on it. */
+export interface ReviewPaymentInput {
+  decision: "APPROVE" | "REJECT";
+  note: string;
+}
+
+/* ---- Refunds ------------------------------------------------------- */
+
+export type RefundStatus =
+  | "REQUESTED"
+  | "AWAITING_RETURN"
+  | "APPROVED"
+  | "PROCESSED"
+  | "REJECTED";
+
+export type RefundReasonCode =
+  | "DEFECTIVE_ITEM"
+  | "DEFECTIVE_TAG"
+  | "NOT_AS_DESCRIBED"
+  | "NOT_DELIVERED"
+  | "DUPLICATE_CHARGE"
+  | "BUYER_CHANGED_MIND"
+  | "FRAUDULENT_CHARGE"
+  | "OTHER";
+
+export type NfcTagCondition = "INTACT" | "DAMAGED" | "MISSING" | "TAMPERED";
+
+export interface Refund {
+  id: string;
+  orderId: string;
+  requestedById: string;
+  reason: string;
+  reasonCode: RefundReasonCode | string;
+  status: RefundStatus | string;
+  amount: string;
+  currency: string;
+  physicalReturnRequired: boolean;
+  physicalReturnConfirmedAt: string | null;
+  nfcTagCondition: NfcTagCondition | string | null;
+  approvedById: string | null;
+  approvedAt: string | null;
+  rejectionReason: string | null;
+  gatewayRefundId: string | null;
+  processedAt: string | null;
+  /** Filled in by `process`: ownership revoked, tag quarantined. */
+  claimRevokedAt: string | null;
+  resaleBlockedUntil: string | null;
+  createdAt: string;
+  /**
+   * The server's own state machine, precomputed. Drive the buttons from this
+   * and the UI can never offer a transition the API will refuse.
+   */
+  allowedTransitions: (RefundStatus | string)[];
+}
+
+export interface ConfirmReturnInput {
+  nfcTagCondition: NfcTagCondition;
+  note?: string;
+  receivedAt?: string;
+}
+
+export interface ApproveRefundInput {
+  note?: string;
+  /** Approving without the item back. Needs a reason — the API refuses otherwise. */
+  overridePhysicalReturn?: boolean;
+  overrideReason?: string;
+}
+
+export interface ProcessRefundInput {
+  /** Required on a deployment with no gateway adapter wired. */
+  gatewayRefundId?: string;
+  processedAt?: string;
+}
+
+/* ---- Disputes ------------------------------------------------------ */
+
+export type DisputeStatus =
+  | "OPEN"
+  | "UNDER_REVIEW"
+  | "EVIDENCE_SUBMITTED"
+  | "WON"
+  | "LOST"
+  | "ACCEPTED"
+  | "WITHDRAWN";
+
+export type DisputeReasonCode =
+  | "FRAUDULENT"
+  | "PRODUCT_NOT_RECEIVED"
+  | "PRODUCT_UNACCEPTABLE"
+  | "DUPLICATE"
+  | "SUBSCRIPTION_CANCELED"
+  | "CREDIT_NOT_PROCESSED"
+  | "UNRECOGNIZED"
+  | "OTHER";
+
+export type DisputeOutcome = "WON" | "LOST" | "ACCEPTED" | "WITHDRAWN";
+
+export interface Dispute {
+  id: string;
+  orderId: string;
+  paymentTransactionId: string | null;
+  gateway: string;
+  gatewayCaseRef: string | null;
+  reasonCode: DisputeReasonCode | string;
+  reason: string | null;
+  status: DisputeStatus | string;
+  amount: string;
+  currency: string;
+  feeAmount: string | null;
+  /** The countdown the dispute queue is ordered by. */
+  evidenceDueBy: string | null;
+  evidenceSubmittedAt: string | null;
+  resolvedById: string | null;
+  resolvedAt: string | null;
+  resolutionNote: string | null;
+  openedAt: string;
+}
+
+export interface OpenDisputeInput {
+  orderId: string;
+  paymentTransactionId?: string;
+  gateway?: "STRIPE";
+  gatewayCaseRef?: string;
+  reasonCode: DisputeReasonCode;
+  reason?: string;
+  amount: string;
+  currency: FinanceCurrency;
+  feeAmount?: string;
+  evidenceDueBy?: string;
+}
+
+export interface SubmitEvidenceInput {
+  evidence: Record<string, unknown>;
+  note?: string;
+}
+
+/** LOST/ACCEPTED book the chargeback and reverse the royalty. WON changes only status. */
+export interface ResolveDisputeInput {
+  outcome: DisputeOutcome;
+  resolutionNote: string;
+  feeAmount?: string;
+}
+
+/* ---- Gateway configuration ---------------------------------------- */
+
+export type GatewayScope = "PLATFORM" | "ORGANIZATION" | "DROP";
+
+export type GatewayConfigStatus = "ACTIVE" | "INACTIVE";
+
+export interface GatewayConfig {
+  id: string;
+  scope: GatewayScope | string;
+  organizationId: string | null;
+  gateway: string;
+  isDefault: boolean;
+  /** A POINTER into the secrets manager, never the credential itself. */
+  credentialsRef: string;
+  status: GatewayConfigStatus | string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GatewayConfigInput {
+  scope: GatewayScope;
+  organizationId?: string;
+  gateway: "STRIPE";
+  isDefault?: boolean;
+  credentialsRef: string;
+  status?: GatewayConfigStatus;
+}
+
+export interface GatewayConfigUpdate {
+  isDefault?: boolean;
+  status?: GatewayConfigStatus;
+  credentialsRef?: string;
+}
+
+/* ---- Webhook replay queue ------------------------------------------ */
+
+/**
+ * The stored raw `payload` is deliberately NOT returned by the API: it is the
+ * provider's JSON, it can carry cardholder detail, and this screen only needs
+ * to know what arrived and whether it processed.
+ */
+export interface WebhookEvent {
+  id: string;
+  provider: string;
+  eventType: string;
+  signatureVerified: boolean;
+  processedAt: string | null;
+  processingError: string | null;
+  receivedAt: string;
 }

@@ -11,7 +11,36 @@ import { ApiError, api, unwrap, type QueryValue } from "./client";
 import type {
   ActivityEvent,
   ActivityEventRaw,
+  Adjustment,
+  AdjustmentInput,
   AdminMarket,
+  ApproveRefundInput,
+  CloseRuleInput,
+  ConfirmReturnInput,
+  Dispute,
+  ExecutePayoutInput,
+  FinanceEntry,
+  GatewayConfig,
+  GatewayConfigInput,
+  GatewayConfigUpdate,
+  OpenDisputeInput,
+  PaymentTransaction,
+  Payout,
+  ProcessRefundInput,
+  Refund,
+  ResolveDisputeInput,
+  ReverseEntryInput,
+  ReviewPaymentInput,
+  RevenueSummaryRow,
+  RoyaltyBalance,
+  RoyaltyEntry,
+  RoyaltyEntryDetail,
+  RoyaltyRule,
+  RoyaltyRuleInput,
+  SchedulePayoutsInput,
+  SchedulePayoutsResult,
+  SubmitEvidenceInput,
+  WebhookEvent,
   AdminOrderDetail,
   AdminOrderRow,
   AdminProductDetail,
@@ -1192,5 +1221,804 @@ export function useRetagUnit(skuId: string) {
       qc.invalidateQueries({ queryKey: ["product-skus"] });
       qc.invalidateQueries({ queryKey: ["product-sku-summary"] });
     },
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Finance — royalties, payouts, adjustments, the platform ledger      */
+/*                                                                      */
+/* Mounted at /api/v1/admin/finance. Reads take `payment-royalty:read`  */
+/* and the SCOPE of that grant narrows the rows server-side — there is  */
+/* no query parameter that widens it, and passing an `artistId` that    */
+/* belongs to someone else returns an empty page rather than a 403,     */
+/* because the filter is applied on top of the scope clause and never   */
+/* in place of it.                                                      */
+/*                                                                      */
+/* Every write is `payment-royalty:manage:global`, mounted with the     */
+/* guard's `globalOnly: true`, so an organization-scoped manage grant   */
+/* is refused. Gate the call sites on Permissions.canManageFinance()    */
+/* rather than letting the 403 be the discovery.                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Money moved, so everything that counts money is stale.
+ *
+ * Deliberately broad. A payout execution touches balances, entries, payouts
+ * and the platform ledger; a processed refund additionally moves the order,
+ * the transaction and the royalty that was reversed. Enumerating the exact
+ * subset per mutation would be a second, driftable copy of the backend's
+ * posting rules — and the cost of being wrong is an operator reading a stale
+ * balance and paying twice.
+ */
+function invalidateMoney(qc: ReturnType<typeof useQueryClient>) {
+  for (const key of [
+    "finance-balances",
+    "royalty-entries",
+    "royalty-entry",
+    "payouts",
+    "payout",
+    "finance-ledger",
+    "revenue-summary",
+    "adjustments",
+    "payment-transactions",
+    "payment-transaction",
+    "refunds",
+    "refund",
+    "disputes",
+    "dispute",
+    "dashboard",
+    "activity",
+  ]) {
+    qc.invalidateQueries({ queryKey: [key] });
+  }
+}
+
+/* ---- Royalty rules ------------------------------------------------- */
+
+export interface RoyaltyRuleFilters {
+  organizationId?: string;
+  artistId?: string;
+  collectionId?: string;
+  productId?: string;
+  /** ISO instant — only rules in force at that moment. Defaults to all. */
+  activeAt?: string;
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * Rule listing filters by the caller's ORGANIZATION ids, not by artist.
+ *
+ * Worth knowing rather than discovering: an artist sees rules carrying their
+ * organization's id, and a rule scoped to the artist alone
+ * (`organizationId: null`) is not listed — even though it is the rule pricing
+ * their royalties. `useRoyaltyEntry` carries `basis` and `percentage` on the
+ * row itself and is the reliable way for them to see the terms applied.
+ */
+export function useRoyaltyRules(params: RoyaltyRuleFilters) {
+  const query = useQuery({
+    ...baseOptions,
+    queryKey: ["royalty-rules", params],
+    queryFn: () =>
+      api.get<Paginated<RoyaltyRule>>("admin/finance/royalty-rules", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+  useNextPageWarm<Paginated<RoyaltyRule>>(
+    "royalty-rules",
+    "admin/finance/royalty-rules",
+    params,
+    query.data
+  );
+  return query;
+}
+
+export function useRoyaltyRule(ruleId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["royalty-rule", ruleId],
+    enabled: !!ruleId,
+    queryFn: () =>
+      api
+        .get<unknown>(`admin/finance/royalty-rules/${ruleId}`)
+        .then(unwrap<RoyaltyRule>),
+  });
+}
+
+function invalidateRules(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["royalty-rules"] });
+  qc.invalidateQueries({ queryKey: ["royalty-rule"] });
+}
+
+/**
+ * Splits totalling more than 100% are refused with FINANCE_INVALID_RULE — the
+ * cost of that typo is money paid out that the platform never took in, so the
+ * form checks it too rather than waiting for the round trip.
+ */
+export function useCreateRoyaltyRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: RoyaltyRuleInput) =>
+      api.post<unknown>("admin/finance/royalty-rules", payload).then(unwrap<RoyaltyRule>),
+    onSuccess: () => invalidateRules(qc),
+  });
+}
+
+/**
+ * Closing is the ONLY edit a rule accepts — there is no PUT, PATCH or DELETE,
+ * and that is the design. A rule that has priced an accrual cannot change its
+ * terms retroactively without making every entry posted under it
+ * unexplainable. A renegotiation is: close the old rule, create the successor.
+ */
+export function useCloseRoyaltyRule(ruleId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: CloseRuleInput) =>
+      api
+        .post<unknown>(`admin/finance/royalty-rules/${ruleId}/close`, payload)
+        .then(unwrap<RoyaltyRule>),
+    onSuccess: (rule) => {
+      qc.setQueryData(["royalty-rule", ruleId], rule);
+      invalidateRules(qc);
+    },
+  });
+}
+
+/* ---- Royalty ledger ------------------------------------------------ */
+
+export interface RoyaltyEntryFilters {
+  status?: string;
+  entryType?: string;
+  currency?: string;
+  artistId?: string;
+  organizationId?: string;
+  orderId?: string;
+  payoutId?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  limit?: number;
+}
+
+export function useRoyaltyEntries(params: RoyaltyEntryFilters) {
+  const query = useQuery({
+    ...baseOptions,
+    queryKey: ["royalty-entries", params],
+    queryFn: () =>
+      api.get<Paginated<RoyaltyEntry>>("admin/finance/royalty-entries", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+  useNextPageWarm<Paginated<RoyaltyEntry>>(
+    "royalty-entries",
+    "admin/finance/royalty-entries",
+    params,
+    query.data
+  );
+  return query;
+}
+
+/** One entry plus every adjustment posted against it — the traceability view. */
+export const royaltyEntryOptions = (entryId: string) => ({
+  ...baseOptions,
+  queryKey: ["royalty-entry", entryId] as const,
+  queryFn: () =>
+    api
+      .get<unknown>(`admin/finance/royalty-entries/${entryId}`)
+      .then(unwrap<RoyaltyEntryDetail>),
+});
+
+export function useRoyaltyEntry(entryId: string | undefined) {
+  return useQuery({
+    ...royaltyEntryOptions(entryId ?? ""),
+    enabled: !!entryId,
+  });
+}
+
+export function usePrefetchRoyaltyEntry() {
+  const qc = useQueryClient();
+  return React.useCallback(
+    (entryId: string) => void qc.prefetchQuery(royaltyEntryOptions(entryId)),
+    [qc]
+  );
+}
+
+/**
+ * Reverses ONE entry, not the order's.
+ *
+ * So a mis-calculated split on a three-way deal can be fixed without
+ * cancelling the other two payees' earnings. The route takes
+ * `payment-royalty:manage:global` and the controller then requires
+ * `payment-royalty:override:global` on top — see Permissions.canOverrideRoyalties.
+ */
+export function useReverseRoyaltyEntry(entryId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: ReverseEntryInput) =>
+      api
+        .post<unknown>(`admin/finance/royalty-entries/${entryId}/reverse`, payload)
+        .then(unwrap<RoyaltyEntry>),
+    onSuccess: () => invalidateMoney(qc),
+  });
+}
+
+/* ---- Balances ------------------------------------------------------ */
+
+/**
+ * What each payee has earned, is owed and has been paid, per currency — and
+ * whether they have reached their payout threshold. No pagination: this is a
+ * grouped aggregate, not a list.
+ */
+export function useRoyaltyBalances(currency?: string) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["finance-balances", currency ?? "all"],
+    queryFn: () =>
+      api
+        .get<unknown>("admin/finance/balances", { currency })
+        .then(unwrap<RoyaltyBalance[]>),
+  });
+}
+
+/* ---- Payouts ------------------------------------------------------- */
+
+export interface PayoutFilters {
+  status?: string;
+  artistId?: string;
+  organizationId?: string;
+  currency?: string;
+  page?: number;
+  limit?: number;
+}
+
+export function usePayouts(params: PayoutFilters) {
+  const query = useQuery({
+    ...baseOptions,
+    queryKey: ["payouts", params],
+    queryFn: () => api.get<Paginated<Payout>>("admin/finance/payouts", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+  useNextPageWarm<Paginated<Payout>>("payouts", "admin/finance/payouts", params, query.data);
+  return query;
+}
+
+export const payoutOptions = (payoutId: string) => ({
+  ...baseOptions,
+  queryKey: ["payout", payoutId] as const,
+  queryFn: () =>
+    api.get<unknown>(`admin/finance/payouts/${payoutId}`).then(unwrap<Payout>),
+});
+
+export function usePayout(payoutId: string | undefined) {
+  return useQuery({ ...payoutOptions(payoutId ?? ""), enabled: !!payoutId });
+}
+
+export function usePrefetchPayout() {
+  const qc = useQueryClient();
+  return React.useCallback(
+    (payoutId: string) => void qc.prefetchQuery(payoutOptions(payoutId)),
+    [qc]
+  );
+}
+
+/**
+ * The threshold sweep. With no body it runs every payee at their own rule's
+ * threshold.
+ *
+ * `dryRun` writes nothing and returns the same shape, which is the only safe
+ * way to answer "what would this pay out" — so the dialog previews first and
+ * the operator commits the batch they actually saw. A dry run is NOT
+ * invalidated into the cache, because nothing changed.
+ */
+export function useSchedulePayouts() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: SchedulePayoutsInput) =>
+      api
+        .post<unknown>("admin/finance/payouts/schedule", payload)
+        .then(unwrap<SchedulePayoutsResult>),
+    onSuccess: (_result, vars) => {
+      if (!vars.dryRun) invalidateMoney(qc);
+    },
+  });
+}
+
+/**
+ * Approve, execute and fail are three separate calls because they are three
+ * separate acts with different actors and different failure modes.
+ *
+ * `fail` releases the entries back to ACCRUED so the next sweep picks them up
+ * — a failed payout must not strand an artist's earnings in a state no job
+ * looks at.
+ */
+function usePayoutAction<TVars>(
+  payoutId: string,
+  action: "approve" | "execute" | "fail"
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: TVars) =>
+      api
+        .post<unknown>(`admin/finance/payouts/${payoutId}/${action}`, payload)
+        .then(unwrap<Payout>),
+    onSuccess: (payout) => {
+      qc.setQueryData(["payout", payoutId], payout);
+      invalidateMoney(qc);
+    },
+  });
+}
+
+export function useApprovePayout(payoutId: string) {
+  return usePayoutAction<{ note?: string }>(payoutId, "approve");
+}
+
+export function useExecutePayout(payoutId: string) {
+  return usePayoutAction<ExecutePayoutInput>(payoutId, "execute");
+}
+
+export function useFailPayout(payoutId: string) {
+  return usePayoutAction<{ failureReason: string }>(payoutId, "fail");
+}
+
+/* ---- Adjustments --------------------------------------------------- */
+
+export interface AdjustmentFilters {
+  targetType?: string;
+  targetId?: string;
+  orderId?: string;
+  reasonCode?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  limit?: number;
+}
+
+export function useAdjustments(params: AdjustmentFilters) {
+  const query = useQuery({
+    ...baseOptions,
+    queryKey: ["adjustments", params],
+    queryFn: () =>
+      api.get<Paginated<Adjustment>>("admin/finance/adjustments", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+  useNextPageWarm<Paginated<Adjustment>>(
+    "adjustments",
+    "admin/finance/adjustments",
+    params,
+    query.data
+  );
+  return query;
+}
+
+/**
+ * Writes the adjustment and a matching platform-ledger line, and does NOT
+ * touch whatever it corrects. That is the immutability principle in one
+ * endpoint: the original posting stays exactly as it was, and the correction
+ * sits beside it with a name and a reason on it.
+ */
+export function useCreateAdjustment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: AdjustmentInput) =>
+      api.post<unknown>("admin/finance/adjustments", payload).then(unwrap<Adjustment>),
+    onSuccess: () => invalidateMoney(qc),
+  });
+}
+
+/* ---- Platform ledger and revenue --------------------------------- */
+
+export interface FinanceLedgerFilters {
+  orderId?: string;
+  category?: string;
+  direction?: string;
+  currency?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  limit?: number;
+}
+
+export function useFinanceLedger(params: FinanceLedgerFilters) {
+  const query = useQuery({
+    ...baseOptions,
+    queryKey: ["finance-ledger", params],
+    queryFn: () => api.get<Paginated<FinanceEntry>>("admin/finance/ledger", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+  useNextPageWarm<Paginated<FinanceEntry>>(
+    "finance-ledger",
+    "admin/finance/ledger",
+    params,
+    query.data
+  );
+  return query;
+}
+
+export interface RevenueSummaryFilters {
+  organizationId?: string;
+  currency?: string;
+  from?: string;
+  to?: string;
+}
+
+/**
+ * ONE ROW PER CURRENCY, never summed across them — there is no FX rate in
+ * this system, and a "total revenue" that adds dollars to rupees is worse
+ * than no total. The screen renders one card per row and offers no grand
+ * total, on purpose.
+ */
+export function useRevenueSummary(params: RevenueSummaryFilters = {}) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["revenue-summary", params],
+    queryFn: () =>
+      api
+        .get<unknown>("admin/finance/revenue-summary", { ...params })
+        .then(unwrap<RevenueSummaryRow[]>),
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Payments — charges, refunds, disputes, gateways, webhook replay     */
+/*                                                                      */
+/* Mounted at /api/v1/admin/payments. Same read capability as finance;  */
+/* the scope filter for OWN is `order.buyerId = caller`, so an artist    */
+/* reaching these routes sees THEIR OWN PURCHASES as a customer, not    */
+/* the sales of their drops. Disputes return nothing at all for them.   */
+/* ------------------------------------------------------------------ */
+
+export interface PaymentTransactionFilters {
+  orderId?: string;
+  status?: string;
+  gateway?: string;
+  needsReview?: string;
+  currency?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  limit?: number;
+}
+
+export function usePaymentTransactions(params: PaymentTransactionFilters) {
+  const query = useQuery({
+    ...baseOptions,
+    queryKey: ["payment-transactions", params],
+    queryFn: () =>
+      api.get<Paginated<PaymentTransaction>>("admin/payments/transactions", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+  useNextPageWarm<Paginated<PaymentTransaction>>(
+    "payment-transactions",
+    "admin/payments/transactions",
+    params,
+    query.data
+  );
+  return query;
+}
+
+export const paymentTransactionOptions = (paymentId: string) => ({
+  ...baseOptions,
+  queryKey: ["payment-transaction", paymentId] as const,
+  queryFn: () =>
+    api
+      .get<unknown>(`admin/payments/transactions/${paymentId}`)
+      .then(unwrap<PaymentTransaction>),
+});
+
+export function usePaymentTransaction(paymentId: string | undefined) {
+  return useQuery({
+    ...paymentTransactionOptions(paymentId ?? ""),
+    enabled: !!paymentId,
+  });
+}
+
+export function usePrefetchPaymentTransaction() {
+  const qc = useQueryClient();
+  return React.useCallback(
+    (paymentId: string) => void qc.prefetchQuery(paymentTransactionOptions(paymentId)),
+    [qc]
+  );
+}
+
+/**
+ * Clears (or refuses) a NEEDS_REVIEW charge.
+ *
+ * The note is required by the DTO — a transaction stops rather than failing so
+ * that clearing it is a decision with a name on it, and a decision with no
+ * stated reason is not one anybody can audit later.
+ */
+export function useReviewPayment(paymentId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: ReviewPaymentInput) =>
+      api
+        .post<unknown>(`admin/payments/transactions/${paymentId}/review`, payload)
+        .then(unwrap<PaymentTransaction>),
+    onSuccess: (payment) => {
+      qc.setQueryData(["payment-transaction", paymentId], payment);
+      invalidateMoney(qc);
+    },
+  });
+}
+
+/* ---- Refund workflow ----------------------------------------------- */
+
+export interface RefundFilters {
+  orderId?: string;
+  status?: string;
+  reasonCode?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  limit?: number;
+}
+
+export function useRefunds(params: RefundFilters) {
+  const query = useQuery({
+    ...baseOptions,
+    queryKey: ["refunds", params],
+    queryFn: () => api.get<Paginated<Refund>>("admin/payments/refunds", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+  useNextPageWarm<Paginated<Refund>>(
+    "refunds",
+    "admin/payments/refunds",
+    params,
+    query.data
+  );
+  return query;
+}
+
+export const refundOptions = (refundId: string) => ({
+  ...baseOptions,
+  queryKey: ["refund", refundId] as const,
+  queryFn: () =>
+    api.get<unknown>(`admin/payments/refunds/${refundId}`).then(unwrap<Refund>),
+});
+
+export function useRefund(refundId: string | undefined) {
+  return useQuery({ ...refundOptions(refundId ?? ""), enabled: !!refundId });
+}
+
+export function usePrefetchRefund() {
+  const qc = useQueryClient();
+  return React.useCallback(
+    (refundId: string) => void qc.prefetchQuery(refundOptions(refundId)),
+    [qc]
+  );
+}
+
+/**
+ * The four workflow steps, which are D4-35 steps 2, 3 and 4–6.
+ *
+ * All four are guarded by `order:refund:global`, and every handler
+ * additionally calls `buildPaymentAccess`, which refuses a caller holding no
+ * `payment-royalty` grant. Permissions.canWorkRefunds() checks both — see the
+ * comment there for why checking only the first offers buttons that 403.
+ *
+ * The response is the refreshed refund with a new `allowedTransitions`, so it
+ * is written straight into the cache and the drawer's buttons update without
+ * a second fetch.
+ */
+function useRefundAction<TVars>(
+  refundId: string,
+  action: "confirm-return" | "approve" | "reject" | "process"
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: TVars) =>
+      api
+        .post<unknown>(`admin/payments/refunds/${refundId}/${action}`, payload)
+        .then(unwrap<Refund>),
+    onSuccess: (refund) => {
+      qc.setQueryData(["refund", refundId], refund);
+      invalidateMoney(qc);
+      // A processed refund moves the order itself, not just the money.
+      qc.invalidateQueries({ queryKey: ["admin-orders"] });
+      qc.invalidateQueries({ queryKey: ["admin-order"] });
+      qc.invalidateQueries({ queryKey: ["orders"] });
+    },
+  });
+}
+
+export function useConfirmReturn(refundId: string) {
+  return useRefundAction<ConfirmReturnInput>(refundId, "confirm-return");
+}
+
+export function useApproveRefund(refundId: string) {
+  return useRefundAction<ApproveRefundInput>(refundId, "approve");
+}
+
+export function useRejectRefund(refundId: string) {
+  return useRefundAction<{ rejectionReason: string }>(refundId, "reject");
+}
+
+/**
+ * Steps 4–6 in one call: ownership revoked, tag quarantined, money sent, the
+ * royalty reversed. Returns the refund with `claimRevokedAt` and
+ * `resaleBlockedUntil` filled in.
+ */
+export function useProcessRefund(refundId: string) {
+  return useRefundAction<ProcessRefundInput>(refundId, "process");
+}
+
+/* ---- Disputes ------------------------------------------------------ */
+
+export interface DisputeFilters {
+  orderId?: string;
+  status?: string;
+  /** ISO instant — cases whose evidence deadline falls before it. */
+  dueBefore?: string;
+  page?: number;
+  limit?: number;
+}
+
+/** Ordered by soonest evidence deadline server-side: the queue is a countdown. */
+export function useDisputes(params: DisputeFilters) {
+  const query = useQuery({
+    ...baseOptions,
+    queryKey: ["disputes", params],
+    queryFn: () => api.get<Paginated<Dispute>>("admin/payments/disputes", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+  useNextPageWarm<Paginated<Dispute>>(
+    "disputes",
+    "admin/payments/disputes",
+    params,
+    query.data
+  );
+  return query;
+}
+
+export const disputeOptions = (disputeId: string) => ({
+  ...baseOptions,
+  queryKey: ["dispute", disputeId] as const,
+  queryFn: () =>
+    api.get<unknown>(`admin/payments/disputes/${disputeId}`).then(unwrap<Dispute>),
+});
+
+export function useDispute(disputeId: string | undefined) {
+  return useQuery({ ...disputeOptions(disputeId ?? ""), enabled: !!disputeId });
+}
+
+export function usePrefetchDispute() {
+  const qc = useQueryClient();
+  return React.useCallback(
+    (disputeId: string) => void qc.prefetchQuery(disputeOptions(disputeId)),
+    [qc]
+  );
+}
+
+export function useOpenDispute() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: OpenDisputeInput) =>
+      api.post<unknown>("admin/payments/disputes", payload).then(unwrap<Dispute>),
+    onSuccess: () => invalidateMoney(qc),
+  });
+}
+
+export function useSubmitEvidence(disputeId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: SubmitEvidenceInput) =>
+      api
+        .post<unknown>(`admin/payments/disputes/${disputeId}/evidence`, payload)
+        .then(unwrap<Dispute>),
+    onSuccess: (dispute) => {
+      qc.setQueryData(["dispute", disputeId], dispute);
+      qc.invalidateQueries({ queryKey: ["disputes"] });
+    },
+  });
+}
+
+/**
+ * LOST and ACCEPTED book the chargeback and its fee, mark the order refunded
+ * and reverse the royalty — so resolving a dispute moves considerably more
+ * than the case's own row. WON changes nothing but the status.
+ */
+export function useResolveDispute(disputeId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: ResolveDisputeInput) =>
+      api
+        .post<unknown>(`admin/payments/disputes/${disputeId}/resolve`, payload)
+        .then(unwrap<Dispute>),
+    onSuccess: (dispute) => {
+      qc.setQueryData(["dispute", disputeId], dispute);
+      invalidateMoney(qc);
+      qc.invalidateQueries({ queryKey: ["admin-orders"] });
+      qc.invalidateQueries({ queryKey: ["orders"] });
+    },
+  });
+}
+
+/* ---- Gateway configuration ----------------------------------------- */
+
+export interface GatewayConfigFilters {
+  scope?: string;
+  organizationId?: string;
+  status?: string;
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * `payment-royalty:configure:global` — System Admin only, and the narrowest
+ * capability in the catalog, because changing `credentialsRef` is
+ * functionally changing the bank account the platform's money lands in.
+ *
+ * Note this is the only read in either module gated on `configure` rather
+ * than `read`: holding `payment-royalty:read:global` is not enough to LIST
+ * gateway configurations, so the tab is hidden without it.
+ */
+export function useGatewayConfigs(params: GatewayConfigFilters, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["gateway-configs", params],
+    enabled,
+    queryFn: () =>
+      api.get<Paginated<GatewayConfig>>("admin/payments/gateway-configs", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useCreateGatewayConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: GatewayConfigInput) =>
+      api
+        .post<unknown>("admin/payments/gateway-configs", payload)
+        .then(unwrap<GatewayConfig>),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["gateway-configs"] }),
+  });
+}
+
+export function useUpdateGatewayConfig(configId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: GatewayConfigUpdate) =>
+      api
+        .patch<unknown>(`admin/payments/gateway-configs/${configId}`, payload)
+        .then(unwrap<GatewayConfig>),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["gateway-configs"] }),
+  });
+}
+
+/**
+ * A `credentialsRef` that looks like an actual key is refused by the DTO with
+ * a message saying where it belongs. Checked here too so the operator finds
+ * out before the secret has been sent anywhere — including into this app's
+ * own request log.
+ */
+export function looksLikeCredential(value: string): boolean {
+  return /^(sk_|rk_|pk_live|whsec_)/.test(value.trim());
+}
+
+/* ---- Webhook replay queue ------------------------------------------ */
+
+export interface WebhookEventFilters {
+  provider?: string;
+  eventType?: string;
+  /** "true" narrows to deliveries that failed processing. */
+  unprocessedOnly?: string;
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * `payment-royalty:manage:global` — this is the replay queue, not a read
+ * screen, which is why it takes the write capability.
+ *
+ * The stored raw `payload` is not returned and there is no endpoint that
+ * returns it: it is the provider's JSON, it can contain cardholder detail,
+ * and this screen only needs to know what arrived and whether it processed.
+ */
+export function useWebhookEvents(params: WebhookEventFilters, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["webhook-events", params],
+    enabled,
+    queryFn: () =>
+      api.get<Paginated<WebhookEvent>>("admin/payments/webhook-events", { ...params }),
+    placeholderData: (prev) => prev,
   });
 }

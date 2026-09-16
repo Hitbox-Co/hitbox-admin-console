@@ -113,6 +113,27 @@ export class Permissions {
     return this.can(resource, "read");
   }
 
+  /**
+   * An EXACT action at `minScope` or wider — `manage` subsumes nothing here.
+   *
+   * `can()` is the right check almost everywhere, because most services treat
+   * a manage grant as covering the reads. The finance and payments modules do
+   * NOT: `buildFinanceAccess` resolves `canOverride` from a literal
+   * `payment-royalty:override` key and `buildPaymentAccess` resolves
+   * `canConfigure` and `canRefund` the same way, so a System Admin holds all
+   * three because the catalog grants all three — not because manage implies
+   * them. Using `can()` for those would offer a Reverse button to a role the
+   * controller then refuses, which is the exact failure mode a client-side
+   * permission check exists to prevent.
+   */
+  hasAction(resource: string, action: string, minScope: Scope = "own"): boolean {
+    const need = SCOPE_RANK[minScope];
+    return this.parsed.some(
+      (p) =>
+        p.resource === resource && p.action === action && SCOPE_RANK[p.scope] >= need
+    );
+  }
+
   /** The widest scope held on a resource, or null when none is held. */
   widestScope(resource: string): Scope | null {
     let best: Scope | null = null;
@@ -159,6 +180,77 @@ export class Permissions {
   /** Only this may put a physical tag UID into the authenticity table. */
   canBindTags(): boolean {
     return this.can("nfc-tag-claim", "manage");
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Finance & payments                                                */
+  /*                                                                   */
+  /* Mirrors buildFinanceAccess() and buildPaymentAccess() so the UI    */
+  /* offers exactly the actions the controllers will allow. Every       */
+  /* write below is GLOBAL-only in the catalog and the route guards     */
+  /* pass `globalOnly: true`, so an organization-scoped manage grant is */
+  /* refused — which is why these ask for "global", not "own".          */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * How wide the caller's money reads are, or null when they hold no
+   * `payment-royalty` grant at all (a 403, not an empty list).
+   *
+   * Only own/organization/global are meaningful here: the finance and
+   * payments SCOPE_RANK tables know those three words and nothing else.
+   */
+  financeScope(): "own" | "organization" | "global" | null {
+    const scope = this.widestScope("payment-royalty");
+    if (scope === "own" || scope === "organization" || scope === "global") return scope;
+    return null;
+  }
+
+  /** Reading rules, entries, balances, payouts, transactions, refunds. */
+  canReadFinance(): boolean {
+    return this.financeScope() !== null;
+  }
+
+  /** Rules, payouts, adjustments, payment review, dispute actions. */
+  canManageFinance(): boolean {
+    return this.hasAction("payment-royalty", "manage", "global");
+  }
+
+  /**
+   * Reversing a posting the calculation says is owed.
+   *
+   * The route takes `manage` and the controller then re-checks `override` —
+   * two different powers, and this is the one that cancels money someone is
+   * owed. See FinanceController.reverseEntry.
+   */
+  canOverrideRoyalties(): boolean {
+    return this.hasAction("payment-royalty", "override", "global");
+  }
+
+  /**
+   * Gateway configuration — the narrowest capability in the catalog, because
+   * changing `credentialsRef` is functionally changing the bank account the
+   * platform's money lands in.
+   */
+  canConfigureGateways(): boolean {
+    return this.hasAction("payment-royalty", "configure", "global");
+  }
+
+  /**
+   * The refund workflow: confirm-return, approve, reject, process.
+   *
+   * BOTH conditions are real. The four routes are guarded by
+   * `order:refund:global` — but every handler first calls
+   * `buildPaymentAccess(principal)`, which throws 403 when the caller holds
+   * no `payment-royalty` grant at all. HITBOX_ORDER_MANAGER holds
+   * `order:refund:global` and no payment-royalty grant, so it is refused on
+   * the workflow it was named for (api-reference.md, "Two rough edges" §1).
+   *
+   * Checking only the refund capability here would offer that role four
+   * buttons, every one of which answers 403. Checking both means the screen
+   * says why instead.
+   */
+  canWorkRefunds(): boolean {
+    return this.hasAction("order", "refund", "global") && this.canReadFinance();
   }
 
   /** True when the caller holds no BUSINESS-domain grant worth a dashboard. */
@@ -241,6 +333,15 @@ export const NAV_ITEMS: NavItem[] = [
     icon: "Banknote",
     group: "Commerce",
     visible: (p) => p.canRead("payment-royalty"),
+  },
+  {
+    // Charges, refunds and disputes — the money moving, as opposed to the
+    // royalties it produces. Same capability family, same 403 without it.
+    href: "/payments",
+    label: "Payments",
+    icon: "CreditCard",
+    group: "Commerce",
+    visible: (p) => p.canReadFinance(),
   },
   {
     href: "/resale",

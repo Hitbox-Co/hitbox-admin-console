@@ -189,6 +189,56 @@ export class ApiError extends Error {
       case "SKUS_PRODUCT_NOT_FOUND":
         return "Drop not found — or outside your scope.";
 
+      /* Finance — the refusals that protect money already posted. */
+      case "FINANCE_FORBIDDEN":
+        return "Your role does not reach payment and royalty records.";
+      case "FINANCE_NOT_FOUND":
+        return "Not found — or outside the scope your grant covers.";
+      case "FINANCE_NO_RULE":
+        return "No royalty rule covers this drop at the time of the accrual.";
+      case "FINANCE_NOT_ACCRUABLE":
+        return "The order behind this claim is missing, unpaid, or already reversed.";
+      case "FINANCE_INVALID_RULE":
+        // The server names the offending total, which is the whole point of
+        // the refusal — a 105% split is a typo worth seeing in full.
+        return this.message;
+      case "FINANCE_IMMUTABLE":
+        return "Ledger rows are never edited. Post an adjustment against this instead.";
+      case "FINANCE_INVALID_TRANSITION":
+        return "That step is not available from where this record is now.";
+      case "FINANCE_NOTHING_TO_PAY":
+        return "Nothing was eligible — every balance is below its threshold or already batched.";
+      case "FINANCE_ALREADY_REVERSED":
+        return "This entry has already been reversed. Reversing twice would double-credit it.";
+
+      /* Payments. */
+      case "PAYMENTS_FORBIDDEN":
+        return "Your role does not reach payment records.";
+      case "PAYMENTS_NOT_FOUND":
+        return "Not found — or outside the scope your grant covers.";
+      case "PAYMENTS_INVALID_TRANSITION":
+        return "That step is not available from this refund's current status.";
+      case "PAYMENTS_RETURN_NOT_CONFIRMED":
+        return "Money does not move before the item is back. Confirm the physical return first, or approve with an explicit override and a reason.";
+      case "PAYMENTS_NOT_REFUNDABLE":
+        return "This order cannot be refunded in its current state.";
+      case "PAYMENTS_AMOUNT_EXCEEDS_CAPTURE":
+        return "The refund is larger than what was actually captured on this order.";
+      case "PAYMENTS_GATEWAY_UNAVAILABLE":
+        return "No payment provider adapter is wired on this deployment. Supply the provider's own refund id to record it manually.";
+      case "PAYMENTS_NO_GATEWAY":
+        return "No active gateway configuration covers this scope.";
+      case "PAYMENTS_NO_PRICE":
+        return "No price is configured for that market.";
+      case "PAYMENTS_OUT_OF_STOCK":
+        return "No unreserved unit is left to hold.";
+      case "PAYMENTS_NOT_PURCHASABLE":
+        return "This drop is not buyable — it is inactive, sold out, or age-gated.";
+      case "PAYMENTS_RESERVATION_EXPIRED":
+        return "The stock hold expired before payment settled.";
+      case "PAYMENTS_INVALID_SIGNATURE":
+        return "The provider's webhook signature could not be verified.";
+
       /* Role assignment. */
       case "ACCESS_CONTROL_ASSIGNMENT_EXISTS":
         return "This person already holds that role at that scope.";

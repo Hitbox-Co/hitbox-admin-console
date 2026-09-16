@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import {
   BadgeCheck,
   Banknote,
+  CreditCard,
   Globe,
   Image as ImageIcon,
   KeyRound,
@@ -34,6 +35,7 @@ const ICONS: Record<string, LucideIcon> = {
   Globe,
   ShoppingCart,
   Banknote,
+  CreditCard,
   Repeat,
   Users,
   Package,
