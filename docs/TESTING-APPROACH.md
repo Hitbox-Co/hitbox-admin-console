@@ -46,13 +46,15 @@ neither can an operator if the UI gets it wrong.
 e2e/
   support/
     routes.ts            the route manifest: path, <h1>, permission, nav group
+    api-surface.ts       all 88 endpoints + the 9 operator workflows
+    json.ts              narrowing helpers for unknown payloads (never `any`)
     session.ts           is there a captured session, and is it usable
     authed.ts            authenticated test base + open() / settled()
     a11y.ts              axe, scoped to WCAG A/AA
     capture-session.ts   the interactive login (npm run e2e:login)
   specs/
-    public/              runs with no session — 109 tests
-    authed/              runs with a captured session — 210 tests
+    public/              runs with no session — 214 tests
+    authed/              runs with a captured session — 258 tests
 playwright.config.ts
 ```
 
@@ -60,8 +62,8 @@ playwright.config.ts
 
 | | Needs | Runs when | Purpose |
 |---|---|---|---|
-| `public-*` | a dev server | every commit, CI | The session wall, the API ingress, both auth screens, a11y, responsive, hygiene |
-| `authed-*` | a captured Clerk session | before a release, after touching the shell or authz | Every console screen, permission gating, resilience |
+| `public-*` | a dev server | every commit, CI | The session wall, the whole API surface, both auth screens, a11y, responsive, hygiene |
+| `authed-*` | a captured Clerk session | before a release, after touching the shell or authz | Every console screen, the API contract, permission gating, the nine workflows, resilience |
 
 The split is structural, and it is what keeps CI honest. The public project has no
 external prerequisite beyond `next dev`, so it can gate every merge. The authenticated
@@ -124,6 +126,33 @@ token, JWT, secret key or backend origin appears in anything the client can read
 request uses `maxRedirects: 0`, because following the redirect is exactly what hides the
 refusal — and that detail is how finding #1 in the report was found.
 
+### Layer 2b — the whole API surface (105 tests, no session)
+
+`e2e/support/api-surface.ts` transcribes every endpoint `src/lib/api/hooks.ts` calls —
+88 of them — and classifies each one:
+
+| Kind | Meaning | Called for real? |
+|---|---|---|
+| `read` | Safe against any environment | Yes |
+| `write` | Creates or edits a record | Refusals only |
+| `act` | Advances a state machine — money moves, ownership changes | Refusals only |
+
+That classification is the safety rail the rest of the suite is built on. A test can look
+up an endpoint and know whether calling it is a question or a decision.
+
+Unauthenticated, all 88 are asserted to be refused — exhaustively, not by sample. This is
+the broadest security claim the suite makes and the only one that can be made completely
+without a session. Every request uses `maxRedirects: 0`; following the redirect lands on
+the sign-in page with a 200, and a suite that accepted that would report a wide-open API
+as secure. That exact mistake is how finding #1 surfaced.
+
+Authenticated, 20 contract tests cover what the console reads directly and would break
+quietly without: the envelope, the omission rule checked at the payload (a `null` section
+collapses "not permitted" into "no data"), `pageSize` honoured, filters genuinely
+narrowing, masked scopes not returning unmasked emails, and no write acting on an empty
+body. It is not a re-test of the backend's business logic — that is the backend's suite to
+own.
+
 ### Layer 3 — screens and flows (authenticated)
 
 Every route is opened **cold, by URL**, not clicked into. Deep-linking is the path that
@@ -170,6 +199,30 @@ The dashboard tests read the live payload, compute which sections are absent, an
 the UI treated absence as absence: the withheld panel names the right count, and no
 hidden figure is rendered as `0`. This is the one rule in the console where being
 confidently wrong costs the most, because the figure in question is money.
+
+### Layer 5b — the workflows, read-only and negative
+
+Nine operator state machines: refund, payout run, release approval, order lifecycle,
+royalty reversal, role lifecycle, role assignment, dispute, minting.
+
+They are testable without mutating anything because of how the console is built: the
+server returns `allowedTransitions` on each record, and the drawer's buttons are derived
+from it. So the assertions are about agreement, not about outcomes:
+
+- the buttons **offered** equal the transitions **allowed**, checked in both directions —
+  an offered-but-disallowed button 403s; an allowed-but-unoffered one strands the operator;
+- an illegal transition asked of the server directly is refused — the refusal *is* the
+  assertion, so nothing changes;
+- preconditions are collected before submission: a rejection reason, an override reason,
+  a confirmation on the two steps that cannot be undone;
+- the permission traps hold — `reverse` needs an exact `payment-royalty:override:global`,
+  not `manage`; payout actions need `manage:global` specifically;
+- the ledger offers no edit affordance, because ledger rows are immutable.
+
+Success paths are written and gated behind `E2E_ALLOW_WRITES=1`. They do not run without
+it, and the skip message says exactly what each one would do. `process` on a refund
+revokes ownership, quarantines the tag, sends money and reverses a royalty in one call;
+`execute` on a payout pays real people. Those are not test fixtures.
 
 ### Layer 6 — resilience, by interception
 
@@ -226,7 +279,17 @@ shared and these writes are not reversible from the UI — approving a refund mo
 The write path needs a seeded, disposable environment, and until one exists the honest
 position is a read-only suite plus this paragraph. What *is* covered is everything up to
 the commit point: the form renders, the button is correctly enabled or disabled, the
-validation refuses, the permission gate holds.
+validation refuses, the permission gate holds, and the server refuses the illegal step.
+
+The success paths are nonetheless *written*, behind `E2E_ALLOW_WRITES=1`:
+
+```bash
+E2E_ALLOW_WRITES=1 HITBOX_API_URL=<seeded backend> npm run e2e:authed
+```
+
+Point that at a disposable environment and the workflow suite completes. Point it at
+production and it will do exactly what it says on the tin, which is why it is off by
+default and why every gated test's skip message names the consequence.
 
 **Account creation.** No test signs up. The sign-up spec stops where a real identity
 would be submitted.

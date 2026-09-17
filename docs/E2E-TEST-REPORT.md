@@ -4,33 +4,38 @@
 **Branch:** `develop` @ `0378d01`
 **Tooling:** Playwright 1.63.0, axe-core 4.13, Chrome 153 (system channel)
 **Target:** `http://localhost:3000` (`next dev`, Next 16.3.4) against the live backend at `HITBOX_API_URL`
-**Suite:** 109 executed, 210 written-but-not-run (see [Coverage not exercised](#coverage-not-exercised))
+**Suite:** 214 executed, 258 written-but-not-run (see [Coverage not exercised](#coverage-not-exercised))
 
 ---
 
 ## Result
 
 ```
-109 passed      0 failed      210 skipped      92s
+214 passed      0 failed      258 skipped      98s
 ```
 
 | Project | Executed | Passed | Failed |
 |---|---|---|---|
-| `public-chromium` (desktop, no session) | 89 | 89 | 0 |
+| `public-chromium` (desktop, no session) | 194 | 194 | 0 |
 | `public-mobile` (Pixel 7, no session) | 20 | 20 | 0 |
 | `authed-chromium` | 0 | — | — |
 | `authed-mobile` | 0 | — | — |
 
-Six of the 109 passes are **expected failures** (`test.fail`) — tests that assert the
+Six of the 214 passes are **expected failures** (`test.fail`) — tests that assert the
 *intended* behaviour, are currently red, and are recorded as defects below. They pass
 the run because failing is what they are declared to do. If any of them starts
 succeeding, Playwright reports it as an unexpected pass, which is the prompt to delete
 the annotation. Nothing here is skipped to make a number look better.
 
 **The whole authenticated console is untested.** Everything behind `/` needs a Clerk
-session, none was available for this run, and the 210 specs written for it skipped with
+session, none was available for this run, and the 258 specs written for it skipped with
 a reason rather than failing as if the app were broken. One interactive sign-in unlocks
 all of them — see [How to run the rest](#how-to-run-the-rest).
+
+The API layer is the exception, and it is the most valuable thing this run did prove:
+**all 88 endpoints the console calls were confirmed to refuse an anonymous caller**,
+including every endpoint that moves money, changes ownership or edits access control.
+That is an exhaustive check, not a sample.
 
 ---
 
@@ -45,6 +50,7 @@ all of them — see [How to run the rest](#how-to-run-the-rest).
 | Accessibility | 11 | WCAG 2.1 A/AA via axe on all three public screens, keyboard operability, focus visibility, one `h1` per page, `lang` present |
 | Responsive | 10 (×2 projects) | No horizontal overflow at 375/768/1280/1920, primary action above the fold on a phone, touch-target floor on the one input that gates the whole console |
 | Runtime hygiene | 8 | No console errors, no hydration mismatch, no 4xx on first-party assets, DOM-ready inside 10s |
+| **API surface** | **105** | Every one of the 88 endpoints in `src/lib/api/hooks.ts` refuses an anonymous caller; writes are stopped before any upstream call; query parameters survive the rewrite; no collection leaks a row; path traversal and unknown paths refused |
 
 ---
 
@@ -192,9 +198,72 @@ lose the same hour.
 
 ---
 
+## The API surface
+
+All 88 endpoints the console calls, transcribed from `src/lib/api/hooks.ts` into
+`e2e/support/api-surface.ts` and classified:
+
+| Kind | Count | What it means | Called for real? |
+|---|---|---|---|
+| `read` | 49 | Safe against any environment | Yes |
+| `write` | 16 | Creates or edits a record | Refusals only |
+| `act` | 23 | Advances a state machine — money moves, ownership changes | Refusals only |
+
+**105 tests passed against the live ingress**, unauthenticated. Every endpoint — including
+`POST /admin/finance/payouts/:id/execute`, `POST /admin/payments/refunds/:id/process`,
+`DELETE /admin/authz/roles/:id` — was confirmed refused at the door, with no upstream
+call made and no token, JWT or backend origin in any response. Also confirmed: query
+parameters survive the ingress rewrite (losing them would silently return page one of
+everything, which looks like data rather than a bug), unknown paths and path traversal
+are refused, and no collection endpoint returns a row to an anonymous caller.
+
+A further 20 authenticated contract tests are written and waiting: envelope shape, the
+omission rule checked at the payload level (a `null` section would collapse "not
+permitted" into "no data"), `pageSize` actually honoured, filters actually narrowing,
+masked scopes not returning unmasked emails, and no write acting on an empty body.
+
+---
+
+## The workflows
+
+Nine operator state machines, catalogued in `e2e/support/api-surface.ts` with what each
+one costs to get wrong:
+
+| Workflow | Screen | Steps | Why it matters |
+|---|---|---|---|
+| Refund | `/payments/refunds` | confirm-return → approve \| reject → process | `process` revokes ownership, quarantines the tag, sends money and reverses the royalty — four irreversible effects in one call |
+| Payout run | `/finance/payouts` | schedule → approve → execute \| fail | `execute` pays real money to real people |
+| Release approval | `/release-approvals` | submit → amend → decision | An approval is a compliance record attributed to whoever made it |
+| Order lifecycle | `/orders` | 7 statuses | `PAID` and `REFUNDED` are written by the payment pipelines, never by hand |
+| Royalty reversal | `/finance/royalties` | reverse | Cancels money someone is owed; reversing twice double-credits it |
+| Role lifecycle | `/roles` | create → edit → deactivate → delete | Seeded roles are immutable; an assigned role cannot be deleted |
+| Role assignment | `/team` | assign → revoke | A person holds a *list* of roles — assignment is additive |
+| Dispute | `/payments/disputes` | open → evidence → resolve | Evidence has a deadline the platform loses the case by missing |
+| Minting | `/products` | mint → bind-tag | Minting past supply corrupts the authenticity record |
+
+**28 tests, read-only and negative** — per your call. Nothing advances a workflow. What
+they assert is everything up to the commit point, which is where the console's own bugs
+live:
+
+- the buttons **offered** equal the transitions the server **allows** (`allowedTransitions`
+  comes back on every record), checked in both directions — an offered-but-disallowed
+  button 403s, an allowed-but-unoffered one strands the operator;
+- an illegal transition is refused by the server when asked directly — which changes
+  nothing by definition, since the refusal *is* the assertion;
+- preconditions are collected before submission: a rejection reason, an override reason,
+  a confirmation on `process` and `execute`;
+- the two permission traps hold — `reverse` needs an exact `payment-royalty:override:global`
+  (not `manage`), and payout actions need `manage:global` specifically;
+- the ledger offers no edit or delete affordance, because ledger rows are immutable.
+
+Success paths are written and gated behind `E2E_ALLOW_WRITES=1`, ready for a seeded
+environment. They will not run without it.
+
+---
+
 ## Coverage not exercised
 
-210 authenticated tests are written and skipped. They are not stubs — they run against a
+258 authenticated tests are written and skipped. They are not stubs — they run against a
 live session and a live backend, and cover:
 
 | Spec | Tests | Covers |
@@ -207,6 +276,8 @@ live session and a live backend, and cover:
 | `roles-and-team.spec.ts` | 7 | Seeded roles read-only, permission tree not hand-typeable, additive assignment, audit `actorRoleSnapshot` |
 | `resilience.spec.ts` | 7 | 500 / 403 / connection refused / 502 / HTML-as-200 / slow backend, all via request interception |
 | `a11y.spec.ts` | 21 | axe across every navigable screen, plus the true reach of finding #2 |
+| `api-contract.spec.ts` | 20 | Envelope shape, the omission rule at the payload level, pagination, filters actually narrowing, masked scopes not leaking personal data, no write acting on an empty body |
+| `workflows.spec.ts` | 28 | All nine operator state machines — read-only and negative |
 
 Also out of scope for this run, deliberately — see `TESTING-APPROACH.md`:
 write operations against the shared backend, account creation, the two-step media upload

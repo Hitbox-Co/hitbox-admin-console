@@ -16,7 +16,8 @@
     "e2e:authed": "playwright test --project=authed-chromium --project=authed-mobile",
     "e2e:login": "playwright test --project=auth-capture --headed",
     "e2e:ui": "playwright test --ui",
-    "e2e:report": "playwright show-report e2e/.report"
+    "e2e:report": "playwright show-report e2e/.report",
+    "docs:pdf": "node scripts/docs-to-pdf.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.2",
@@ -59,6 +60,7 @@
     "axe-core": "^4.13.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
+    "marked": "^18.0.13",
     "sharp": "^0.35.4",
     "tailwindcss": "^4",
     "tsx": "^4.23.13",
