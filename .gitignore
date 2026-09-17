@@ -39,3 +39,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# playwright
+/e2e/.auth/
+/e2e/.report/
+/e2e/.artifacts/
+/playwright-report/
+/test-results/
