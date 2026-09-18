@@ -17,7 +17,8 @@
     "e2e:login": "playwright test --project=auth-capture --headed",
     "e2e:ui": "playwright test --ui",
     "e2e:report": "playwright show-report e2e/.report",
-    "docs:pdf": "node scripts/docs-to-pdf.mjs"
+    "docs:pdf": "node scripts/docs-to-pdf.mjs",
+    "docs:api-cases": "node scripts/api-test-cases.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.2",

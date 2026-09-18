@@ -7,8 +7,8 @@
  * and Chrome prints PDFs. So the toolchain that tests the app is the toolchain
  * that renders the report, and there is nothing extra to install.
  *
- * Re-run it after editing either markdown file; the PDFs are committed so a
- * reviewer without a checkout can read them.
+ * Re-run it after editing any of them; the PDFs are committed so a reviewer
+ * without a checkout can read them.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -21,6 +21,7 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DOCS = [
   { md: "docs/E2E-TEST-REPORT.md", pdf: "docs/E2E-TEST-REPORT.pdf", title: "E2E Test Report" },
   { md: "docs/TESTING-APPROACH.md", pdf: "docs/TESTING-APPROACH.pdf", title: "Testing Approach" },
+  { md: "docs/API-TEST-CASES.md", pdf: "docs/API-TEST-CASES.pdf", title: "API Test Cases" },
 ];
 
 /**
