@@ -12,7 +12,7 @@ import {
   useRoles,
   useUserRoles,
 } from "@/lib/api/hooks";
-import { formatDate, humanize } from "@/lib/format";
+import { formatDate, humanize, personLabel } from "@/lib/format";
 import { requiredKeys } from "@/lib/required-fields";
 import {
   Badge,
@@ -131,7 +131,7 @@ export function AssignmentDrawer({
           <div className="flex items-start justify-between gap-3 border-b border-[var(--hairline)] px-4 py-3.5">
             <div className="min-w-0">
               <Dialog.Title className="text-[14px] font-semibold tracking-[-0.01em] text-[var(--text-1)]">
-                {user.fullName}
+                {personLabel(user)}
               </Dialog.Title>
               <Dialog.Description className="mt-0.5 truncate text-[12px] text-[var(--text-3)]">
                 {user.email}

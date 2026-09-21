@@ -3,7 +3,7 @@
 import * as React from "react";
 import { MailPlus, UserCog, Users } from "lucide-react";
 import { useTeam } from "@/lib/api/hooks";
-import { formatDate } from "@/lib/format";
+import { formatDate, personInitials, personLabel } from "@/lib/format";
 import { PageActions, usePageChrome } from "@/components/layout/app-shell";
 import { usePermissions } from "@/components/layout/authz-provider";
 import { Badge, Button, Mono, Panel, Segmented } from "@/components/ui/primitives";
@@ -44,19 +44,15 @@ export default function TeamPage() {
         <div className="flex items-center gap-2.5">
           <span
             aria-hidden
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--surface-3)] text-[11px] font-medium text-[var(--text-2)]"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-3 text-[11px] font-medium text-text-2"
           >
-            {r.fullName
-              .split(" ")
-              .slice(0, 2)
-              .map((p) => p[0])
-              .join("")}
+            {personInitials(r)}
           </span>
           <div className="min-w-0">
-            <p className="truncate text-[13px] font-medium text-[var(--text-1)]">
-              {r.fullName}
+            <p className="truncate text-[13px] font-medium text-text-1">
+              {personLabel(r)}
             </p>
-            <p className="truncate text-[11px] text-[var(--text-3)]">
+            <p className="truncate text-[11px] text-text-3">
               {r.email}
               {r.handle ? ` · @${r.handle}` : ""}
             </p>
@@ -69,7 +65,7 @@ export default function TeamPage() {
       header: "Roles",
       cell: (r) =>
         r.roles.length === 0 ? (
-          <span className="text-[12px] text-[var(--text-3)]">No roles</span>
+          <span className="text-[12px] text-text-3">No roles</span>
         ) : (
           <div className="flex flex-wrap gap-1">
             {r.roles.map((role) => (
@@ -126,7 +122,7 @@ export default function TeamPage() {
               list.setPage(1);
             }}
             placeholder="Search people"
-            className="w-[240px]"
+            className="w-60"
           />
           <Segmented
             size="sm"
@@ -140,7 +136,7 @@ export default function TeamPage() {
               { value: "all", label: "All role-holders" },
             ]}
           />
-          <p className="text-[11px] text-[var(--text-3)]">
+          <p className="text-[11px] text-text-3">
             Revoking is a soft delete — the assignment row survives for audit.
           </p>
         </FilterRow>

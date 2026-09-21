@@ -636,8 +636,13 @@ export interface TeamRoleEntry {
 
 export interface TeamMember {
   userId: string;
-  fullName: string;
-  handle: string;
+  /*
+   * Both null for a member who holds a role but has not filled in a profile —
+   * typically someone provisioned by invitation who has only ever confirmed an
+   * email. Render them through personLabel()/personInitials().
+   */
+  fullName: string | null;
+  handle: string | null;
   email: string;
   avatarUrl: string | null;
   isActive: boolean;
