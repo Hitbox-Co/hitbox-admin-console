@@ -108,8 +108,6 @@ const SIGN_IN_BLOCKED: Partial<Record<string, string>> = {
     "This account has two-factor authentication enabled. Complete the second step from your authenticator app, then sign in again.",
   needs_new_password:
     "This password has expired and must be reset before you can sign in.",
-  needs_client_trust:
-    "This device needs to be verified before it can sign in. Check your email for a verification request.",
   needs_protect_check:
     "An additional security check is required before this sign-in can finish.",
 };
@@ -119,6 +117,13 @@ const SIGN_IN_BLOCKED: Partial<Record<string, string>> = {
 /* ------------------------------------------------------------------ */
 
 type Step = "credentials" | "code";
+/**
+ * Which verification the code screen is collecting for.
+ *  - "first_factor": the one-time code that stands in for a password.
+ *  - "device": Clerk's Device Trust check on an unrecognised device. That is
+ *    a SECOND factor, so it goes through `signIn.mfa`, not `signIn.emailCode`.
+ */
+type CodeKind = "first_factor" | "device";
 
 export function SignInForm() {
   const router = useRouter();
@@ -128,6 +133,7 @@ export function SignInForm() {
   const [password, setPassword] = React.useState("");
   const [code, setCode] = React.useState("");
   const [step, setStep] = React.useState<Step>("credentials");
+  const [codeKind, setCodeKind] = React.useState<CodeKind>("first_factor");
   const [formError, setFormError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   /** Null until Clerk tells us; then remembered for the rest of the visit. */
@@ -149,8 +155,51 @@ export function SignInForm() {
       setFormError(error.longMessage ?? error.message);
       return false;
     }
+    setCodeKind("first_factor");
     setStep("code");
     return true;
+  };
+
+  /**
+   * Signing in from a device Clerk does not recognise parks the attempt at
+   * `needs_client_trust`. Reaching that status does not itself email anyone —
+   * nothing is sent until a second factor is actually requested, which is what
+   * this does.
+   */
+  const sendDeviceCode = async () => {
+    const { error } = await signIn.mfa.sendEmailCode();
+    if (error) {
+      setFormError(
+        signIn.supportedSecondFactors.some((f) => f.strategy === "email_code")
+          ? error.longMessage ?? error.message
+          : "This device needs to be verified, but email is not an available verification method on this account. Use your authenticator app or a backup code."
+      );
+      return false;
+    }
+    setCodeKind("device");
+    setCode("");
+    setStep("code");
+    setNotice(
+      "We don't recognise this device. We sent a verification code to your email to confirm it's you."
+    );
+    return true;
+  };
+
+  /** Route on whatever status Clerk left the sign-in in after an attempt. */
+  const advance = async () => {
+    if (signIn.status === "complete") {
+      await complete();
+      return;
+    }
+    if (signIn.status === "needs_client_trust") {
+      setFormError(null);
+      await sendDeviceCode();
+      return;
+    }
+    setFormError(
+      SIGN_IN_BLOCKED[signIn.status] ??
+        `This account needs an extra step to finish signing in (${signIn.status}).`
+    );
   };
 
   const submitCredentials = async (e: React.FormEvent) => {
@@ -212,14 +261,7 @@ export function SignInForm() {
         return;
       }
 
-      if (signIn.status === "complete") {
-        await complete();
-        return;
-      }
-      setFormError(
-        SIGN_IN_BLOCKED[signIn.status] ??
-          `This account needs an extra step to finish signing in (${signIn.status}).`
-      );
+      await advance();
     } catch {
       setFormError("Could not reach the identity service. Try again.");
     } finally {
@@ -235,7 +277,10 @@ export function SignInForm() {
     setSubmitting(true);
 
     try {
-      const { error } = await signIn.emailCode.verifyCode({ code: code.trim() });
+      const { error } =
+        codeKind === "device"
+          ? await signIn.mfa.verifyEmailCode({ code: code.trim() })
+          : await signIn.emailCode.verifyCode({ code: code.trim() });
       if (error) {
         if (!errors.fields.code) {
           setFormError(error.longMessage ?? error.message);
@@ -243,14 +288,7 @@ export function SignInForm() {
         return;
       }
 
-      if (signIn.status === "complete") {
-        await complete();
-        return;
-      }
-      setFormError(
-        SIGN_IN_BLOCKED[signIn.status] ??
-          `This account needs an extra step to finish signing in (${signIn.status}).`
-      );
+      await advance();
     } catch {
       setFormError("Could not reach the identity service. Try again.");
     } finally {
@@ -270,7 +308,8 @@ export function SignInForm() {
 
         <p className="text-[12px] leading-relaxed text-[var(--text-3)]">
           Enter the six-digit code sent to{" "}
-          <span className="font-medium text-[var(--text-1)]">{email}</span>.
+          <span className="font-medium text-[var(--text-1)]">{email}</span>
+          {codeKind === "device" ? " to verify this device." : "."}
         </p>
 
         <Field label="Sign-in code" htmlFor="signin-code" error={codeError}>
@@ -302,7 +341,9 @@ export function SignInForm() {
             type="button"
             onClick={() => {
               setFormError(null);
+              setNotice(null);
               setCode("");
+              setCodeKind("first_factor");
               setStep("credentials");
             }}
             className="text-[var(--text-3)] transition-colors hover:text-[var(--text-1)]"
@@ -311,7 +352,9 @@ export function SignInForm() {
           </button>
           <button
             type="button"
-            onClick={() => void sendCode()}
+            onClick={() =>
+              void (codeKind === "device" ? sendDeviceCode() : sendCode())
+            }
             className="text-[var(--text-3)] transition-colors hover:text-[var(--text-1)]"
           >
             Resend code
