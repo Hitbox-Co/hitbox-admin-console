@@ -26,6 +26,7 @@ import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { ErrorState } from "@/components/ui/states";
 import { FilterSelect } from "@/components/ui/filters";
 import { ProductGalleryPanel } from "./product-gallery-panel";
+import { ProductPricingPanel } from "./product-pricing-panel";
 import { SkuUnitsPanel } from "./sku-units-panel";
 import type { ProductSkuUnit } from "@/lib/types";
 
@@ -272,6 +273,16 @@ export function ProductDrawer({
                     ))}
                   </dl>
                 </Panel>
+
+                {/*
+                  Pricing sits above the gallery: a drop with no price is not
+                  purchasable in any market, which is a louder fact about this
+                  record than which photo is the cover.
+                */}
+                <ProductPricingPanel
+                  productId={productId}
+                  variants={product.variants ?? []}
+                />
 
                 <ProductGalleryPanel productId={productId} />
 

@@ -62,6 +62,9 @@ export const API: Endpoint[] = [
   { method: "DELETE", path: "admin/authz/roles/:roleId", kind: "write", requires: "employee-role-mgmt:manage", workflow: "role-lifecycle" },
   { method: "POST", path: "admin/authz/users/:userId/roles", kind: "act", requires: "employee-role-mgmt:manage", workflow: "role-assignment" },
   { method: "DELETE", path: "admin/authz/users/:userId/roles/:assignmentId", kind: "act", requires: "employee-role-mgmt:manage", workflow: "role-assignment" },
+  { method: "GET", path: "admin/authz/invitations", kind: "read", requires: "employee-role-mgmt:read" },
+  { method: "POST", path: "admin/authz/invitations", kind: "act", requires: "employee-role-mgmt:assign", workflow: "staff-invitation" },
+  { method: "POST", path: "admin/authz/invitations/:invitationId/revoke", kind: "act", requires: "employee-role-mgmt:delete", workflow: "staff-invitation" },
 
   /* ---- orders ------------------------------------------------------ */
   { method: "GET", path: "admin/orders", kind: "read", requires: "order:read", probe: "admin/orders" },
@@ -74,6 +77,7 @@ export const API: Endpoint[] = [
   { method: "GET", path: "admin/products/:productId/skus", kind: "read", requires: "collectible-instance:read" },
   { method: "GET", path: "admin/products/:productId/skus/summary", kind: "read", requires: "collectible-instance:read" },
   { method: "GET", path: "admin/products/:productId/images", kind: "read", requires: "drop:read" },
+  { method: "GET", path: "admin/products/:productId/prices", kind: "read", requires: "drop:read" },
   { method: "GET", path: "admin/skus", kind: "read", requires: "collectible-instance:read" },
   { method: "GET", path: "admin/skus/:skuId", kind: "read", requires: "collectible-instance:read" },
   { method: "GET", path: "admin/skus/code/:skuCode", kind: "read", requires: "collectible-instance:read" },
@@ -82,6 +86,7 @@ export const API: Endpoint[] = [
   { method: "DELETE", path: "admin/products/:productId", kind: "write", requires: "drop:manage", workflow: "drop-creation" },
   { method: "POST", path: "admin/products/:productId/images", kind: "write", requires: "drop:manage", workflow: "drop-gallery" },
   { method: "PUT", path: "admin/products/:productId/images", kind: "write", requires: "drop:manage", workflow: "drop-gallery" },
+  { method: "PUT", path: "admin/products/:productId/prices", kind: "write", requires: "drop:manage", workflow: "drop-pricing" },
   { method: "DELETE", path: "admin/products/:productId/images/:imageId", kind: "write", requires: "drop:manage", workflow: "drop-gallery" },
   { method: "POST", path: "admin/products/:productId/skus", kind: "act", requires: "collectible-instance:manage", workflow: "minting" },
   { method: "POST", path: "admin/products/:productId/skus/tags", kind: "act", requires: "nfc-tag-claim:manage", workflow: "tag-binding" },
@@ -214,6 +219,13 @@ export const WORKFLOWS: Workflow[] = [
     screen: "/team",
     steps: ["assign", "revoke"],
     stakes: "a person holds a list of roles — assignment is additive, not a replace",
+  },
+  {
+    name: "staff-invitation",
+    screen: "/team/invitations",
+    steps: ["invite", "revoke"],
+    stakes:
+      "an invitation is a role assignment that lands later — the escalation check runs when it is CREATED and is never re-run at claim time",
   },
   {
     name: "dispute",

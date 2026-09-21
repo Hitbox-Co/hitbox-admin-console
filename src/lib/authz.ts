@@ -303,6 +303,23 @@ export const NAV_ITEMS: NavItem[] = [
     visible: () => true,
   },
   {
+    /*
+     * The creator's own slice. Offered to the brand/artist entity group and
+     * to nobody else — a `brand-artist-record` grant at own or organization
+     * scope is exactly ARTIST and BRAND_ADMIN, while a global holder is HitBox
+     * staff, for whom "mine" filters nothing. Derived from scope, never from
+     * the role name, like every other entry here.
+     */
+    href: "/artist",
+    label: "My workspace",
+    icon: "Palette",
+    group: "Overview",
+    visible: (p) => {
+      const scope = p.widestScope("brand-artist-record");
+      return scope === "own" || scope === "organization";
+    },
+  },
+  {
     href: "/markets",
     label: "Markets",
     icon: "Globe",

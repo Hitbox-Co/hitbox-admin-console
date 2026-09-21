@@ -1,33 +1,26 @@
 "use client";
 
 import * as React from "react";
-import { UserCog, Users } from "lucide-react";
+import { MailPlus, UserCog, Users } from "lucide-react";
 import { useTeam } from "@/lib/api/hooks";
 import { formatDate } from "@/lib/format";
-import { usePageChrome } from "@/components/layout/app-shell";
-import { PageGuard } from "@/components/layout/page-guard";
+import { PageActions, usePageChrome } from "@/components/layout/app-shell";
+import { usePermissions } from "@/components/layout/authz-provider";
 import { Badge, Button, Mono, Panel, Segmented } from "@/components/ui/primitives";
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterRow, SearchInput, useListState } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { AssignmentDrawer } from "@/components/authz/assignment-drawer";
+import { InviteDialog } from "@/components/authz/invite-dialog";
 import type { TeamMember } from "@/lib/types";
 
+// The section's PageGuard lives in team/layout.tsx, which covers this screen
+// and the invitation queue on the one `employee-role-mgmt:read` grant.
 export default function TeamPage() {
-  return (
-    <PageGuard
-      can={(p) => p.canRead("employee-role-mgmt")}
-      what="Team membership"
-      requires="employee-role-mgmt:read"
-    >
-      <TeamView />
-    </PageGuard>
-  );
-}
-
-function TeamView() {
   const [q, setQ] = React.useState("");
   const [editing, setEditing] = React.useState<TeamMember | null>(null);
+  const [inviting, setInviting] = React.useState(false);
+  const perms = usePermissions();
   const list = useListState<Record<string, never>>({});
   /*
    * internalOnly defaults to true server-side: HitBox staff only (roles whose
@@ -113,6 +106,17 @@ function TeamView() {
 
   return (
     <>
+      {/* Same capability as granting a role outright — an invitation is one
+          that happens later (admin-provisioning.md §5). */}
+      {perms.can("employee-role-mgmt", "assign") ? (
+        <PageActions>
+          <Button variant="primary" size="sm" onClick={() => setInviting(true)}>
+            <MailPlus className="h-3.5 w-3.5" />
+            Invite someone
+          </Button>
+        </PageActions>
+      ) : null}
+
       <Panel className="overflow-hidden">
         <FilterRow>
           <SearchInput
@@ -156,6 +160,22 @@ function TeamView() {
                 <EmptyState
                   icon={Users}
                   title={q ? "Nobody matches that search" : "No admins yet"}
+                  description={
+                    q
+                      ? undefined
+                      : "The admin population is defined by grants, not by a flag on a user row — so this is empty until somebody holds a role."
+                  }
+                  action={
+                    !q && perms.can("employee-role-mgmt", "assign") ? (
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => setInviting(true)}
+                      >
+                        Invite someone
+                      </Button>
+                    ) : undefined
+                  }
                 />
               }
             />
@@ -173,6 +193,7 @@ function TeamView() {
       {editing ? (
         <AssignmentDrawer user={editing} onClose={() => setEditing(null)} />
       ) : null}
+      {inviting ? <InviteDialog onClose={() => setInviting(false)} /> : null}
     </>
   );
 }

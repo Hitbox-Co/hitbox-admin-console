@@ -51,6 +51,7 @@ import type {
   DemandSignalRow,
   FinanceSection,
   MarketInput,
+  ProductCreateInput,
   MarketRow,
   MediaAssetUrl,
   MediaListResponse,
@@ -72,6 +73,8 @@ import type {
   BindTagsResult,
   ProductGallery,
   ProductImageInput,
+  ProductPrice,
+  ProductPriceInput,
   RetagUnitInput,
   UploadUrlResponse,
   MintResult,
@@ -83,6 +86,9 @@ import type {
   Role,
   RoleAssignment,
   ScopeType,
+  StaffInvitation,
+  CreateInvitationInput,
+  CreateInvitationResult,
   SupplyListResponse,
   TeamMember,
   UsersSection,
@@ -488,6 +494,101 @@ export function useRevokeRole(userId: string) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Staff invitations                                                   */
+/*                                                                     */
+/* docs/authorization/admin-provisioning.md. The three routes sit under */
+/* the same base path as the rest of access control and take the same   */
+/* capabilities as granting a role directly: assign to create, read to  */
+/* list, delete to revoke — an invitation IS a role assignment that     */
+/* happens later, and a weaker deferred door would undo the control.    */
+/* ------------------------------------------------------------------ */
+
+export interface InvitationFilters {
+  page?: number;
+  limit?: number;
+  status?: string;
+  email?: string;
+  roleId?: string;
+}
+
+/**
+ * An organization-scoped administrator sees invitations into their own
+ * organizations only; global ones are excluded from their view entirely
+ * (§6) — so an empty list here does NOT mean nobody is being onboarded.
+ */
+export function useInvitations(params: InvitationFilters) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["authz", "invitations", params],
+    queryFn: async () => {
+      const raw = await api.get<unknown>("admin/authz/invitations", {
+        ...params,
+      });
+      // The doc names this route's query parameters but not its envelope.
+      // Every other paginated admin list is `{page,limit,total,items}` and
+      // that is what is assumed; a bare array is tolerated rather than
+      // painting an empty table against a shape that is merely different.
+      const body = unwrap<Paginated<StaffInvitation> | StaffInvitation[]>(raw);
+      if (Array.isArray(body)) {
+        return {
+          page: params.page ?? 1,
+          limit: params.limit ?? 20,
+          total: body.length,
+          items: body,
+        } satisfies Paginated<StaffInvitation>;
+      }
+      return body;
+    },
+    placeholderData: (prev) => prev,
+  });
+}
+
+/**
+ * Two outcomes, one endpoint. `ROLE_ASSIGNED` means the address already had
+ * an account and the grant landed immediately — which is common, because
+ * staff buy things too and Clerk refuses to invite an address it knows — so
+ * the team list is stale as well and both caches are invalidated.
+ */
+export function useCreateInvitation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: CreateInvitationInput) =>
+      api
+        .post<unknown>("admin/authz/invitations", payload)
+        .then(unwrap<CreateInvitationResult>),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["authz", "invitations"] });
+      qc.invalidateQueries({ queryKey: ["authz", "team"] });
+    },
+  });
+}
+
+/**
+ * Withdrawing an invitation takes `employee-role-mgmt:delete`, not assign:
+ * it is revoking a grant that has not landed yet.
+ *
+ * An already-ACCEPTED invitation answers 409 — the role exists by then and
+ * the thing to revoke is the assignment, not this row.
+ */
+export function useRevokeInvitation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      invitationId,
+      reason,
+    }: {
+      invitationId: string;
+      reason?: string;
+    }) =>
+      api.post<unknown>(
+        `admin/authz/invitations/${invitationId}/revoke`,
+        reason ? { reason } : {}
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["authz", "invitations"] }),
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Media                                                               */
 /*                                                                      */
 /* No virus scanner exists in this deployment (admin-console-api.md     */
@@ -750,10 +851,16 @@ function invalidateProducts(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["dashboard"] });
 }
 
+/**
+ * `prices` is required with at least one entry (product-upload-api.md §3) —
+ * hence `ProductCreateInput` rather than `ProductInput`. Everything in
+ * `prices`, `skus` and `images` is written in the same transaction as the
+ * product, so the request produces a complete drop or produces nothing.
+ */
 export function useCreateProduct() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (payload: ProductInput) =>
+    mutationFn: (payload: ProductCreateInput) =>
       api.post<unknown>("admin/products", payload).then(unwrap<AdminProductDetail>),
     onSuccess: () => invalidateProducts(qc),
   });
@@ -1005,6 +1112,60 @@ export function useAllSkus(params: SkuListParams = {}, enabled = true) {
     placeholderData: (prev) => prev,
   });
 }
+
+/* ------------------------------------------------------------------ */
+/* Market pricing — /admin/products/:id/prices                         */
+/*                                                                      */
+/* Read needs drop:read; every write needs drop:manage at GLOBAL.       */
+/*                                                                      */
+/* Unlike the gallery below, these responses are NOT documented as       */
+/* returning the whole list, so nothing is written straight into the     */
+/* cache — each mutation invalidates and the list is re-read. Guessing   */
+/* the shape and calling setQueryData with it would put a wrong price     */
+/* on screen, which is the one thing this table must never do.           */
+/* ------------------------------------------------------------------ */
+
+/** Base prices first, then variant prices, each by market code. */
+export function useProductPrices(productId: string | undefined, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["product-prices", productId],
+    enabled: !!productId && enabled,
+    queryFn: () =>
+      api.get<unknown>(`admin/products/${productId}/prices`).then(unwrap<ProductPrice[]>),
+  });
+}
+
+/**
+ * Replace the price list wholesale — **this is what the pricing table saves
+ * to**. Markets present before and absent now are removed, and "these are the
+ * prices now" is the only statement that can express dropping a market. The
+ * minimum of one still applies, so this can never de-price a drop.
+ */
+export function useReplaceProductPrices(productId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (prices: ProductPriceInput[]) =>
+      api
+        .put<unknown>(`admin/products/${productId}/prices`, { prices })
+        .then(unwrap<ProductPrice[]>),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["product-prices", productId] });
+      // A market's usage counts include the prices pointing at it, and a
+      // non-zero count is what refuses its archive.
+      qc.invalidateQueries({ queryKey: ["admin-markets"] });
+    },
+  });
+}
+
+/*
+ * PATCH /prices/:priceId and DELETE /prices/:priceId are deliberately not
+ * wired. A pricing table is edited as a whole and the PUT above says "these
+ * are the prices now" — which already expresses dropping a market, and is
+ * what the API's own guidance asks a table to send instead of N patches.
+ * Adding them would be a second way to write the same rows, racing the draft
+ * the operator is holding on screen.
+ */
 
 /* ------------------------------------------------------------------ */
 /* Product gallery — /admin/products/:id/images                        */

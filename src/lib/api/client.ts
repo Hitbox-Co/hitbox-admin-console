@@ -156,6 +156,17 @@ export class ApiError extends Error {
         return "That image is not on this drop — it may already have been removed.";
       case "PRODUCTS_MEDIA_UNAVAILABLE":
         return "No storage bucket is configured on this deployment, so images cannot be attached.";
+      case "PRODUCTS_MARKETS_UNAVAILABLE":
+        return "Market lookup is not wired up on this deployment, so a drop cannot be priced.";
+      case "PRODUCTS_PRICE_MARKET_INVALID":
+        // The server names EVERY bad market at once — a pricing table is
+        // filled in for several markets in one sitting, and one error per
+        // submission is a poor way to find three typos.
+        return this.message;
+      case "PRODUCTS_PRICE_NOT_FOUND":
+        return "That price is not on this drop — it may already have been removed.";
+      case "PRODUCTS_PRICE_REQUIRED":
+        return "A drop must keep at least one market price. Set this one to Disabled instead of deleting it.";
       case "PRODUCTS_CODE_TAKEN":
         return "Could not allocate a unique product code. Try again.";
       case "PRODUCTS_NOT_FOUND":
@@ -246,6 +257,24 @@ export class ApiError extends Error {
         return "This role is organization-scoped — choose an organization.";
       case "ACCESS_CONTROL_ROLE_NOT_FOUND":
         return "That role no longer exists, or has been deactivated.";
+
+      /* Staff invitations (admin-provisioning.md §6).
+       *
+       * AUTHZ_FORBIDDEN is deliberately absent from this block. The invitation
+       * route emits it for two different refusals and the server's own message
+       * is the only thing that separates them: a 403 names the permissions the
+       * granter does not hold (the escalation check), and a 400 carries the
+       * identity provider's refusal with `details.invitationId` pointing at the
+       * FAILED row. Replacing either with "your role does not include this
+       * capability" would throw away the only actionable part, so the invite
+       * form shows `message` verbatim instead.
+       */
+      case "AUTHZ_ROLE_NOT_FOUND":
+        return "That role no longer exists, or has been deactivated.";
+      case "AUTHZ_MISSING_ORG_SCOPE":
+        return "This role is organization-scoped — choose an organization.";
+      case "AUTHZ_ASSIGNMENT_EXISTS":
+        return "An open invitation for that person and role already exists. Revoke it before sending another.";
       case "NETWORK_ERROR":
         return this.message;
       default:

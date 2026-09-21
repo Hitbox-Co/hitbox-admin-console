@@ -90,13 +90,27 @@ const ROLE_GRANTS: Record<string, string[]> = {
     "order:read:global",
     "reports-dashboards:read:global",
   ],
+  // Also copied verbatim from the catalog. This used to list six of the
+  // fifteen — no release-approval, no collectible-instance, no
+  // content-unlock, no brand-artist-record, no notification-config — which
+  // made every assertion about what a Brand Admin can reach weaker than it
+  // looked, because the fixture could not see the entries those grants open.
   BRAND_ADMIN: [
-    "order:read:organization",
-    "payment-royalty:read:organization",
     "drop:manage:organization",
+    "release-approval:read:organization",
+    "release-approval:approve:organization",
+    "release-approval:reject:organization",
+    "collectible-instance:manage:organization",
     "assets-documents-upload:manage:organization",
-    "employee-role-mgmt:read:organization",
+    "content-unlock:manage:organization",
     "reports-dashboards:read:organization",
+    "payment-royalty:read:organization",
+    "brand-artist-record:read:organization",
+    "brand-artist-record:update:organization",
+    "employee-role-mgmt:read:organization",
+    "employee-role-mgmt:assign:organization",
+    "notification-config:update:organization",
+    "order:read:organization",
   ],
   // The catalog's ARTIST is wider than this list used to claim. It holds
   // `payment-royalty:read:own` and `reports-dashboards:read:own` — the whole
@@ -116,6 +130,7 @@ const ROLE_GRANTS: Record<string, string[]> = {
     "payment-royalty:read:own",
     "brand-artist-record:read:own",
     "brand-artist-record:update:own",
+    "notification-config:update:own",
   ],
   HITBOX_PLATFORM_ENGINEER: [
     "platform-config:manage:global",
@@ -209,6 +224,7 @@ function main() {
     artistNav.includes("/markets"),
     false
   );
+  check("artist gets My workspace", artistNav.includes("/artist"), true);
 
   const brandAdminNav = navFor("BRAND_ADMIN");
   check("brand admin gets Finance (org-scoped royalties)", brandAdminNav.includes("/finance"), true);
@@ -216,6 +232,21 @@ function main() {
   check(
     "brand admin does NOT get the audit log",
     brandAdminNav.includes("/activity"),
+    false
+  );
+  check("brand admin gets My workspace", brandAdminNav.includes("/artist"), true);
+
+  // "Mine" filters nothing for a grant that reaches every record, so the
+  // workspace is withheld from staff rather than rendering the platform
+  // back to them under a personal heading.
+  check(
+    "system admin does NOT get My workspace (global scope)",
+    navFor("HITBOX_SYSTEM_ADMIN").includes("/artist"),
+    false
+  );
+  check(
+    "order manager does NOT get My workspace (no brand-artist grant)",
+    navFor("HITBOX_ORDER_MANAGER").includes("/artist"),
     false
   );
 

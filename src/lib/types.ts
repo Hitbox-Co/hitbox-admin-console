@@ -85,6 +85,11 @@ export type ErrorCode =
   | "PRODUCTS_IMAGE_ASSET_INVALID"
   | "PRODUCTS_IMAGE_DUPLICATE"
   | "PRODUCTS_IMAGE_NOT_FOUND"
+  // market pricing (product-upload-api.md §3 and §5)
+  | "PRODUCTS_MARKETS_UNAVAILABLE"
+  | "PRODUCTS_PRICE_MARKET_INVALID"
+  | "PRODUCTS_PRICE_NOT_FOUND"
+  | "PRODUCTS_PRICE_REQUIRED"
   // tag manifests (sku-api.md §3a)
   | "SKUS_UNIT_NOT_IN_PRODUCT"
   | "SKUS_TAG_ALREADY_BOUND"
@@ -127,6 +132,12 @@ export type ErrorCode =
   | "ACCESS_CONTROL_ASSIGNMENT_EXISTS"
   | "ACCESS_CONTROL_MISSING_ORG_SCOPE"
   | "ACCESS_CONTROL_ROLE_NOT_FOUND"
+  // staff invitations (admin-provisioning.md §6). These are the access-control
+  // module's OWN codes, prefixed AUTHZ_ rather than ACCESS_CONTROL_ — the two
+  // families are not interchangeable and the invitation routes emit these.
+  | "AUTHZ_ROLE_NOT_FOUND"
+  | "AUTHZ_MISSING_ORG_SCOPE"
+  | "AUTHZ_ASSIGNMENT_EXISTS"
   | "NETWORK_ERROR";
 
 /* ------------------------------------------------------------------ */
@@ -635,6 +646,90 @@ export interface TeamMember {
 }
 
 /* ------------------------------------------------------------------ */
+/* Staff invitations                                                   */
+/*                                                                     */
+/* Provisioning a colleague who has no HitBox account yet              */
+/* (docs/authorization/admin-provisioning.md §6).                      */
+/*                                                                     */
+/* The role is NOT carried in Clerk's invitation metadata — it lives in */
+/* a StaffInvitation row in this database, so the grant is auditable,   */
+/* revocable through our own API and readable by the permission engine  */
+/* (§3.2). Clerk is told one thing: email this address a sign-up link.  */
+/* The role lands later, when `users.account.provisioned` fires after   */
+/* the User row commits — which is why an invitation can sit SENT for   */
+/* days and why this is a queue the dashboard has to show.              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * PENDING is the row written BEFORE the provider is called (§3.4): a crash
+ * between the write and the send leaves one, and an operator has to be able
+ * to see it and retry. FAILED carries the provider's own refusal in
+ * `providerError` and is deliberately not rolled back into silence.
+ *
+ * So neither PENDING nor FAILED is a state the happy path rests in, and the
+ * UI treats both as needing attention rather than as "in progress".
+ */
+export type StaffInvitationStatus =
+  | "PENDING"
+  | "SENT"
+  | "ACCEPTED"
+  | "REVOKED"
+  | "EXPIRED"
+  | "FAILED";
+
+export interface StaffInvitation {
+  id: string;
+  email: string;
+  roleId: string;
+  roleName: string;
+  roleDisplayName: string;
+  scopeType: ScopeType;
+  organizationId: string | null;
+  status: StaffInvitationStatus;
+  invitedById: string | null;
+  invitedAt: string;
+  /** 72 hours after `invitedAt` by default (`ADMIN_INVITATION_TTL_HOURS`). */
+  expiresAt: string;
+  acceptedAt: string | null;
+  acceptedUserId: string | null;
+  /** The grant, once it lands — set immediately on the ROLE_ASSIGNED path. */
+  assignmentId: string | null;
+  revokedAt: string | null;
+  revokeReason: string | null;
+  /** Why the provider refused, on a FAILED row. */
+  providerError: string | null;
+}
+
+/**
+ * Which of the two paths `POST /invitations` took.
+ *
+ * It is in the response BODY rather than inferred from the status, because
+ * the dashboard has to say two different things (§4): "Priya now has the
+ * Order Manager role" when the address already had an account, versus "we've
+ * emailed priya@… ; she'll have the role once she accepts" when it did not.
+ */
+export type InvitationOutcome = "INVITATION_SENT" | "ROLE_ASSIGNED";
+
+export interface CreateInvitationInput {
+  email: string;
+  roleId: string;
+  /**
+   * Optional. Omitted, the role's natural scope is used — so the dashboard
+   * does not have to know that BRAND_ADMIN is org-scoped and HITBOX_SUPPORT
+   * is not. An org-scoped role sent without an `organizationId` is a 400.
+   */
+  scopeType?: ScopeType;
+  organizationId?: string | null;
+}
+
+export interface CreateInvitationResult {
+  outcome: InvitationOutcome;
+  /** Non-null only on the ROLE_ASSIGNED path. */
+  assignmentId: string | null;
+  invitation: StaffInvitation;
+}
+
+/* ------------------------------------------------------------------ */
 /* Media                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -981,7 +1076,30 @@ export interface ProductInput {
    * fails the request without creating anything.
    */
   images?: ProductImageInput[];
+  /**
+   * Create only, and **required** there — see `ProductCreateInput`.
+   *
+   * Optional on this shared shape because PATCH does not take it: the price
+   * list is edited through /admin/products/:id/prices, not by patching the
+   * product.
+   */
+  prices?: ProductPriceInput[];
 }
+
+/**
+ * What POST /admin/products actually accepts.
+ *
+ * `prices` is required with at least one entry (product-upload-api.md §3) —
+ * a **breaking change**: a create that worked without it now returns 422
+ * `prices: At least one market price is required`. A drop with no price is
+ * not purchasable anywhere, because the storefront reads ProductPrice for the
+ * buyer's market and finds nothing to show and nothing to charge.
+ *
+ * Splitting the type rather than commenting the field is what makes the
+ * breaking change a compile error here instead of a 422 in front of an
+ * operator.
+ */
+export type ProductCreateInput = ProductInput & { prices: ProductPriceInput[] };
 
 /* ------------------------------------------------------------------ */
 /* Release approvals — /admin/releases (admin-write-apis.md §4)        */
@@ -1213,6 +1331,67 @@ export interface MintResult {
   lastSerial: number;
   skuCodes: string[];
   tagsBound: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* Market pricing — /admin/products/:id/prices                         */
+/* (product-upload-api.md §3)                                           */
+/*                                                                      */
+/* ProductPrice is scoped to (product, variant, market): an admin       */
+/* prices the drop once per market they sell in, and the drop must      */
+/* carry at least one price at all times.                               */
+/* ------------------------------------------------------------------ */
+
+/** `DISABLED` stages a price without making it live — the documented way to
+ *  stop selling in a market without deleting the pricing. */
+export type ProductPriceStatus = "ACTIVE" | "DISABLED";
+
+export interface ProductPrice {
+  priceId: string;
+  marketId: string;
+  marketCode: string;
+  marketName: string;
+  /**
+   * The MARKET's currency, never one sent per price. Accepting one per price
+   * would let a drop be quoted in GBP inside a market that settles in INR,
+   * and no constraint in the schema would catch it.
+   */
+  currency: string;
+  /**
+   * Decimal string, `"0"` for a free price. `null` only for a row carrying
+   * neither an amount nor `isFree` — which the API will not create.
+   */
+  amount: string | null;
+  isFree: boolean;
+  /** Unit cost, so finance computes margin without re-deriving it. */
+  costOfGoods: string | null;
+  status: ProductPriceStatus;
+  /** Non-null when the row prices one variant rather than the whole product. */
+  variantId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * One row of the pricing table, as sent.
+ *
+ * Money is carried as a STRING on purpose: a price that round-trips through a
+ * JavaScript float can arrive as 1999.9899999999998, and `Decimal(12, 2)`
+ * would round it silently — on the column that decides what a buyer is
+ * charged. The column holds 10 digits and 2 decimal places.
+ *
+ * There is deliberately no `currency`. It is the market's.
+ */
+export interface ProductPriceInput {
+  /** Exactly one of `marketId` or `marketCode`. The console sends the code. */
+  marketId?: string;
+  marketCode?: string;
+  /** Required unless `isFree`; the two cannot be combined. */
+  amount?: string;
+  isFree?: boolean;
+  costOfGoods?: string | null;
+  status?: ProductPriceStatus;
+  variantId?: string | null;
 }
 
 /* ------------------------------------------------------------------ */

@@ -4,14 +4,23 @@ import * as React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { z } from "zod";
 import { toast } from "sonner";
-import { ArrowLeft, ArrowRight, Boxes, Info, ShieldAlert, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Boxes, Coins, Info, ShieldAlert, X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
-import { useCreateProduct } from "@/lib/api/hooks";
+import { useAdminMarkets, useCreateProduct } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/format";
 import { requiredKeys } from "@/lib/required-fields";
 import { Button, Field, Input, Textarea } from "@/components/ui/primitives";
 import { ARTIST_OPTIONS, ORGANIZATION_OPTIONS } from "@/components/authz/organizations";
-import type { ProductInput } from "@/lib/types";
+import {
+  PriceRows,
+  mapServerPriceErrors,
+  newPriceDraft,
+  toPriceInputs,
+  unpricedDefaultMarket,
+  validatePriceDrafts,
+  type PriceDraft,
+} from "./price-rows";
+import type { ProductCreateInput } from "@/lib/types";
 
 /**
  * Step 1's required-ness, as a schema rather than a hand-typed list.
@@ -42,18 +51,31 @@ const detailsSchema = z.object({
 const REQUIRED_DETAILS = requiredKeys(detailsSchema);
 
 /**
- * Add Product — the catalog record, then its first serialized units.
+ * Add Product — the catalog record, its market pricing, then its first
+ * serialized units.
  *
- *   Add Product → Product information → SKUs → Save
+ *   Add Product → Product information → Pricing → SKUs → Save
  *
- * The two steps are one request. `POST /admin/products` takes an optional
- * `skus` block and writes the drop and its edition in a single transaction, so
- * the form either produces a drop with N units or produces nothing. Creating
- * the product first and minting afterwards would leave a half-made drop on
- * screen whenever the second call failed.
+ * The three steps are ONE request. `POST /admin/products` writes the product,
+ * its prices and its edition in a single transaction, so the form either
+ * produces a complete drop or produces nothing. Creating the product first and
+ * pricing or minting afterwards would leave a half-made drop on screen
+ * whenever the second call failed.
  *
- * Adding MORE units later is deliberately not here — it belongs on the product
- * itself, where the existing edition is visible. See SkuUnitsPanel.
+ * Pricing is a step rather than a few fields because `prices` is **required**
+ * with at least one entry (product-upload-api.md §3) — a drop with no price is
+ * not purchasable anywhere, and every previous route to that state was a
+ * half-finished form. Note the ordering inside the server's transaction:
+ * prices are written first, so a failure there aborts before 500 SKUs are
+ * minted.
+ *
+ * Artwork is NOT here. `images` on create takes assets that are already
+ * uploaded, and a presign needs the owning record's id — which does not exist
+ * until this request returns. Images are attached from the drop's own gallery
+ * panel, which opens straight after this closes.
+ *
+ * Adding MORE units later is deliberately not here either — it belongs on the
+ * product itself, where the existing edition is visible. See SkuUnitsPanel.
  */
 
 /** `vertical`, `category` and `rarity` are free-form `String?` columns on the
@@ -64,7 +86,7 @@ const RARITY_HINTS = ["COMMON", "LIMITED", "RARE", "LEGENDARY"];
 
 const MAX_INLINE_MINT = 1000;
 
-type Step = "details" | "units";
+type Step = "details" | "pricing" | "units";
 
 export function ProductFormDrawer({
   onClose,
@@ -77,6 +99,14 @@ export function ProductFormDrawer({
   const create = useCreateProduct();
   const [step, setStep] = React.useState<Step>("details");
   const [errors, setErrors] = React.useState<Record<string, string>>({});
+
+  // Only active markets are offerable: an archived or inactive one comes back
+  // as PRODUCTS_PRICE_MARKET_INVALID, which names every bad market at once.
+  const marketsQuery = useAdminMarkets({ isActive: true, limit: 100 });
+  const markets = React.useMemo(
+    () => marketsQuery.data?.items ?? [],
+    [marketsQuery.data]
+  );
 
   // Step 1 — product information
   const [name, setName] = React.useState("");
@@ -95,9 +125,29 @@ export function ProductFormDrawer({
   const [minimumAge, setMinimumAge] = React.useState("");
   const [oddsDisclosureRef, setOddsDisclosureRef] = React.useState("");
 
-  // Step 2 — the opening edition
+  /*
+   * Step 2 — market pricing. Required: at least one row.
+   *
+   * Null until the operator touches the table, so the opening row can be
+   * DERIVED from the market list instead of being written into state by an
+   * effect the moment that list lands. The seed is the DEFAULT market: it is
+   * the one a buyer falls back to when their country maps nowhere, so it is
+   * the single price most likely to be wanted — and an empty table would make
+   * a required step look optional.
+   */
+  const [priceDraft, setPrices] = React.useState<PriceDraft[] | null>(null);
+  const seededPrices = React.useMemo(() => {
+    if (markets.length === 0) return [];
+    const seed = markets.find((m) => m.isDefault) ?? markets[0];
+    return [newPriceDraft(seed.code, seed.currency)];
+  }, [markets]);
+  const prices = priceDraft ?? seededPrices;
+
+  // Step 3 — the opening edition
   const [mintNow, setMintNow] = React.useState(true);
   const [skuCount, setSkuCount] = React.useState("");
+
+  const fallbackGap = unpricedDefaultMarket(prices, markets);
 
   const supplyN = totalSupply ? Number(totalSupply) : 0;
   const countN = skuCount ? Number(skuCount) : 0;
@@ -123,6 +173,12 @@ export function ProductFormDrawer({
     return Object.keys(next).length === 0;
   };
 
+  const validatePricing = () => {
+    const next = validatePriceDrafts(prices);
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  };
+
   const validateUnits = () => {
     const next: Record<string, string> = {};
     if (mintNow) {
@@ -142,12 +198,16 @@ export function ProductFormDrawer({
     e.preventDefault();
     if (create.isPending) return;
     if (step === "details") {
-      if (validateDetails()) setStep("units");
+      if (validateDetails()) setStep("pricing");
+      return;
+    }
+    if (step === "pricing") {
+      if (validatePricing()) setStep("units");
       return;
     }
     if (!validateUnits()) return;
 
-    const payload: ProductInput = {
+    const payload: ProductCreateInput = {
       name: name.trim(),
       description: description.trim() || null,
       // Both are validated as uuids server-side; "" would be a 422, so an
@@ -165,6 +225,10 @@ export function ProductFormDrawer({
       isAgeSpecific,
       minimumAge: isAgeSpecific && minimumAge ? Number(minimumAge) : null,
       oddsDisclosureRef: oddsDisclosureRef.trim() || null,
+      // Required, minimum one. Amounts go as the typed STRINGS: a price that
+      // round-trips through a float can arrive as 1999.9899999999998, and the
+      // decimal column would round it silently.
+      prices: toPriceInputs(prices),
       ...(mintNow && countN > 0 ? { skus: { count: countN } } : {}),
     };
 
@@ -181,11 +245,19 @@ export function ProductFormDrawer({
       onError: (err) => {
         if (err instanceof ApiError && err.status === 422) {
           const fields = err.fieldErrors;
-          setErrors(fields);
-          // A field error belongs on step 1 unless it is about the edition,
-          // so send the operator back to where the offending input actually
-          // is instead of leaving them on a step with no visible error.
-          if (Object.keys(fields).some((k) => !k.startsWith("skus"))) {
+          // Price issues arrive by path ("prices.0.amount"); re-key them onto
+          // the rows on screen so the offending one is actually marked.
+          setErrors({ ...fields, ...mapServerPriceErrors(fields, prices) });
+          /*
+           * Send the operator to the step that owns the offending input
+           * rather than leaving them on one with no visible error. Paths
+           * arrive dotted and indexed — "prices.0.amount", "skus.count" — so
+           * the prefix is what identifies the step.
+           */
+          const keys = Object.keys(fields);
+          if (keys.some((k) => k.startsWith("prices"))) {
+            setStep("pricing");
+          } else if (keys.some((k) => !k.startsWith("skus"))) {
             setStep("details");
           }
           toast.error(err.validationSummary ?? err.friendly);
@@ -208,8 +280,10 @@ export function ProductFormDrawer({
               </Dialog.Title>
               <Dialog.Description className="mt-0.5 text-[12px] text-[var(--text-3)]">
                 {step === "details"
-                  ? "Step 1 of 2 — the catalog record."
-                  : "Step 2 of 2 — the serialized units under it."}
+                  ? "Step 1 of 3 — the catalog record."
+                  : step === "pricing"
+                    ? "Step 2 of 3 — what it costs, per market."
+                    : "Step 3 of 3 — the serialized units under it."}
               </Dialog.Description>
             </div>
             <Dialog.Close asChild>
@@ -444,6 +518,80 @@ export function ProductFormDrawer({
                     the review workflow&rsquo;s job, from Approvals.
                   </p>
                 </>
+              ) : step === "pricing" ? (
+                <>
+                  {marketsQuery.isLoading ? (
+                    <p className="text-[12px] text-[var(--text-3)]">Loading markets…</p>
+                  ) : markets.length === 0 ? (
+                    /*
+                      Nothing to price against — the picker would be an empty
+                      select and the step unpassable. The two reasons for that
+                      are different problems with different fixes, so they get
+                      different sentences: the market list is gated on
+                      reports-dashboards:read, which drop:manage does not imply.
+                    */
+                    <p className="flex items-start gap-2 rounded-[8px] border border-[rgba(204,92,92,0.35)] bg-[var(--danger-dim)] px-3 py-2.5 text-[11.5px] leading-relaxed text-[var(--text-2)]">
+                      <AlertTriangle className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--danger)]" aria-hidden />
+                      <span>
+                        {marketsQuery.isError ? (
+                          <>
+                            The market list could not be loaded, so this drop cannot be
+                            priced — and a drop cannot be created without a price.{" "}
+                            {marketsQuery.error instanceof ApiError
+                              ? marketsQuery.error.friendly
+                              : "The request failed."}
+                          </>
+                        ) : (
+                          <>
+                            No active market exists, so this drop cannot be priced — and
+                            a drop cannot be created without a price. Create one under{" "}
+                            <strong>Markets</strong> first.
+                          </>
+                        )}
+                      </span>
+                    </p>
+                  ) : (
+                    <>
+                      <PriceRows
+                        drafts={prices}
+                        onChange={setPrices}
+                        markets={markets}
+                        errors={errors}
+                        disabled={create.isPending}
+                      />
+
+                      {fallbackGap ? (
+                        <p className="flex items-start gap-2 text-[11px] leading-relaxed text-[var(--warning)]">
+                          <AlertTriangle className="mt-[1px] h-3 w-3 shrink-0" aria-hidden />
+                          <span>
+                            {fallbackGap.code} is the default market and has no active
+                            price. A buyer whose country maps to no market falls back to
+                            it, and that lookup will find nothing.
+                          </span>
+                        </p>
+                      ) : null}
+
+                      <div className="space-y-2 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2.5">
+                        <p className="flex items-start gap-2 text-[11.5px] leading-relaxed text-[var(--text-3)]">
+                          <Coins className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
+                          <span>
+                            The currency belongs to the market, not the price — send the
+                            amount, read the currency back. A drop priced only in one
+                            market is invisible to buyers resolved into any other.
+                          </span>
+                        </p>
+                        <p className="flex items-start gap-2 border-t border-[var(--hairline)] pt-2 text-[11.5px] leading-relaxed text-[var(--text-3)]">
+                          <Info className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
+                          <span>
+                            At least one price is required. Prices are written first
+                            inside the server&rsquo;s transaction, so a bad market code
+                            aborts before any unit is minted.
+                          </span>
+                        </p>
+                      </div>
+                    </>
+                  )}
+                </>
               ) : (
                 <>
                   <label className="flex items-center gap-2 text-[12.5px] text-[var(--text-2)]">
@@ -530,12 +678,12 @@ export function ProductFormDrawer({
             </div>
 
             <div className="flex items-center gap-2 border-t border-[var(--hairline)] px-4 py-3">
-              {step === "units" ? (
+              {step !== "details" ? (
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
-                  onClick={() => setStep("details")}
+                  onClick={() => setStep(step === "units" ? "pricing" : "details")}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
                   Back
@@ -548,9 +696,16 @@ export function ProductFormDrawer({
                 size="sm"
                 className="ml-auto"
                 loading={create.isPending}
+                // Nothing to price against, and a price is required — so the
+                // step cannot be passed rather than failing silently.
+                disabled={step === "pricing" && markets.length === 0}
               >
-                {step === "details" ? "Next — add SKUs" : "Save drop"}
-                {step === "details" ? <ArrowRight className="h-3.5 w-3.5" /> : null}
+                {step === "details"
+                  ? "Next — pricing"
+                  : step === "pricing"
+                    ? "Next — add SKUs"
+                    : "Save drop"}
+                {step !== "units" ? <ArrowRight className="h-3.5 w-3.5" /> : null}
               </Button>
             </div>
           </form>
@@ -563,13 +718,15 @@ export function ProductFormDrawer({
 function Steps({ step }: { step: Step }) {
   const items: { key: Step; label: string }[] = [
     { key: "details", label: "Drop information" },
+    { key: "pricing", label: "Pricing" },
     { key: "units", label: "SKUs" },
   ];
+  const reached = items.findIndex((it) => it.key === step);
   return (
     <ol className="flex items-center gap-2 border-b border-[var(--hairline)] px-4 py-2.5">
       {items.map((it, i) => {
         const active = it.key === step;
-        const done = it.key === "details" && step === "units";
+        const done = i < reached;
         return (
           <li key={it.key} className="flex items-center gap-2">
             <span
@@ -593,8 +750,8 @@ function Steps({ step }: { step: Step }) {
             >
               {it.label}
             </span>
-            {i === 0 ? (
-              <span className="mx-1 h-px w-6 bg-[var(--hairline-strong)]" aria-hidden />
+            {i < items.length - 1 ? (
+              <span className="mx-1 h-px w-5 bg-[var(--hairline-strong)]" aria-hidden />
             ) : null}
           </li>
         );

@@ -25,6 +25,7 @@ export interface AppRoute {
 
 export const APP_ROUTES: AppRoute[] = [
   { path: "/dashboard", title: "Dashboard", requires: null, group: "Overview", inNav: true },
+  { path: "/artist", title: "My workspace", requires: "brand-artist-record:read:own", group: "Overview", inNav: true },
   { path: "/markets", title: "Markets", requires: "reports-dashboards:read", group: "Overview", inNav: true },
 
   { path: "/users", title: "Buyers", requires: "buyer-profile:read", group: "Commerce", inNav: true },
@@ -45,6 +46,9 @@ export const APP_ROUTES: AppRoute[] = [
 
   { path: "/roles", title: "Roles", requires: "employee-role-mgmt:read", group: "Administration", inNav: true },
   { path: "/team", title: "Team", requires: "employee-role-mgmt:read", group: "Administration", inNav: true },
+
+  /* Sub-navigation under /team — the invitation queue has no sidebar entry. */
+  { path: "/team/invitations", title: "Invitations", requires: "employee-role-mgmt:read", group: null, inNav: false },
 
   /* Sub-navigation under /finance and /payments — no sidebar entry of their own. */
   { path: "/finance/rules", title: "Royalty rules", requires: "payment-royalty:read", group: null, inNav: false },

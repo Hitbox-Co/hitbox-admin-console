@@ -269,23 +269,25 @@ curl -s "https://sharing-kit-7.clerk.accounts.dev/v1/environment?__clerk_api_ver
    The documented API surface has no organization-list endpoint; swap in a live
    fetch as soon as one exists, or an `ORGANIZATION`-scoped assignment can be
    made against a stale id and 403 with `SCOPE_MISMATCH`.
-5. **Media upload is read-only in the UI.** The two-step presigned flow
-   (`POST /admin/media/upload-url` → `PUT` to S3) is modelled and the 503 path
-   is handled, but no upload form ships — the backend's own presign calls are
-   documented as never having run against a live bucket.
+5. **Media upload ships, against a presign path the backend documents as
+   never having run on a live bucket.** The two-step flow
+   (`POST /admin/media/upload-url` → `PUT` to S3) is wired from the media
+   screen and from a drop's gallery, and the 503 path is handled. A
+   `SignatureDoesNotMatch` from S3 is reported as such rather than as an API
+   error, because that is the failure this path is most likely to produce.
 6. **No CSV export.** `reports-dashboards:export:global` exists in the catalog
    and nothing consumes it yet.
 7. **`notifications` and `platformConfig`** are not implemented, by design —
    `PLATFORM_CONFIG` is TECHNICAL-domain and this dashboard is BUSINESS-domain.
    Technical-only roles get an explicit notice instead of an empty dashboard.
-8. **Publish drop still has no page — but the reason has narrowed.**
-   `packages/releases` now exists, so submit / amend / approve / reject are
-   live and are driven from **Approvals**. What is still missing is
-   the publish step itself: there is no `APPROVED → PUBLISHED/ACTIVE`
-   transition, no endpoint to join an uploaded `MediaAsset` to a product as a
-   `ProductImage`, and no `ProductPrice` upsert. A wizard whose final button
-   cannot publish is worse than no wizard, so the page stays absent until
-   those three endpoints exist (admin-console-api.md §14).
+8. **Publish drop still has no page — and the reason has narrowed to one
+   endpoint.** Three were missing when this was written; two now exist.
+   `ProductImage` placements are live and drive the drop's gallery, and
+   `ProductPrice` is live and drives its pricing table. What remains is the
+   publish step itself: there is no `APPROVED → PUBLISHED/ACTIVE` transition.
+   Submit / amend / approve / reject are driven from **Approvals**; a wizard
+   whose final button cannot publish is worse than no wizard, so the page
+   stays absent until that transition exists (admin-console-api.md §14).
 9. **Resale and Vendors show real gaps, not filled-in fakes.** Resale items
    carry a SKU id only — no product name, no seller. Vendor supply items carry no
    product name, no status enum, and no ordered-vs-received split; the
@@ -350,11 +352,13 @@ live from the backend — there is no local fixture behind any of them.
 | Markets → Configuration | `GET/POST/PATCH/DELETE /admin/markets` | read `reports-dashboards:read`; **writes `drop:manage` at `:global`** |
 | Orders | `GET /admin/orders`, `GET /admin/orders/:id`, `PATCH /admin/orders/:id/status` | `order:read`; status change `order:manage` |
 | Products | `GET /admin/products/:id`, `POST/PATCH/DELETE /admin/products` | read `drop:read`; **writes `drop:manage` at `:global`** |
+| Products → Pricing | `GET /admin/products/:id/prices`, `PUT /admin/products/:id/prices` | read `drop:read`; **replace `drop:manage` at `:global`** |
 | Approvals | `GET /admin/releases`, `GET /admin/releases/:id`, `POST /admin/releases`, `PATCH /admin/releases/:id`, `POST /admin/releases/:id/decision` | read `release-approval:read`; decide `release-approval:manage` |
 | Media | `GET /admin/media?archived=live\|archived\|all` | `assets-documents-upload:read` |
 | Team | `GET /admin/authz/team?internalOnly=` | `employee-role-mgmt:read` |
+| Team → Invitations | `GET/POST /admin/authz/invitations`, `POST /admin/authz/invitations/:id/revoke` | read `employee-role-mgmt:read`; invite `:assign`; revoke `:delete` |
 
-Four behaviours worth knowing, because they are decisions rather than
+Five behaviours worth knowing, because they are decisions rather than
 plumbing:
 
 - **Order actions come from `allowedTransitions`,** which the server computes
@@ -373,6 +377,15 @@ plumbing:
   can read the market list but every write 403s, so the buttons are not
   rendered at all — offering an action that is certain to be refused is worse
   than not offering it.
+- **An invitation has two outcomes, and the body says which.** `POST
+  /admin/authz/invitations` grants the role immediately when the address
+  already has a HitBox account — common, because staff buy things too and
+  Clerk refuses to invite an address it knows — and otherwise emails a
+  sign-up link with the role landing only on acceptance. The console reads
+  `outcome` rather than inferring it from the status, because "Priya has the
+  role now" and "Priya will have it when she accepts" are different
+  sentences. The `403` on that route is also shown verbatim: it names the
+  permissions the granter is short of, which a generic message would discard.
 
 ### Where the docs and the backend disagreed
 
