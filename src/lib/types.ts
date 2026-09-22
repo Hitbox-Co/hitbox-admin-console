@@ -1116,11 +1116,34 @@ export type ProductCreateInput = ProductInput & { prices: ProductPriceInput[] };
 export type ReleaseStatus = "PENDING" | "APPROVED" | "REJECTED";
 export type ComplianceStatus = "PENDING" | "CLEARED" | "FLAGGED";
 
+/**
+ * Who is entitled to decide this drop. Resolved from the drop's organization
+ * when the review opens and FROZEN on the row — not re-derived on read, so a
+ * drop that changes hands mid-review is still answered by the party that was
+ * asked.
+ *
+ *   ARTIST_INDIVIDUAL org -> ARTIST       the artist named on the drop
+ *   BRAND org             -> ORGANIZATION someone with a role in that brand
+ *   HITBOX org, or none   -> PLATFORM     HitBox staff
+ *
+ * The discriminator is Organization.type, NOT "does the drop have an
+ * artistId": most brand drops carry both, because the artist is signed to the
+ * brand and the brand is accountable.
+ *
+ * A HitBox administrator cannot approve a brand's or an artist's drop. That
+ * is not a scoping accident — an approval records a named person accepting
+ * the legal compliance terms, and an administrator accepting on a brand's
+ * behalf would record consent that brand never gave.
+ */
+export type ReleaseAuthority = "ARTIST" | "ORGANIZATION" | "PLATFORM";
+
 export interface ReleaseApproval {
   id: string;
   productId: string;
   status: ReleaseStatus;
   version: number;
+  /** Frozen when the review opened. See ReleaseAuthority. */
+  authority: ReleaseAuthority;
   comment: string | null;
   complianceStatus: ComplianceStatus;
   oddsDisclosureRef: string | null;
@@ -1130,6 +1153,22 @@ export interface ReleaseApproval {
   checkedById: string | null;
   checkedAt: string | null;
   decidedAt: string | null;
+  /*
+   * What was accepted, not merely that a box was ticked. The version is the
+   * wording in force at the moment of acceptance, so the trail stays readable
+   * after the terms are revised.
+   */
+  legalComplianceAccepted: boolean;
+  legalComplianceAcceptedAt: string | null;
+  legalComplianceVersion: string | null;
+  /*
+   * Set only on a row opened by /reopen, which is what distinguishes an
+   * administrator sending a rejection back from an ordinary resubmission.
+   */
+  reopenedFromVersion: number | null;
+  reopenedById: string | null;
+  reopenedAt: string | null;
+  reopenReason: string | null;
   createdAt: string;
   updatedAt: string;
   product: {
@@ -1162,17 +1201,43 @@ export interface ReleaseHistoryEntry {
 export interface ReleaseApprovalDetail extends ReleaseApproval {
   /** Every prior decision on the product, newest version first. */
   history: ReleaseHistoryEntry[];
-  /** Drive the approve/reject buttons from these, not from status. */
+  /*
+   * Drive the two buttons from canApprove and canReject SEPARATELY, never
+   * from one flag: for an administrator looking at a brand's drop they
+   * differ, because refusal is broader than consent. approveBlockedReason is
+   * the sentence to show when approval alone is barred.
+   */
+  canApprove: boolean;
+  canReject: boolean;
+  approveBlockedReason: string | null;
+  /** Both decisions barred — already decided, typically. */
   canDecide: boolean;
   blockedReason: string | null;
+  /*
+   * The exact wording to put beside the tickmark, and the version that gets
+   * recorded. Render it as an UNTICKED checkbox — never pre-ticked, never a
+   * hidden field.
+   */
+  legalComplianceStatement: string;
+  legalComplianceVersionRequired: string;
 }
 
 export interface ReleaseDecisionInput {
   status: "APPROVED" | "REJECTED";
+  /**
+   * Required, and must be true, when approving. Omitting it or sending false
+   * is a 422 the schema refuses before the service is reached.
+   */
+  acceptLegalCompliance?: boolean;
   /** Required when rejecting — the API refuses without one. */
   comment?: string;
   complianceStatus?: ComplianceStatus;
   oddsDisclosureRef?: string | null;
+}
+
+/** POST /admin/releases/:approvalId/reopen — needs release-approval:override. */
+export interface ReleaseReopenInput {
+  reason: string;
 }
 
 /** GET /admin/media?archived=… — `live` is the default, deliberately. */
@@ -1281,6 +1346,62 @@ export interface SkuUnitDetail extends SkuUnit {
 export interface SkuListResponse {
   data: SkuUnit[];
   meta: { page: number; limit: number; total: number; totalPages: number };
+}
+
+/** The same `{data, meta}` envelope, for the directories below. */
+export interface MetaPaginated<T> {
+  data: T[];
+  meta: { page: number; limit: number; total: number; totalPages: number };
+}
+
+/* ------------------------------------------------------------------ */
+/* Brand & artist directories                                          */
+/*                                                                     */
+/* The source of the uuids POST /admin/products wants for              */
+/* organizationId and artistId. Read-only, alphabetical, paginated.    */
+/*                                                                     */
+/* Gated on drop:read, NOT brand-artist-record:read. That is           */
+/* deliberate: HITBOX_DROP_MANAGER creates drops across every brand    */
+/* and holds no brand-artist grant, so gating the pickers on that      */
+/* resource would lock the role out of a form it cannot complete       */
+/* without them. What makes it safe is the payload — these are         */
+/* directories. The sensitive half of an artist record (bio, linked    */
+/* user account, compliance attestation and its signer, payout terms)  */
+/* is not selected by these queries at all.                            */
+/* ------------------------------------------------------------------ */
+
+export type OrganizationType = "HITBOX" | "BRAND" | "ARTIST_INDIVIDUAL";
+
+export interface OrganizationSummary {
+  id: string;
+  name: string;
+  /*
+   * Part of the row, not a detail — render it next to the name. "Kaze" the
+   * ARTIST_INDIVIDUAL organization and "Kaze" the Artist are different rows
+   * with different ids, and picking the wrong one files the drop under the
+   * wrong owner.
+   */
+  type: OrganizationType;
+  slug: string;
+  isActive: boolean;
+  archivedAt: string | null;
+  counts: { artists: number; products: number };
+}
+
+export interface ArtistSummary {
+  id: string;
+  name: string;
+  slug: string;
+  genre: string | null;
+  avatarUrl: string | null;
+  /** Storefront profile visibility. Unrelated to isActive. */
+  isPublic: boolean;
+  isActive: boolean;
+  archivedAt: string | null;
+  organizationId: string;
+  /** On every row, so an unfiltered list is still unambiguous. */
+  organizationName: string;
+  counts: { products: number; collections: number };
 }
 
 /**

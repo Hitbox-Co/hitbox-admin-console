@@ -50,7 +50,11 @@ import type {
   DashboardResponse,
   DemandSignalRow,
   FinanceSection,
+  ArtistSummary,
   MarketInput,
+  MetaPaginated,
+  OrganizationSummary,
+  OrganizationType,
   ProductCreateInput,
   MarketRow,
   MediaAssetUrl,
@@ -67,6 +71,7 @@ import type {
   ReleaseApprovalDetail,
   ReleaseApprovalRow,
   ReleaseDecisionInput,
+  ReleaseReopenInput,
   ResaleListResponse,
   AssetType,
   BindTagsInput,
@@ -640,6 +645,62 @@ export function useAssetUrl(assetId: string | undefined, enabled: boolean) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Brand & artist directories                                          */
+/*                                                                      */
+/* Where the drop form gets its organizationId and artistId uuids.      */
+/* Both sit behind drop:read — see the note on OrganizationSummary in   */
+/* types.ts for why that, and not brand-artist-record:read.             */
+/*                                                                      */
+/* A directory turns over far more slowly than a ledger, so these hold  */
+/* their cache longer than baseOptions: a picker that repaints on every */
+/* drawer open for a list that changes monthly is just latency.         */
+/* ------------------------------------------------------------------ */
+
+const DIRECTORY_STALE_TIME = 5 * 60_000;
+
+export function useOrganizations(
+  params: {
+    search?: string;
+    type?: OrganizationType;
+    isActive?: boolean;
+    includeArchived?: boolean;
+    page?: number;
+    limit?: number;
+  } = {}
+) {
+  return useQuery({
+    ...baseOptions,
+    staleTime: DIRECTORY_STALE_TIME,
+    queryKey: ["admin-organizations", params],
+    queryFn: () =>
+      api.get<MetaPaginated<OrganizationSummary>>("admin/organizations", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useArtists(
+  params: {
+    search?: string;
+    /** Narrows to one brand's roster — how the two pickers chain. */
+    organizationId?: string;
+    isActive?: boolean;
+    /** Profile visibility, unrelated to isActive. */
+    isPublic?: boolean;
+    includeArchived?: boolean;
+    page?: number;
+    limit?: number;
+  } = {}
+) {
+  return useQuery({
+    ...baseOptions,
+    staleTime: DIRECTORY_STALE_TIME,
+    queryKey: ["admin-artists", params],
+    queryFn: () => api.get<MetaPaginated<ArtistSummary>>("admin/artists", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Markets — the managed record, not the reporting re-slice            */
 /*                                                                      */
 /* Reads need only reports-dashboards:read; every write needs           */
@@ -990,6 +1051,33 @@ export function useReleaseDecision(approvalId: string) {
         .then(unwrap<ReleaseApprovalDetail>),
     onSuccess: (detail) => {
       qc.setQueryData(["release", approvalId], detail);
+      invalidateReleases(qc);
+    },
+  });
+}
+
+/**
+ * Send a decided review back to its owner as version N+1, PENDING.
+ *
+ * The administrator's answer to a rejection they disagree with, and to an
+ * owner who rejected by mistake. It approves nothing: the same party is asked
+ * again — the authority is carried forward, not re-derived — and they still
+ * have to approve with the tickmark.
+ *
+ * A new version rather than clearing decidedAt, because the rejection is
+ * evidence: "why was this bounced twice" has to stay answerable.
+ */
+export function useReopenRelease(approvalId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: ReleaseReopenInput) =>
+      api
+        .post<unknown>(`admin/releases/${approvalId}/reopen`, payload)
+        .then(unwrap<ReleaseApprovalDetail>),
+    onSuccess: (detail) => {
+      // The reopen returns the NEW row, so the old id's cache entry is stale
+      // in a way setQueryData on it would hide. Seed the new one and refetch.
+      qc.setQueryData(["release", detail.id], detail);
       invalidateReleases(qc);
     },
   });

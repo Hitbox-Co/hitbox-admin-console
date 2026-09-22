@@ -6,11 +6,10 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { AlertTriangle, ArrowLeft, ArrowRight, Boxes, Coins, Info, ShieldAlert, X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
-import { useAdminMarkets, useCreateProduct } from "@/lib/api/hooks";
+import { useAdminMarkets, useArtists, useCreateProduct, useOrganizations } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/format";
 import { requiredKeys } from "@/lib/required-fields";
 import { Button, Field, Input, Textarea } from "@/components/ui/primitives";
-import { ARTIST_OPTIONS, ORGANIZATION_OPTIONS } from "@/components/authz/organizations";
 import {
   PriceRows,
   mapServerPriceErrors,
@@ -49,6 +48,29 @@ const detailsSchema = z.object({
   oddsDisclosureRef: z.string().optional(),
 });
 const REQUIRED_DETAILS = requiredKeys(detailsSchema);
+
+/**
+ * What to say under a directory picker. A select that is empty because the
+ * fetch failed looks identical to one that is empty because there is nothing
+ * to pick, and the difference decides whether the operator retries or gives
+ * up — so never let those two read the same.
+ */
+function directoryHint(
+  pending: boolean,
+  failed: boolean,
+  count: number,
+  truncated: boolean,
+  ready: string,
+  noun: string
+) {
+  if (pending) return `Loading ${noun}…`;
+  if (failed) return `Could not load ${noun}. Close and reopen the drawer to retry.`;
+  if (count === 0) return `No active ${noun} to choose from.`;
+  if (truncated) {
+    return `${ready} Showing the first ${count}; there are more than this picker can list.`;
+  }
+  return ready;
+}
 
 /**
  * Add Product — the catalog record, its market pricing, then its first
@@ -103,6 +125,7 @@ export function ProductFormDrawer({
   // Only active markets are offerable: an archived or inactive one comes back
   // as PRODUCTS_PRICE_MARKET_INVALID, which names every bad market at once.
   const marketsQuery = useAdminMarkets({ isActive: true, limit: 100 });
+
   const markets = React.useMemo(
     () => marketsQuery.data?.items ?? [],
     [marketsQuery.data]
@@ -124,6 +147,49 @@ export function ProductFormDrawer({
   const [isAgeSpecific, setIsAgeSpecific] = React.useState(false);
   const [minimumAge, setMinimumAge] = React.useState("");
   const [oddsDisclosureRef, setOddsDisclosureRef] = React.useState("");
+
+  /*
+   * Brand and artist are uuids server-side, so the form cannot invent them.
+   * These two directories are the source; a checked-in list would carry seed
+   * uuids that do not exist outside this database and would fail validation
+   * the first time the form met staging.
+   *
+   * Only active, unarchived rows: a brand-new drop should not be filed under
+   * a retired brand, and offering one invites a mistake nothing downstream
+   * would catch.
+   */
+  const orgsQuery = useOrganizations({ isActive: true, limit: 200 });
+  /*
+   * Chained: once a brand is picked, the roster narrows to it. Unfiltered,
+   * every row still carries organizationName, so the list stays unambiguous.
+   */
+  const artistsQuery = useArtists({
+    isActive: true,
+    limit: 200,
+    organizationId: organizationId || undefined,
+  });
+
+  const organizations = orgsQuery.data?.data ?? [];
+  const artists = artistsQuery.data?.data ?? [];
+
+  /*
+   * A <select> cannot be searched, so a directory longer than one page is a
+   * picker that silently omits options. Say so rather than quietly truncate.
+   */
+  const orgsTruncated = (orgsQuery.data?.meta.total ?? 0) > organizations.length;
+  const artistsTruncated = (artistsQuery.data?.meta.total ?? 0) > artists.length;
+
+  /*
+   * Changing the brand can strand an artist from the previous roster, and a
+   * mismatched pair is exactly the filing error the chaining exists to stop.
+   */
+  const clearArtistOffRoster = (nextOrganizationId: string) => {
+    if (!artistId) return;
+    const chosen = artists.find((a) => a.id === artistId);
+    if (chosen && nextOrganizationId && chosen.organizationId !== nextOrganizationId) {
+      setArtistId("");
+    }
+  };
 
   /*
    * Step 2 — market pricing. Required: at least one row.
@@ -272,13 +338,13 @@ export function ProductFormDrawer({
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="rx-overlay fixed inset-0 z-50 bg-[rgba(0,0,0,0.5)]" />
-        <Dialog.Content className="rx-drawer fixed right-0 top-0 z-50 flex h-dvh w-full max-w-[560px] flex-col border-l border-[var(--hairline-strong)] bg-[var(--surface-1)] shadow-[var(--shadow-3)]">
-          <div className="flex items-start justify-between gap-3 border-b border-[var(--hairline)] px-4 py-3.5">
+        <Dialog.Content className="rx-drawer fixed right-0 top-0 z-50 flex h-dvh w-full max-w-140 flex-col border-l border-hairline-strong bg-surface-1 shadow-e3">
+          <div className="flex items-start justify-between gap-3 border-b border-hairline px-4 py-3.5">
             <div className="min-w-0">
-              <Dialog.Title className="text-[14px] font-semibold tracking-[-0.01em] text-[var(--text-1)]">
+              <Dialog.Title className="text-[14px] font-semibold tracking-[-0.01em] text-text-1">
                 Add drop
               </Dialog.Title>
-              <Dialog.Description className="mt-0.5 text-[12px] text-[var(--text-3)]">
+              <Dialog.Description className="mt-0.5 text-[12px] text-text-3">
                 {step === "details"
                   ? "Step 1 of 3 — the catalog record."
                   : step === "pricing"
@@ -329,16 +395,27 @@ export function ProductFormDrawer({
                     label="Brand"
                     htmlFor="p-org"
                     error={errors.organizationId}
-                    hint="The owning organization. There is still no organization-list endpoint, so these mirror the seeded set."
+                    hint={directoryHint(
+                      orgsQuery.isPending,
+                      orgsQuery.isError,
+                      organizations.length,
+                      orgsTruncated,
+                      "The owning organization. The type is shown because an artist's own organization and their artist record are different rows.",
+                      "brands"
+                    )}
                   >
                     <select
                       id="p-org"
                       value={organizationId}
-                      onChange={(e) => setOrganizationId(e.target.value)}
-                      className="h-8 w-full rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-2 text-[13px] text-[var(--text-1)] transition-colors hover:border-[var(--hairline-strong)]"
+                      disabled={orgsQuery.isPending || orgsQuery.isError || artistsQuery.isPending }
+                      onChange={(e) => {
+                        setOrganizationId(e.target.value);
+                        clearArtistOffRoster(e.target.value);
+                      }}
+                      className="h-8 w-full rounded-[6px] border border-hairline bg-surface-2 px-2 text-[13px] text-text-1 transition-colors hover:border-hairline-strong disabled:opacity-60"
                     >
                       <option value="">Unassigned</option>
-                      {ORGANIZATION_OPTIONS.map((o) => (
+                      {organizations.map((o) => (
                         <option key={o.id} value={o.id}>
                           {o.name} — {o.type}
                         </option>
@@ -349,18 +426,29 @@ export function ProductFormDrawer({
                   <Field
                     label="Artist"
                     htmlFor="p-artist"
-                    hint="Also a uuid server-side, and also has no list endpoint yet."
+                    error={errors.artistId}
+                    hint={directoryHint(
+                      artistsQuery.isPending,
+                      artistsQuery.isError,
+                      artists.length,
+                      artistsTruncated,
+                      organizationId
+                        ? "Narrowed to the selected brand's roster."
+                        : "Every artist, with the brand they belong to. Pick a brand first to narrow this.",
+                      organizationId ? "artists on this roster" : "artists"
+                    )}
                   >
                     <select
                       id="p-artist"
                       value={artistId}
+                      disabled={artistsQuery.isPending || artistsQuery.isError || orgsQuery.isPending}
                       onChange={(e) => setArtistId(e.target.value)}
-                      className="h-8 w-full rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-2 text-[13px] text-[var(--text-1)] transition-colors hover:border-[var(--hairline-strong)]"
+                      className="h-8 w-full rounded-[6px] border border-hairline bg-surface-2 px-2 text-[13px] text-text-1 transition-colors hover:border-hairline-strong disabled:opacity-60"
                     >
                       <option value="">Unassigned</option>
-                      {ARTIST_OPTIONS.map((a) => (
+                      {artists.map((a) => (
                         <option key={a.id} value={a.id}>
-                          {a.name}
+                          {organizationId ? a.name : `${a.name} — ${a.organizationName}`}
                         </option>
                       ))}
                     </select>
@@ -512,8 +600,8 @@ export function ProductFormDrawer({
                     />
                   </Field>
 
-                  <p className="flex items-start gap-2 text-[11px] leading-relaxed text-[var(--text-3)]">
-                    <Info className="mt-[1px] h-3 w-3 shrink-0" aria-hidden />
+                  <p className="flex items-start gap-2 text-[11px] leading-relaxed text-text-3">
+                    <Info className="mt-px h-3 w-3 shrink-0" aria-hidden />
                     The drop is created as a <strong>Draft</strong>. Moving it onward is
                     the review workflow&rsquo;s job, from Approvals.
                   </p>
@@ -521,7 +609,7 @@ export function ProductFormDrawer({
               ) : step === "pricing" ? (
                 <>
                   {marketsQuery.isLoading ? (
-                    <p className="text-[12px] text-[var(--text-3)]">Loading markets…</p>
+                    <p className="text-[12px] text-text-3">Loading markets…</p>
                   ) : markets.length === 0 ? (
                     /*
                       Nothing to price against — the picker would be an empty

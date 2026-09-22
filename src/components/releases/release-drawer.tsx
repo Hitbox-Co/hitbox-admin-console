@@ -3,9 +3,14 @@
 import * as React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { toast } from "sonner";
-import { Check, FileWarning, Lock, ShieldAlert, X } from "lucide-react";
+import { Check, FileWarning, Lock, RotateCcw, ScrollText, ShieldAlert, Users, X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
-import { useAmendRelease, useRelease, useReleaseDecision } from "@/lib/api/hooks";
+import {
+  useAmendRelease,
+  useRelease,
+  useReleaseDecision,
+  useReopenRelease,
+} from "@/lib/api/hooks";
 import { formatDateTime, humanize } from "@/lib/format";
 import { usePermissions } from "@/components/layout/authz-provider";
 import {
@@ -20,22 +25,66 @@ import {
   toneForStatus,
 } from "@/components/ui/primitives";
 import { ErrorState } from "@/components/ui/states";
-import type { ComplianceStatus, ReleaseHistoryEntry } from "@/lib/types";
+import type {
+  ComplianceStatus,
+  ReleaseApprovalDetail,
+  ReleaseAuthority,
+  ReleaseHistoryEntry,
+} from "@/lib/types";
 
 /**
  * The release review: amend while undecided, then approve or reject.
  *
- * `canDecide` / `blockedReason` come from the server and drive the buttons.
- * The console does not re-derive them from `status`, because the real rule
- * includes whether the caller holds release-approval:override:global — which
- * only the server knows.
+ * The two buttons are driven from `canApprove` and `canReject` SEPARATELY,
+ * never from one flag, because for an administrator looking at a brand's drop
+ * they differ: refusal is broader than consent. Neither is re-derived from
+ * `status` — the real rule turns on the drop's frozen authority and on
+ * whether the caller holds release-approval:override:global, and only the
+ * server knows the second.
  *
  * The version history is append-only: resubmitting a rejected drop creates
  * version N+1 rather than overwriting the rejection, which is what makes
- * "why was this bounced twice" answerable six months later.
+ * "why was this bounced twice" answerable six months later. Reopening works
+ * the same way, and leaves the rejection it came from intact.
  */
 
 const COMPLIANCE: ComplianceStatus[] = ["PENDING", "CLEARED", "FLAGGED"];
+
+/**
+ * Who the frozen authority names. Worth spelling out on screen: an approver
+ * who does not know why they are blocked will ask an administrator to do it
+ * for them, which is the one thing the rule exists to prevent.
+ */
+const AUTHORITY: Record<string, { label: string; who: string }> = {
+  ARTIST: {
+    label: "Artist",
+    who: "the artist named on this drop",
+  },
+  ORGANIZATION: {
+    label: "Brand",
+    who: "someone holding a role in the owning brand",
+  },
+  PLATFORM: {
+    label: "Platform",
+    who: "HitBox staff",
+  },
+};
+
+/**
+ * Never index AUTHORITY directly. The list rows in the API sample carry no
+ * `authority`, so a row that predates the field — or a value added
+ * server-side later — would otherwise crash the drawer on open rather than
+ * degrade to a vaguer sentence.
+ */
+function authorityOf(value: ReleaseAuthority | null | undefined) {
+  if (value && AUTHORITY[value]) return AUTHORITY[value];
+  return {
+    label: value ? humanize(value) : "Unresolved",
+    who: "the party that owns this drop",
+  };
+}
+
+type Mode = "APPROVED" | "REJECTED" | "REOPEN" | null;
 
 export function ReleaseDrawer({
   approvalId,
@@ -48,13 +97,31 @@ export function ReleaseDrawer({
   const query = useRelease(approvalId);
   const amend = useAmendRelease(approvalId);
   const decide = useReleaseDecision(approvalId);
+  const reopen = useReopenRelease(approvalId);
   const approval = query.data;
 
   const canManage = perms.can("release-approval", "manage");
+  /*
+   * Reopening is the override path, and an exact-action check: a manage grant
+   * does not imply it, so can() would offer the button to a role the
+   * controller then refuses.
+   */
+  const canOverride = perms.hasAction("release-approval", "override");
 
-  const [mode, setMode] = React.useState<"APPROVED" | "REJECTED" | null>(null);
+  const [mode, setMode] = React.useState<Mode>(null);
   const [comment, setComment] = React.useState("");
   const [compliance, setCompliance] = React.useState<ComplianceStatus | "">("");
+  /*
+   * Starts false on every entry into the approve flow and is never seeded
+   * from the server. A pre-ticked box records an acceptance nobody made.
+   */
+  const [acceptLegal, setAcceptLegal] = React.useState(false);
+  const [reopenReason, setReopenReason] = React.useState("");
+
+  const enterMode = (next: Mode) => {
+    setMode(next);
+    setAcceptLegal(false);
+  };
 
   /**
    * Null means "untouched, show whatever the server has". Deriving it this
@@ -70,15 +137,20 @@ export function ReleaseDrawer({
     toast.error(err instanceof ApiError ? err.friendly : "Could not update the review.");
 
   const submitDecision = () => {
-    if (!mode) return;
+    if (mode !== "APPROVED" && mode !== "REJECTED") return;
     // The API refuses a rejection with no comment (422
     // RELEASES_COMMENT_REQUIRED); block it here so the operator is not
     // bounced by a validation error they could have been told about.
     if (mode === "REJECTED" && !comment.trim()) return;
+    // Likewise 422 RELEASES_LEGAL_ACCEPTANCE_REQUIRED.
+    if (mode === "APPROVED" && !acceptLegal) return;
 
     decide.mutate(
       {
         status: mode,
+        // Sent only on an approval. Refusing to publish something carries no
+        // liability, so a rejection needs no acceptance.
+        acceptLegalCompliance: mode === "APPROVED" ? true : undefined,
         comment: comment.trim() || undefined,
         complianceStatus: (compliance || undefined) as ComplianceStatus | undefined,
         oddsDisclosureRef: oddsRef.trim() || null,
@@ -92,8 +164,34 @@ export function ReleaseDrawer({
           );
           setMode(null);
           setComment("");
+          setAcceptLegal(false);
         },
         onError,
+      }
+    );
+  };
+
+  const submitReopen = () => {
+    if (!reopenReason.trim()) return;
+    reopen.mutate(
+      { reason: reopenReason.trim() },
+      {
+        onSuccess: (detail) => {
+          toast.success(
+            `Reopened as v${detail.version} — back with ${
+              authorityOf(detail.authority).who
+            } to decide`
+          );
+          setReopenReason("");
+          setMode(null);
+          // The reopen created a NEW approval row; this drawer is looking at
+          // the old one, which is now history.
+          onClose();
+        },
+        onError: (err: unknown) =>
+          toast.error(
+            err instanceof ApiError ? err.friendly : "Could not reopen the review."
+          ),
       }
     );
   };
@@ -155,6 +253,26 @@ export function ReleaseDrawer({
               <ErrorState error={query.error} onRetry={() => query.refetch()} />
             ) : approval ? (
               <>
+                <AuthorityPanel approval={approval} />
+
+                {approval.reopenedFromVersion !== null ? (
+                  <p className="flex items-start gap-2 rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--surface-2)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--text-2)]">
+                    <RotateCcw className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
+                    <span>
+                      Reopened from v{approval.reopenedFromVersion}
+                      {approval.reopenedAt
+                        ? ` on ${formatDateTime(approval.reopenedAt)}`
+                        : ""}
+                      .{" "}
+                      {approval.reopenReason ? (
+                        <span className="text-[var(--text-1)]">
+                          “{approval.reopenReason}”
+                        </span>
+                      ) : null}
+                    </span>
+                  </p>
+                ) : null}
+
                 {/* The three facts the approver is personally accountable for. */}
                 <Panel>
                   <p className="px-3 pb-2 pt-3 text-[11px] font-medium uppercase tracking-wide text-[var(--text-3)]">
@@ -212,6 +330,30 @@ export function ReleaseDrawer({
                         </span>
                       </Row>
                     ) : null}
+                    {/*
+                      What was accepted and when, not merely that it was. An
+                      approval with no acceptance on it is the thing an audit
+                      is looking for, so show its absence too.
+                    */}
+                    {approval.status === "APPROVED" ? (
+                      <Row label="Legal compliance">
+                        {approval.legalComplianceAccepted ? (
+                          <span className="text-[12px] text-[var(--text-1)]">
+                            Accepted
+                            {approval.legalComplianceVersion
+                              ? ` (${approval.legalComplianceVersion})`
+                              : ""}
+                            {approval.legalComplianceAcceptedAt
+                              ? ` · ${formatDateTime(approval.legalComplianceAcceptedAt)}`
+                              : ""}
+                          </span>
+                        ) : (
+                          <span className="text-[12px] text-[var(--danger)]">
+                            Not recorded
+                          </span>
+                        )}
+                      </Row>
+                    ) : null}
                   </div>
                 </Panel>
 
@@ -247,11 +389,64 @@ export function ReleaseDrawer({
                   <Lock className="h-3 w-3" aria-hidden />
                   Deciding a review needs release-approval:manage
                 </p>
-              ) : !approval.canDecide ? (
+              ) : mode === "REOPEN" ? (
+                <>
+                  <Field
+                    label="Why send it back"
+                    htmlFor="reopen-reason"
+                    hint="Recorded on the new version, and visible to whoever decides it next."
+                  >
+                    <Textarea
+                      id="reopen-reason"
+                      rows={3}
+                      value={reopenReason}
+                      onChange={(e) => setReopenReason(e.target.value)}
+                      placeholder="The rights query was resolved — please take another look."
+                      autoFocus
+                    />
+                  </Field>
+
+                  <p className="flex items-start gap-2 rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--surface-2)] px-3 py-2.5 text-[11.5px] leading-relaxed text-[var(--text-2)]">
+                    <RotateCcw className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
+                    This opens v{approval.version + 1} as pending and puts the drop
+                    back to submitted. It approves nothing —{" "}
+                    {authorityOf(approval.authority).who} still has to decide, tickmark
+                    and all. The {humanize(approval.status).toLowerCase()} on
+                    v{approval.version} stays on the record.
+                  </p>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      loading={reopen.isPending}
+                      disabled={!reopenReason.trim()}
+                      onClick={submitReopen}
+                    >
+                      Reopen for another decision
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => setMode(null)}>
+                      Back
+                    </Button>
+                  </div>
+                </>
+              ) : !approval.canApprove && !approval.canReject ? (
                 <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-[var(--text-3)]">
                   <Lock className="mt-[1px] h-3 w-3 shrink-0" aria-hidden />
                   {approval.blockedReason ??
+                    approval.approveBlockedReason ??
                     "This review has already been decided."}
+                  {canOverride && approval.decidedAt ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="ml-auto shrink-0"
+                      onClick={() => enterMode("REOPEN")}
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      Reopen
+                    </Button>
+                  ) : null}
                 </p>
               ) : mode ? (
                 <>
@@ -310,12 +505,44 @@ export function ReleaseDrawer({
                     </Field>
                   </div>
 
+                  {/*
+                    The acceptance itself. Unticked on every entry, never a
+                    hidden field: what gets stored is which wording was
+                    accepted, so the operator has to have been shown it.
+                  */}
+                  {mode === "APPROVED" ? (
+                    <div className="rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--surface-2)] px-3 py-2.5">
+                      <label className="flex items-start gap-2.5 text-[12px] leading-relaxed text-[var(--text-1)]">
+                        <input
+                          type="checkbox"
+                          checked={acceptLegal}
+                          onChange={(e) => setAcceptLegal(e.target.checked)}
+                          className="mt-[2px] h-3.5 w-3.5 shrink-0 accent-[var(--accent)]"
+                        />
+                        <span>
+                          {approval.legalComplianceStatement ??
+                            "I accept the legal compliance terms for this release."}
+                        </span>
+                      </label>
+                      <p className="mt-1.5 flex items-center gap-1.5 pl-6 text-[10.5px] text-[var(--text-3)]">
+                        <ScrollText className="h-3 w-3 shrink-0" aria-hidden />
+                        Recorded against{" "}
+                        {approval.legalComplianceVersionRequired ?? "the current terms"},
+                        with your name and the time.
+                      </p>
+                    </div>
+                  ) : null}
+
                   <div className="flex items-center gap-2">
                     <Button
                       variant={mode === "REJECTED" ? "danger" : "primary"}
                       size="sm"
                       loading={decide.isPending}
-                      disabled={mode === "REJECTED" && !comment.trim()}
+                      disabled={
+                        mode === "REJECTED"
+                          ? !comment.trim()
+                          : !acceptLegal
+                      }
                       onClick={submitDecision}
                     >
                       Confirm {mode === "APPROVED" ? "approval" : "rejection"}
@@ -335,18 +562,56 @@ export function ReleaseDrawer({
                   </div>
                 </>
               ) : (
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button variant="primary" size="sm" onClick={() => setMode("APPROVED")}>
-                    <Check className="h-3.5 w-3.5" />
-                    Approve
-                  </Button>
-                  <Button variant="danger" size="sm" onClick={() => setMode("REJECTED")}>
-                    <X className="h-3.5 w-3.5" />
-                    Reject
-                  </Button>
-                  <span className="ml-auto text-[11px] text-[var(--text-3)]">
-                    Approving clears the drop for release; publishing is separate.
-                  </span>
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {approval.canApprove ? (
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => enterMode("APPROVED")}
+                      >
+                        <Check className="h-3.5 w-3.5" />
+                        Approve
+                      </Button>
+                    ) : null}
+                    {approval.canReject ? (
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={() => enterMode("REJECTED")}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                        Reject
+                      </Button>
+                    ) : null}
+                    {canOverride && approval.decidedAt ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => enterMode("REOPEN")}
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        Reopen
+                      </Button>
+                    ) : null}
+                  </div>
+
+                  {/*
+                    The case this whole screen turns on: an administrator who
+                    may refuse a brand's drop but may not consent on its
+                    behalf. Saying nothing would read as a bug.
+                  */}
+                  {!approval.canApprove ? (
+                    <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-[var(--text-3)]">
+                      <Lock className="mt-[1px] h-3 w-3 shrink-0" aria-hidden />
+                      {approval.approveBlockedReason ??
+                        `Only ${authorityOf(approval.authority).who} can approve this drop.`}
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-[var(--text-3)]">
+                      Approving clears the drop for release; publishing is separate.
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -354,6 +619,37 @@ export function ReleaseDrawer({
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+  );
+}
+
+/**
+ * Who owns this drop and who therefore decides it. Above the compliance facts
+ * deliberately: it is the first thing that determines whether the rest of the
+ * screen is actionable for the person reading it.
+ */
+function AuthorityPanel({ approval }: { approval: ReleaseApprovalDetail }) {
+  const authority = authorityOf(approval.authority);
+
+  return (
+    <Panel>
+      <p className="px-3 pb-2 pt-3 text-[11px] font-medium uppercase tracking-wide text-[var(--text-3)]">
+        Entitled to decide
+      </p>
+      <div className="space-y-2 px-3 pb-3">
+        <Row label="Authority">
+          <span className="inline-flex items-center gap-1.5 rounded-[6px] bg-[var(--surface-3)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--text-1)]">
+            <Users className="h-3 w-3" aria-hidden />
+            {authority.label}
+          </span>
+        </Row>
+        <p className="text-[11.5px] leading-relaxed text-[var(--text-3)]">
+          Approval must come from {authority.who}. It was resolved from the
+          drop&rsquo;s organization when the review opened and does not change
+          if the drop later does — the party that was asked is the party asked
+          again.
+        </p>
+      </div>
+    </Panel>
   );
 }
 
