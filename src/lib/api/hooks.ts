@@ -52,7 +52,11 @@ import type {
   DashboardResponse,
   DemandSignalRow,
   FinanceSection,
+  ArtistSummary,
   MarketInput,
+  MetaPaginated,
+  OrganizationSummary,
+  OrganizationType,
   ProductCreateInput,
   MarketRow,
   MediaAssetUrl,
@@ -69,6 +73,7 @@ import type {
   ReleaseApprovalDetail,
   ReleaseApprovalRow,
   ReleaseDecisionInput,
+  ReleaseReopenInput,
   ResaleListResponse,
   AssetType,
   BindTagsInput,
@@ -1039,6 +1044,33 @@ export function useReleaseDecision(approvalId: string) {
         .then(unwrap<ReleaseApprovalDetail>),
     onSuccess: (detail) => {
       qc.setQueryData(["release", approvalId], detail);
+      invalidateReleases(qc);
+    },
+  });
+}
+
+/**
+ * Send a decided review back to its owner as version N+1, PENDING.
+ *
+ * The administrator's answer to a rejection they disagree with, and to an
+ * owner who rejected by mistake. It approves nothing: the same party is asked
+ * again — the authority is carried forward, not re-derived — and they still
+ * have to approve with the tickmark.
+ *
+ * A new version rather than clearing decidedAt, because the rejection is
+ * evidence: "why was this bounced twice" has to stay answerable.
+ */
+export function useReopenRelease(approvalId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: ReleaseReopenInput) =>
+      api
+        .post<unknown>(`admin/releases/${approvalId}/reopen`, payload)
+        .then(unwrap<ReleaseApprovalDetail>),
+    onSuccess: (detail) => {
+      // The reopen returns the NEW row, so the old id's cache entry is stale
+      // in a way setQueryData on it would hide. Seed the new one and refetch.
+      qc.setQueryData(["release", detail.id], detail);
       invalidateReleases(qc);
     },
   });

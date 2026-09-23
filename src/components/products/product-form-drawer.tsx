@@ -55,6 +55,29 @@ const detailsSchema = z.object({
 const REQUIRED_DETAILS = requiredKeys(detailsSchema);
 
 /**
+ * What to say under a directory picker. A select that is empty because the
+ * fetch failed looks identical to one that is empty because there is nothing
+ * to pick, and the difference decides whether the operator retries or gives
+ * up — so never let those two read the same.
+ */
+function directoryHint(
+  pending: boolean,
+  failed: boolean,
+  count: number,
+  truncated: boolean,
+  ready: string,
+  noun: string
+) {
+  if (pending) return `Loading ${noun}…`;
+  if (failed) return `Could not load ${noun}. Close and reopen the drawer to retry.`;
+  if (count === 0) return `No active ${noun} to choose from.`;
+  if (truncated) {
+    return `${ready} Showing the first ${count}; there are more than this picker can list.`;
+  }
+  return ready;
+}
+
+/**
  * Add Product — the catalog record, its market pricing, then its first
  * serialized units.
  *
@@ -107,6 +130,7 @@ export function ProductFormDrawer({
   // Only active markets are offerable: an archived or inactive one comes back
   // as PRODUCTS_PRICE_MARKET_INVALID, which names every bad market at once.
   const marketsQuery = useAdminMarkets({ isActive: true, limit: 100 });
+
   const markets = React.useMemo(
     () => marketsQuery.data?.items ?? [],
     [marketsQuery.data]
@@ -289,13 +313,13 @@ export function ProductFormDrawer({
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="rx-overlay fixed inset-0 z-50 bg-[rgba(0,0,0,0.5)]" />
-        <Dialog.Content className="rx-drawer fixed right-0 top-0 z-50 flex h-dvh w-full max-w-[560px] flex-col border-l border-[var(--hairline-strong)] bg-[var(--surface-1)] shadow-[var(--shadow-3)]">
-          <div className="flex items-start justify-between gap-3 border-b border-[var(--hairline)] px-4 py-3.5">
+        <Dialog.Content className="rx-drawer fixed right-0 top-0 z-50 flex h-dvh w-full max-w-140 flex-col border-l border-hairline-strong bg-surface-1 shadow-e3">
+          <div className="flex items-start justify-between gap-3 border-b border-hairline px-4 py-3.5">
             <div className="min-w-0">
-              <Dialog.Title className="text-[14px] font-semibold tracking-[-0.01em] text-[var(--text-1)]">
+              <Dialog.Title className="text-[14px] font-semibold tracking-[-0.01em] text-text-1">
                 Add drop
               </Dialog.Title>
-              <Dialog.Description className="mt-0.5 text-[12px] text-[var(--text-3)]">
+              <Dialog.Description className="mt-0.5 text-[12px] text-text-3">
                 {step === "details"
                   ? "Step 1 of 3 — the catalog record."
                   : step === "pricing"
@@ -555,8 +579,8 @@ export function ProductFormDrawer({
                     />
                   </Field>
 
-                  <p className="flex items-start gap-2 text-[11px] leading-relaxed text-[var(--text-3)]">
-                    <Info className="mt-[1px] h-3 w-3 shrink-0" aria-hidden />
+                  <p className="flex items-start gap-2 text-[11px] leading-relaxed text-text-3">
+                    <Info className="mt-px h-3 w-3 shrink-0" aria-hidden />
                     The drop is created as a <strong>Draft</strong>. Moving it onward is
                     the review workflow&rsquo;s job, from Approvals.
                   </p>
@@ -564,7 +588,7 @@ export function ProductFormDrawer({
               ) : step === "pricing" ? (
                 <>
                   {marketsQuery.isLoading ? (
-                    <p className="text-[12px] text-[var(--text-3)]">Loading markets…</p>
+                    <p className="text-[12px] text-text-3">Loading markets…</p>
                   ) : markets.length === 0 ? (
                     /*
                       Nothing to price against — the picker would be an empty

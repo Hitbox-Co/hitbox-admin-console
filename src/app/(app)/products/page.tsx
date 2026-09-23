@@ -147,7 +147,7 @@ function ProductsView() {
       header: "Drop",
       cell: (r) => (
         <div className="min-w-0">
-          <p className="truncate text-[13px] font-medium text-[var(--text-1)]">{r.name}</p>
+          <p className="truncate text-[13px] font-medium text-text-1">{r.name}</p>
           <Mono className="mt-0.5 text-[10px]">{r.groupCode}</Mono>
         </div>
       ),
@@ -195,7 +195,7 @@ function ProductsView() {
             {humanize(r.complianceStatus)}
           </Badge>
         ) : (
-          <span className="text-[12px] text-[var(--text-3)]">—</span>
+          <span className="text-[12px] text-text-3">—</span>
         ),
     },
     {
@@ -210,20 +210,20 @@ function ProductsView() {
       cell: (r) =>
         r.isAgeSpecific ? (
           <Tooltip content="Age-restricted. A release cannot be approved without a minimum age.">
-            <span className="inline-flex items-center gap-1.5 rounded-[6px] bg-[var(--warning-dim)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--warning)]">
+            <span className="inline-flex items-center gap-1.5 rounded-[6px] bg-warning-dim px-1.5 py-0.5 text-[11px] font-medium text-warning">
               <ShieldAlert className="h-3 w-3" aria-hidden />
               {r.minimumAge ? `${r.minimumAge}+` : "No minimum"}
             </span>
           </Tooltip>
         ) : (
-          <span className="text-[12px] text-[var(--text-3)]">None</span>
+          <span className="text-[12px] text-text-3">None</span>
         ),
     },
     {
       key: "published",
       header: "Published",
       cell: (r) => (
-        <span className="tnum text-[12px] text-[var(--text-3)]">
+        <span className="tnum text-[12px] text-text-3">
           {formatDate(r.publishedAt)}
         </span>
       ),

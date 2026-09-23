@@ -18,7 +18,18 @@ import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterRow, FilterSelect, useListState } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { ReleaseDrawer } from "@/components/releases/release-drawer";
-import type { ReleaseApproval } from "@/lib/types";
+import type { ReleaseApproval, ReleaseAuthority } from "@/lib/types";
+
+/**
+ * Who must decide each row. In the queue rather than only in the drawer,
+ * because an approver scanning for their own work should not have to open
+ * every review to find out which ones are theirs.
+ */
+const AUTHORITY_LABEL: Record<ReleaseAuthority, string> = {
+  ARTIST: "Artist",
+  ORGANIZATION: "Brand",
+  PLATFORM: "Platform",
+};
 
 export default function ReleaseApprovalsPage() {
   return (
@@ -76,6 +87,23 @@ function ReleaseApprovalsView() {
         <Badge tone={toneForStatus(r.status)} dot>
           {humanize(r.status)}
         </Badge>
+      ),
+    },
+    {
+      key: "authority",
+      header: "Decided by",
+      cell: (r) => (
+        <Tooltip
+          content={
+            r.authority === "PLATFORM"
+              ? "HitBox staff decide this drop."
+              : "A HitBox administrator can reject or reopen this, but cannot approve it — the approval records the owner's own acceptance of the compliance terms."
+          }
+        >
+          <span className="cursor-help text-[12px] text-[var(--text-2)]">
+            {r.authority ? AUTHORITY_LABEL[r.authority] ?? humanize(r.authority) : "—"}
+          </span>
+        </Tooltip>
       ),
     },
     {
