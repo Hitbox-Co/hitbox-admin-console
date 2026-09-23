@@ -13,7 +13,9 @@ import type {
   ActivityEventRaw,
   Adjustment,
   AdjustmentInput,
+  AdminArtist,
   AdminMarket,
+  AdminOrganization,
   ApproveRefundInput,
   CloseRuleInput,
   ConfirmReturnInput,
@@ -636,6 +638,53 @@ export function useAssetUrl(assetId: string | undefined, enabled: boolean) {
     staleTime: 0,
     retry: false,
     queryFn: () => api.get<MediaAssetUrl>(`admin/media/${assetId}/url`),
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Owner directories — /admin/artists, /admin/organizations            */
+/*                                                                      */
+/* Both are gated on `drop:read`, which is what makes them usable from  */
+/* the drop form: a Drop Manager fills in brand and artist without ever  */
+/* holding a brand-artist-record grant.                                 */
+/*                                                                      */
+/* Fetched whole rather than paginated. The server caps at 200 and the   */
+/* rows are tiny, so a picker holds the entire directory and filters in  */
+/* the browser — a select that pages is a select nobody can use.        */
+/* ------------------------------------------------------------------ */
+
+/** `{ data, meta }` — unwrap takes the rows and drops the paging, which is
+ *  what a picker wants. Raise `limit` before assuming the list is complete. */
+export function useAdminOrganizations(enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-organizations"],
+    enabled,
+    // The directory changes on the order of never; re-reading it on every
+    // drawer open would be pure noise.
+    staleTime: 5 * 60_000,
+    queryFn: () =>
+      api
+        .get<unknown>("admin/organizations", { limit: 200 })
+        .then(unwrap<AdminOrganization[]>),
+  });
+}
+
+/**
+ * `organizationId` narrows to one brand's roster — the drop form passes it
+ * once a brand is picked, so the artist list stops offering people who do not
+ * belong to it.
+ */
+export function useAdminArtists(organizationId?: string, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-artists", organizationId ?? "all"],
+    enabled,
+    staleTime: 5 * 60_000,
+    queryFn: () =>
+      api
+        .get<unknown>("admin/artists", { limit: 200, organizationId })
+        .then(unwrap<AdminArtist[]>),
   });
 }
 

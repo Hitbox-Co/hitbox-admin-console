@@ -78,6 +78,10 @@ export const API: Endpoint[] = [
   { method: "GET", path: "admin/products/:productId/skus/summary", kind: "read", requires: "collectible-instance:read" },
   { method: "GET", path: "admin/products/:productId/images", kind: "read", requires: "drop:read" },
   { method: "GET", path: "admin/products/:productId/prices", kind: "read", requires: "drop:read" },
+  /* Owner directories for the drop form's pickers and for naming catalog rows.
+     Gated on drop:read, NOT brand-artist-record:read — that is deliberate. */
+  { method: "GET", path: "admin/organizations", kind: "read", requires: "drop:read" },
+  { method: "GET", path: "admin/artists", kind: "read", requires: "drop:read" },
   { method: "GET", path: "admin/skus", kind: "read", requires: "collectible-instance:read" },
   { method: "GET", path: "admin/skus/:skuId", kind: "read", requires: "collectible-instance:read" },
   { method: "GET", path: "admin/skus/code/:skuCode", kind: "read", requires: "collectible-instance:read" },

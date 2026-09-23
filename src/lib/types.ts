@@ -1334,6 +1334,65 @@ export interface MintResult {
 }
 
 /* ------------------------------------------------------------------ */
+/* Owner directories — /admin/artists and /admin/organizations         */
+/*                                                                      */
+/* Read-only pickers for the drop form's brand and artist fields, and   */
+/* for putting a NAME on a catalog row that otherwise carries only a    */
+/* uuid. Both are gated on `drop:read` rather than                      */
+/* `brand-artist-record:read`, deliberately, so a Drop Manager can fill  */
+/* the form without holding the brand-record grant.                     */
+/*                                                                      */
+/* Envelope note: these answer `{ data, meta }` — a fourth shape in this */
+/* API, and NOT the dashboard's `{ page, limit, total, items }`. Running  */
+/* one through `unwrap` yields the rows and drops `meta`, which is right  */
+/* for a picker and wrong for a paginated table.                        */
+/* ------------------------------------------------------------------ */
+
+export type OrganizationType = "HITBOX" | "BRAND" | "ARTIST_INDIVIDUAL";
+
+/**
+ * One option in a brand picker.
+ *
+ * `type` is part of the row rather than a detail because the picker is
+ * otherwise ambiguous: "Kaze" as an ARTIST_INDIVIDUAL organization and "Kaze"
+ * as an Artist record are different rows with different ids, and choosing the
+ * wrong one files the drop under the wrong owner.
+ */
+export interface AdminOrganization {
+  id: string;
+  name: string;
+  type: OrganizationType | string;
+  slug: string;
+  isActive: boolean;
+  archivedAt: string | null;
+  /** Live reference counts — "safe to retire?", and a sort key. */
+  counts: { artists: number; products: number };
+}
+
+/**
+ * One option in an artist picker.
+ *
+ * `organizationId`/`organizationName` ride along because an artist alone is
+ * ambiguous on a form that also asks for a brand: the same artist under a
+ * brand and under their own artist-individual organization are different
+ * drops, and the API cannot tell which was meant.
+ */
+export interface AdminArtist {
+  id: string;
+  name: string;
+  slug: string;
+  genre: string | null;
+  avatarUrl: string | null;
+  /** Unrelated to `isActive`: an artist can be live and unlisted. */
+  isPublic: boolean;
+  isActive: boolean;
+  archivedAt: string | null;
+  organizationId: string | null;
+  organizationName: string | null;
+  counts: { products: number; collections: number };
+}
+
+/* ------------------------------------------------------------------ */
 /* Market pricing — /admin/products/:id/prices                         */
 /* (product-upload-api.md §3)                                           */
 /*                                                                      */

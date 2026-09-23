@@ -6,11 +6,15 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { AlertTriangle, ArrowLeft, ArrowRight, Boxes, Coins, Info, ShieldAlert, X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
-import { useAdminMarkets, useCreateProduct } from "@/lib/api/hooks";
+import {
+  useAdminArtists,
+  useAdminMarkets,
+  useAdminOrganizations,
+  useCreateProduct,
+} from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/format";
 import { requiredKeys } from "@/lib/required-fields";
 import { Button, Field, Input, Textarea } from "@/components/ui/primitives";
-import { ARTIST_OPTIONS, ORGANIZATION_OPTIONS } from "@/components/authz/organizations";
 import {
   PriceRows,
   mapServerPriceErrors,
@@ -124,6 +128,19 @@ export function ProductFormDrawer({
   const [isAgeSpecific, setIsAgeSpecific] = React.useState(false);
   const [minimumAge, setMinimumAge] = React.useState("");
   const [oddsDisclosureRef, setOddsDisclosureRef] = React.useState("");
+
+  /*
+   * The owner directories. Both take `drop:read`, which anyone reaching this
+   * form already holds — that gating is deliberate on the backend so a Drop
+   * Manager can fill the form without a brand-artist-record grant.
+   *
+   * The artist list is narrowed by the chosen brand: the same artist under a
+   * brand and under their own artist-individual organization are different
+   * rows, and offering both makes the picker ambiguous about which drop is
+   * being filed.
+   */
+  const orgsQuery = useAdminOrganizations();
+  const artistsQuery = useAdminArtists(organizationId || undefined);
 
   /*
    * Step 2 — market pricing. Required: at least one row.
@@ -329,16 +346,28 @@ export function ProductFormDrawer({
                     label="Brand"
                     htmlFor="p-org"
                     error={errors.organizationId}
-                    hint="The owning organization. There is still no organization-list endpoint, so these mirror the seeded set."
+                    hint={
+                      orgsQuery.isError
+                        ? "The organization directory could not be loaded, so this cannot be set here."
+                        : "The owning organization, read from the live directory."
+                    }
                   >
                     <select
                       id="p-org"
                       value={organizationId}
-                      onChange={(e) => setOrganizationId(e.target.value)}
-                      className="h-8 w-full rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-2 text-[13px] text-[var(--text-1)] transition-colors hover:border-[var(--hairline-strong)]"
+                      disabled={!orgsQuery.data?.length}
+                      onChange={(e) => {
+                        setOrganizationId(e.target.value);
+                        // The roster below is scoped to the brand, so an artist
+                        // chosen under the previous one no longer belongs.
+                        setArtistId("");
+                      }}
+                      className="h-8 w-full rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-2 text-[13px] text-[var(--text-1)] transition-colors hover:border-[var(--hairline-strong)] disabled:opacity-50"
                     >
-                      <option value="">Unassigned</option>
-                      {ORGANIZATION_OPTIONS.map((o) => (
+                      <option value="">
+                        {orgsQuery.isLoading ? "Loading brands…" : "Unassigned"}
+                      </option>
+                      {(orgsQuery.data ?? []).map((o) => (
                         <option key={o.id} value={o.id}>
                           {o.name} — {o.type}
                         </option>
@@ -349,18 +378,32 @@ export function ProductFormDrawer({
                   <Field
                     label="Artist"
                     htmlFor="p-artist"
-                    hint="Also a uuid server-side, and also has no list endpoint yet."
+                    hint={
+                      artistsQuery.isError
+                        ? "The artist directory could not be loaded, so this cannot be set here."
+                        : organizationId
+                          ? "Narrowed to the chosen brand's roster."
+                          : "Every live artist. Choose a brand to narrow this."
+                    }
                   >
                     <select
                       id="p-artist"
                       value={artistId}
+                      disabled={!artistsQuery.data?.length}
                       onChange={(e) => setArtistId(e.target.value)}
-                      className="h-8 w-full rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-2 text-[13px] text-[var(--text-1)] transition-colors hover:border-[var(--hairline-strong)]"
+                      className="h-8 w-full rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-2 text-[13px] text-[var(--text-1)] transition-colors hover:border-[var(--hairline-strong)] disabled:opacity-50"
                     >
-                      <option value="">Unassigned</option>
-                      {ARTIST_OPTIONS.map((a) => (
+                      <option value="">
+                        {artistsQuery.isLoading
+                          ? "Loading artists…"
+                          : artistsQuery.data?.length === 0
+                            ? "No artists on this brand"
+                            : "Unassigned"}
+                      </option>
+                      {(artistsQuery.data ?? []).map((a) => (
                         <option key={a.id} value={a.id}>
                           {a.name}
+                          {a.organizationName ? ` — ${a.organizationName}` : ""}
                         </option>
                       ))}
                     </select>

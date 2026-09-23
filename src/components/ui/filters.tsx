@@ -41,6 +41,49 @@ export function FilterSelect({
   );
 }
 
+/**
+ * A select over rows that carry an id and a name — a brand, an artist, a
+ * market. Distinct from `FilterSelect`, which takes bare strings and
+ * humanizes them: a uuid humanizes to nothing, and the operator needs to read
+ * the name while the value stays the id.
+ */
+export function FilterPicker({
+  label,
+  value,
+  onChange,
+  options,
+  allLabel = "All",
+  disabled,
+  className,
+}: {
+  label: string;
+  value: string | undefined;
+  onChange: (v: string | undefined) => void;
+  options: { value: string; label: string }[];
+  allLabel?: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <label className={cn("flex items-center gap-1.5", className)}>
+      <span className="text-[12px] text-[var(--text-3)]">{label}</span>
+      <select
+        value={value ?? ""}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value || undefined)}
+        className="h-7 max-w-[190px] rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-1)] px-2 text-[12px] text-[var(--text-1)] transition-colors hover:border-[var(--hairline-strong)] disabled:opacity-50"
+      >
+        <option value="">{allLabel}</option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 export function SearchInput({
   value,
   onChange,
