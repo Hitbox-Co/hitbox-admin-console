@@ -68,15 +68,17 @@ export function VendorDrawer({
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
+    // Blank optional fields go as "" — the backend reads a cleared control as
+    // "no value", but refuses null outright.
     const payload: VendorInput = {
       name: name.trim(),
-      legalName: legalName.trim() || null,
-      country: country.trim().toUpperCase() || null,
+      legalName: legalName.trim(),
+      country: country.trim().toUpperCase(),
       vendorType,
-      contactName: contactName.trim() || null,
-      contactEmail: contactEmail.trim() || null,
-      contactPhone: contactPhone.trim() || null,
-      notes: notes.trim() || null,
+      contactName: contactName.trim(),
+      contactEmail: contactEmail.trim(),
+      contactPhone: contactPhone.trim(),
+      notes: notes.trim(),
       isActive,
     };
 
