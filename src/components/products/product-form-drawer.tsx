@@ -55,29 +55,6 @@ const detailsSchema = z.object({
 const REQUIRED_DETAILS = requiredKeys(detailsSchema);
 
 /**
- * What to say under a directory picker. A select that is empty because the
- * fetch failed looks identical to one that is empty because there is nothing
- * to pick, and the difference decides whether the operator retries or gives
- * up — so never let those two read the same.
- */
-function directoryHint(
-  pending: boolean,
-  failed: boolean,
-  count: number,
-  truncated: boolean,
-  ready: string,
-  noun: string
-) {
-  if (pending) return `Loading ${noun}…`;
-  if (failed) return `Could not load ${noun}. Close and reopen the drawer to retry.`;
-  if (count === 0) return `No active ${noun} to choose from.`;
-  if (truncated) {
-    return `${ready} Showing the first ${count}; there are more than this picker can list.`;
-  }
-  return ready;
-}
-
-/**
  * Add Product — the catalog record, its market pricing, then its first
  * serialized units.
  *

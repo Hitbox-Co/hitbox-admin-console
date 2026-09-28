@@ -290,7 +290,13 @@ export interface NavItem {
   icon: string;
   /** Returns true when this destination has anything to show the caller. */
   visible: (p: Permissions) => boolean;
-  group: "Overview" | "Commerce" | "Catalog" | "Trust" | "Administration";
+  group:
+    | "Overview"
+    | "Commerce"
+    | "Catalog"
+    | "Inventory"
+    | "Trust"
+    | "Administration";
 }
 
 export const NAV_ITEMS: NavItem[] = [
@@ -384,12 +390,57 @@ export const NAV_ITEMS: NavItem[] = [
     group: "Catalog",
     visible: (p) => p.canRead("release-approval"),
   },
+  /*
+   * Supply & inventory. Its own group rather than more Catalog entries: this
+   * is the upstream — the carton, the chip inside it, the manufacturer — and
+   * it is gated on four different resources, so a role that sees one entry
+   * here routinely sees none of the others.
+   */
   {
     href: "/supply",
+    label: "Supply overview",
+    icon: "Gauge",
+    group: "Inventory",
+    // The rollup itself. Every block inside is gated separately, and a caller
+    // with no supply grant at all gets an empty envelope, which the page
+    // explains rather than rendering as zeroes.
+    visible: (p) => p.canRead("reports-dashboards"),
+  },
+  {
+    href: "/supply/consignments",
+    label: "Consignments",
+    icon: "PackageCheck",
+    group: "Inventory",
+    // Headers are planning data. Gated on drop:read because
+    // HITBOX_DROP_MANAGER holds no nfc-tag-claim grant and could not run a
+    // drop without seeing what arrived.
+    visible: (p) => p.canRead("drop"),
+  },
+  {
+    href: "/supply/chips",
+    label: "Chip inventory",
+    icon: "Cpu",
+    group: "Inventory",
+    visible: (p) => p.canRead("nfc-tag-claim"),
+  },
+  {
+    href: "/inventory",
+    label: "Units",
+    icon: "Boxes",
+    group: "Inventory",
+    // The cross-drop list admits global grants only; an org-scoped caller
+    // reaches the same rows through a drop's own units panel.
+    visible: (p) => p.can("collectible-instance", "read", "global"),
+  },
+  {
+    href: "/supply/vendors",
     label: "Vendors",
     icon: "Truck",
-    group: "Catalog",
-    visible: (p) => p.canRead("drop"),
+    group: "Inventory",
+    // The directory is platform-level: who HitBox buys from, on what terms
+    // and at which address is a commercial relationship of the platform's,
+    // not a brand's, so GLOBAL reach rather than merely a consignment grant.
+    visible: (p) => p.can("drop", "read", "global"),
   },
   {
     href: "/demand",
@@ -452,6 +503,8 @@ export const NAV_GROUP_ORDER = [
   "Overview",
   "Commerce",
   "Catalog",
+  // Upstream of the catalog: the carton, the chip, the unit, the vendor.
+  "Inventory",
   "Trust",
   "Administration",
 ] as const;

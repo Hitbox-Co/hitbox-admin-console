@@ -1319,6 +1319,12 @@ export interface SkuUnit {
   isActive: boolean;
   archivedAt: string | null;
   createdAt: string;
+  /**
+   * Moves on every write through the inventory endpoints. Optional because
+   * the list projection is not documented to carry it while the unit detail
+   * is — render it with a fallback rather than assuming.
+   */
+  updatedAt?: string | null;
   trust?: SkuTrustBlock;
   tag?: SkuTagBlock;
   owner?: SkuOwnerBlock;
@@ -1352,56 +1358,6 @@ export interface SkuListResponse {
 export interface MetaPaginated<T> {
   data: T[];
   meta: { page: number; limit: number; total: number; totalPages: number };
-}
-
-/* ------------------------------------------------------------------ */
-/* Brand & artist directories                                          */
-/*                                                                     */
-/* The source of the uuids POST /admin/products wants for              */
-/* organizationId and artistId. Read-only, alphabetical, paginated.    */
-/*                                                                     */
-/* Gated on drop:read, NOT brand-artist-record:read. That is           */
-/* deliberate: HITBOX_DROP_MANAGER creates drops across every brand    */
-/* and holds no brand-artist grant, so gating the pickers on that      */
-/* resource would lock the role out of a form it cannot complete       */
-/* without them. What makes it safe is the payload — these are         */
-/* directories. The sensitive half of an artist record (bio, linked    */
-/* user account, compliance attestation and its signer, payout terms)  */
-/* is not selected by these queries at all.                            */
-/* ------------------------------------------------------------------ */
-
-export type OrganizationType = "HITBOX" | "BRAND" | "ARTIST_INDIVIDUAL";
-
-export interface OrganizationSummary {
-  id: string;
-  name: string;
-  /*
-   * Part of the row, not a detail — render it next to the name. "Kaze" the
-   * ARTIST_INDIVIDUAL organization and "Kaze" the Artist are different rows
-   * with different ids, and picking the wrong one files the drop under the
-   * wrong owner.
-   */
-  type: OrganizationType;
-  slug: string;
-  isActive: boolean;
-  archivedAt: string | null;
-  counts: { artists: number; products: number };
-}
-
-export interface ArtistSummary {
-  id: string;
-  name: string;
-  slug: string;
-  genre: string | null;
-  avatarUrl: string | null;
-  /** Storefront profile visibility. Unrelated to isActive. */
-  isPublic: boolean;
-  isActive: boolean;
-  archivedAt: string | null;
-  organizationId: string;
-  /** On every row, so an unfiltered list is still unambiguous. */
-  organizationName: string;
-  counts: { products: number; collections: number };
 }
 
 /**
@@ -2184,3 +2140,555 @@ export interface WebhookEvent {
   processingError: string | null;
   receivedAt: string;
 }
+
+/* ------------------------------------------------------------------ */
+/* Supply & inventory — /admin/supply (supply-inventory-api.md)        */
+/*                                                                     */
+/* The upstream of the SKU module. A Sku is "#014 of 500"; an NfcTag    */
+/* is the chip inside it; a SupplyBatch is the carton it arrived in; a  */
+/* Vendor made it. A chip is a row of its own because it has a life the */
+/* item does not — QC'd before binding, replaceable while the item      */
+/* keeps its provenance, and its UID unique for ever after retirement.  */
+/*                                                                     */
+/* Four gates, not one "can you see supply" flag:                       */
+/*   drop:read              consignment headers                         */
+/*   drop:read at GLOBAL    the vendor directory                        */
+/*   nfc-tag-claim:read     the chip inventory                          */
+/*   nfc-tag-claim:manage   every write, globalOnly                     */
+/*   reports-dashboards     the metrics rollup                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What a vendor MAKES, not what kind of supplier it is.
+ *
+ * Every item on this platform arrives with its NFC chip already embedded —
+ * nobody ships a reel of loose tags — so there is no "tag manufacturer" in
+ * this supply chain. A vendor is the factory that makes the figure, the
+ * keychain or the jersey, and the chip is inside it when the carton is opened.
+ *
+ * The values mirror Drop.category deliberately, so "who makes our jerseys" and
+ * "which drops are jerseys" answer with the same word.
+ *
+ * The former NFC_TAG_MANUFACTURER and MERCHANDISE_MANUFACTURER no longer
+ * exist: sending either is a 422 rather than a silent landing in OTHER.
+ */
+export type VendorType =
+  | "FIGURE"
+  | "KEYCHAIN"
+  | "JERSEY"
+  | "APPAREL"
+  | "TRADING_CARD"
+  | "POSTER"
+  | "PLUSH"
+  | "MERCHANDISE"
+  | "OTHER";
+
+/** Ordered for a picker: the specific categories first, catch-alls last. */
+export const VENDOR_TYPES: VendorType[] = [
+  "FIGURE",
+  "KEYCHAIN",
+  "JERSEY",
+  "APPAREL",
+  "TRADING_CARD",
+  "POSTER",
+  "PLUSH",
+  "MERCHANDISE",
+  "OTHER",
+];
+
+export interface Vendor {
+  id: string;
+  name: string;
+  legalName: string | null;
+  country: string | null;
+  vendorType: VendorType;
+  contactName: string | null;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  notes: string | null;
+  isActive: boolean;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Live, and what a "safe to retire?" check reads. */
+  counts: { batches: number; units: number };
+}
+
+export interface VendorInput {
+  name?: string;
+  legalName?: string | null;
+  /** ISO 3166-1 alpha-2. A consignment crossing a border is a customs question first. */
+  country?: string | null;
+  vendorType?: VendorType;
+  contactName?: string | null;
+  contactEmail?: string | null;
+  contactPhone?: string | null;
+  notes?: string | null;
+  isActive?: boolean;
+  /** Soft retire: sets archivedAt AND clears isActive. There is deliberately no DELETE. */
+  archived?: boolean;
+}
+
+export type SupplyBatchStatus = "UPLOADED" | "VALIDATED" | "ACCEPTED" | "REJECTED";
+
+/**
+ * What is in the carton — the same product categories as VendorType.
+ *
+ * The chip arrives already embedded in the goods, so a consignment is
+ * described by what the goods ARE rather than by whether it carried chips.
+ * The former NFC_TAG and COLLECTIBLE are gone; the backend migration
+ * 20260928120000_supply_item_type_product_categories mapped COLLECTIBLE rows
+ * to the linked drop category where it matched one of these values, and
+ * everything else to OTHER.
+ *
+ * Aliased rather than re-declared: the two enums are the same set by design,
+ * and a second literal list would be a second thing to forget to update.
+ */
+export type SupplyItemType = VendorType;
+
+/** Offered when booking a consignment in — the same list, the same order. */
+export const SUPPLY_ITEM_TYPES: SupplyItemType[] = VENDOR_TYPES;
+
+/**
+ * Consignment categories that carry chips, and so accept a manifest.
+ *
+ * Every category, which looks like a check that does nothing. It mirrors the
+ * backend allowlist deliberately, so a category added later that carries no
+ * chips — packaging, say — has to opt in on both sides rather than inheriting
+ * permission by silence.
+ */
+export const CHIP_BEARING_ITEM_TYPES: SupplyItemType[] = VENDOR_TYPES;
+
+export interface SupplyBatch {
+  id: string;
+  vendorId: string;
+  vendor: { id: string; name: string; vendorType: VendorType } | null;
+  dropId: string | null;
+  drop: { id: string; groupCode: string; name: string } | null;
+  itemType: SupplyItemType;
+  status: SupplyBatchStatus;
+  quantity: number;
+  batchRef: string | null;
+  vendorInvoiceRef: string | null;
+  receivedAt: string | null;
+  batchDate: string | null;
+  rowsReceived: number;
+  rowsAccepted: number;
+  rowsRejected: number;
+  sourceFileRef: string | null;
+  validationReportRef: string | null;
+  enteredById: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /**
+   * The number the intake screen exists to surface: what the vendor's
+   * paperwork declared against what was actually keyed in.
+   *
+   * `tagsRegistered` — the chip rows that genuinely exist against this
+   * consignment — is present ONLY for a caller holding nfc-tag-claim:read.
+   * It is what catches a manifest counted twice.
+   */
+  reconciliation: {
+    declared: number;
+    registered: number;
+    shortfall: number;
+    tagsRegistered?: number;
+  };
+}
+
+export interface SupplyBatchInput {
+  vendorId: string;
+  dropId?: string | null;
+  itemType: SupplyItemType;
+  quantity: number;
+  batchRef?: string;
+  vendorInvoiceRef?: string;
+  /** Defaults to now; batchDate then defaults to this. */
+  receivedAt?: string;
+  sourceFileRef?: string;
+  notes?: string;
+}
+
+export interface SupplyBatchDecisionInput {
+  status: SupplyBatchStatus;
+  /**
+   * Required to reject. Appended to `notes` prefixed with the decision, so a
+   * rejection reason never overwrites the discrepancy that prompted it.
+   */
+  note?: string;
+  validationReportRef?: string;
+}
+
+export type TagQcStatus = "PENDING" | "PASSED" | "FAILED";
+
+export interface TagManifestRow {
+  /** Any separator style; normalised server-side, and never returned again. */
+  uid: string;
+  qcStatus?: TagQcStatus;
+  qcNotes?: string;
+}
+
+export interface TagManifestInput {
+  dryRun?: boolean;
+  /** At most SUPPLY_MANIFEST_MAX — one physical carton, one transaction. */
+  tags: TagManifestRow[];
+}
+
+export interface TagManifestResult {
+  batchId: string;
+  dryRun: boolean;
+  registered: number;
+  /** Offending rows are identified BY POSITION, never by UID. */
+  duplicates: { row: number; reason: string }[];
+  batch: {
+    rowsReceived: number;
+    rowsAccepted: number;
+    rowsRejected: number;
+    status: SupplyBatchStatus;
+  };
+}
+
+/**
+ * A chip in inventory.
+ *
+ * There is no `uid` field and no capability adds one. A UID is the platform's
+ * anti-counterfeiting secret — whoever holds one can write it to a blank chip
+ * — so the repository never selects the hash or the ciphertext in the first
+ * place, rather than stripping them later.
+ */
+export interface NfcTagRow {
+  id: string;
+  /** NT + 8-digit ordinal, zero-padded so lexical order is numeric order. */
+  nfcTagCode: string;
+  supplyBatchId: string | null;
+  batch: {
+    id: string;
+    batchRef: string | null;
+    vendorId: string;
+    vendorName: string;
+  } | null;
+  skuId: string | null;
+  sku: { id: string; skuCode: string; serialNumber: number } | null;
+  qcStatus: TagQcStatus;
+  qcReportedAt: string | null;
+  qcNotes: string | null;
+  lifecycleState: TagLifecycleState;
+  lastTapCounter: number;
+  tamperStatus: string | null;
+  personalizedAt: string | null;
+  boundAt: string | null;
+  activatedAt: string | null;
+  retiredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TagQcInput {
+  qcStatus: TagQcStatus;
+  qcNotes?: string | null;
+}
+
+export interface SupplyTagFilters {
+  supplyBatchId?: string;
+  vendorId?: string;
+  skuId?: string;
+  lifecycleState?: string;
+  qcStatus?: string;
+  /** true = chips not yet in an item, i.e. free stock. */
+  unbound?: boolean;
+  nfcTagCode?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface SupplyBatchFilters {
+  vendorId?: string;
+  dropId?: string;
+  status?: string;
+  itemType?: string;
+  search?: string;
+  receivedFrom?: string;
+  receivedTo?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface VendorFilters {
+  search?: string;
+  vendorType?: string;
+  country?: string;
+  isActive?: boolean;
+  includeArchived?: boolean;
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * The rollup.
+ *
+ * EVERY BLOCK IS OPTIONAL, and that is load-bearing. A block the caller may
+ * not see is ABSENT, never zeroed: `tags: { total: 0 }` would read as "no
+ * chips exist", which is a different and actionable claim from "you cannot
+ * see this". Check for the PRESENCE of the key, never for a zero value.
+ *
+ * Rates are two-decimal STRINGS, never floats. Same reasoning as money: a
+ * client that receives a string cannot accidentally re-round it into
+ * something that disagrees with what another screen shows.
+ */
+export interface SupplyMetrics {
+  generatedAt: string;
+  scope: string;
+  organizationIds: string[] | null;
+
+  tags?: {
+    total: number;
+    byLifecycle: Record<string, number>;
+    byQc: Record<string, number>;
+    qcFailureRate: string;
+    unbound: number;
+    bound: number;
+  };
+
+  batches?: {
+    total: number;
+    byStatus: Record<string, number>;
+    byItemType: Record<string, number>;
+    quantityDeclared: number;
+    rowsReceived: number;
+    rowsAccepted: number;
+    rowsRejected: number;
+    acceptanceRate: string;
+    pendingReview: number;
+  };
+
+  vendors?: {
+    active: number;
+    byType: Record<string, number>;
+    /**
+     * Ranked by rows REJECTED, not by size — the list exists to surface the
+     * unreliable vendor, not the biggest one.
+     */
+    leaders: {
+      vendorId: string;
+      name: string;
+      vendorType: VendorType;
+      batches: number;
+      quantityDeclared: number;
+      rowsAccepted: number;
+      rowsRejected: number;
+      rejectionRate: string;
+    }[];
+  };
+
+  inventory?: {
+    drops: number;
+    totalSupply: number;
+    minted: number;
+    unminted: number;
+    claimed: number;
+    unclaimed: number;
+    tagged?: number;
+    untagged?: number;
+  };
+
+  reconciliation?: {
+    shortfalls: {
+      batchId: string;
+      batchRef: string | null;
+      vendorName: string;
+      declared: number;
+      registered: number;
+      shortfall: number;
+    }[];
+    unboundTagStock?: number;
+    untaggedUnits?: number;
+  };
+
+  /**
+   * Drops within 10% of exhausting their UNMINTED supply — supply that exists
+   * on paper but has no serialized row yet. A drop whose units are all minted
+   * and all sold is not low on supply; it is sold out, which is another screen.
+   */
+  lowStock?: {
+    productId: string;
+    groupCode: string;
+    name: string;
+    totalSupply: number;
+    minted: number;
+    remaining: number;
+    percentRemaining: string;
+  }[];
+}
+
+export interface SupplyMetricsParams {
+  /**
+   * Narrows only. Naming an organization you hold nothing for is a 403, not
+   * an empty result — an empty result would let you probe which organizations
+   * exist by watching response shapes.
+   */
+  organizationId?: string;
+  vendorId?: string;
+  receivedFrom?: string;
+  receivedTo?: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* Drop inventory — editing SKU records                                */
+/* (sku-inventory-management.md)                                       */
+/*                                                                     */
+/* Minting creates units; this is everything that happens afterwards:   */
+/* staging a release (isActive), fraud and disputes (flagged,           */
+/* resaleBlocked, tamperStatus), tag custody (tagLifecycleState) and    */
+/* retiring stock (archived). Three of the four routinely apply to a    */
+/* RANGE of an edition, which is why the batch selectors look as they   */
+/* do.                                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The full filter set, shared by /admin/skus and the nested product route.
+ *
+ * 🔒 A FILTER IS A READ OF THE COLUMN IT NAMES. The response projection omits
+ * a tag UID from a caller without nfc-tag-claim; left ungated, `?tagId=…`
+ * hands them the same fact anyway — one row back means yes, zero means no,
+ * and enough of those questions is the whole secret. So every filter naming a
+ * gated column is gated by the grant that gates the column, and a refused
+ * filter is a 403 SKUS_FILTER_FORBIDDEN naming all of them at once.
+ *
+ * `tagged`, `tagLifecycleState` and `hasOwner` are deliberately NOT gated:
+ * they are population facts, not identifying ones. "How many units still need
+ * a tag" is the documented way a Drop Manager drives a partial rollout, and no
+ * amount of asking it yields a UID.
+ */
+export interface SkuFilters {
+  page?: number;
+  limit?: number;
+  productId?: string;
+  /** Narrows within your reach. It does not widen it. */
+  organizationId?: string;
+  variantId?: string;
+  hasVariant?: boolean;
+  /** Repeatable: "UNCLAIMED,FLAGGED". */
+  claimedStatus?: string;
+  tagLifecycleState?: string;
+  serialFrom?: number;
+  serialTo?: number;
+  skuCode?: string;
+  /* Tag custody 🔒 nfc-tag-claim */
+  tagged?: boolean;
+  tagId?: string;
+  vendorId?: string;
+  provisioningBatchId?: string;
+  /* Trust 🔒 collectible-instance at FULL */
+  resaleBlocked?: boolean;
+  tampered?: boolean;
+  tamperStatus?: string;
+  /* Ownership 🔒 buyer-profile at FULL */
+  ownerId?: string;
+  hasOwner?: boolean;
+  /* Lifecycle */
+  isActive?: boolean;
+  includeArchived?: boolean;
+  archivedOnly?: boolean;
+  createdFrom?: string;
+  createdTo?: string;
+  updatedFrom?: string;
+  updatedTo?: string;
+  /** Serial number, skuCode fragment, or a full tag UID — the last gated. */
+  search?: string;
+  sort?:
+    | "serial_asc"
+    | "serial_desc"
+    | "newest"
+    | "oldest"
+    | "recently_updated"
+    | "code_asc";
+}
+
+/**
+ * PATCH semantics throughout: an ABSENT key means "leave it alone", and null
+ * is a value. `{"tamperStatus": null}` clears the note; omitting it does not
+ * touch it. The body is strict — an unknown field is a 422, not a silently
+ * ignored key, because a caller who believes they just transferred ownership
+ * should find out on the request rather than a week later.
+ *
+ * The tag block needs nfc-tag-claim:manage ON TOP OF
+ * collectible-instance:manage. A body mixing both when you hold only the
+ * first is refused IN FULL with a 403 naming the fields — nothing partial is
+ * written.
+ */
+export interface SkuUpdateInput {
+  variantId?: string | null;
+  isActive?: boolean;
+  /** true archives AND delists. Refused on a held unit. */
+  archived?: boolean;
+  resaleBlocked?: boolean;
+  resaleBlockedReason?: string | null;
+  tamperStatus?: string | null;
+  /**
+   * The investigation freeze, and the only way claimedStatus moves here.
+   * Unflagging does not restore "whatever it was before" — that is not
+   * recorded anywhere — it derives from ownership: with an owner, CLAIMED;
+   * without, UNCLAIMED.
+   */
+  flagged?: boolean;
+  /* 🔒 nfc-tag-claim:manage */
+  tagLifecycleState?: TagLifecycleState;
+  vendorId?: string | null;
+  provisioningBatchId?: string | null;
+  vendorAuthenticated?: boolean;
+  /**
+   * Audit trail only — not a column. REQUIRED for the four changes that stop
+   * something: flagging, archiving, and marking a tag LOST or REVOKED. Each
+   * stops the unit being sellable, listed, or its tag trusted, and six months
+   * later the only question anybody asks about that row is why.
+   */
+  reason?: string;
+}
+
+/** Exactly one selector. The three serial-based ones need a productId. */
+export interface SkuBatchTargets {
+  skuIds?: string[];
+  skuCodes?: string[];
+  serialNumbers?: number[];
+  serialFrom?: number;
+  serialTo?: number;
+}
+
+export interface SkuBatchInput {
+  /** Comes from the path on the nested route. */
+  productId?: string;
+  targets: SkuBatchTargets;
+  changes: SkuUpdateInput;
+  /**
+   * Resolves and validates everything, writes nothing, records nothing —
+   * what a confirmation dialog shows before somebody commits to archiving a
+   * hundred units.
+   */
+  dryRun?: boolean;
+}
+
+export interface SkuBatchResult {
+  productId: string | null;
+  /** How many units the selector named. */
+  requested: number;
+  /** How many of those exist and you can reach. */
+  matched: number;
+  /** How many actually differed and were written. */
+  changed: number;
+  /** Matched, but already in the requested state. NOT refusals. */
+  unchanged: number;
+  dryRun: boolean;
+  items: {
+    skuId: string;
+    skuCode: string;
+    serialNumber: number;
+    /** The columns that moved — empty for a no-op. */
+    changed: string[];
+  }[];
+}
+
+/** Up to 1000 units per call, and a serial range may span at most 1000. */
+export const SKU_BATCH_MAX = 1000;
+/** SUPPLY_MANIFEST_MAX — matched to a physical carton. */
+export const SUPPLY_MANIFEST_MAX = 1000;

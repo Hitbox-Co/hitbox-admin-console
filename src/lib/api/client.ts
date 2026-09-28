@@ -106,6 +106,50 @@ export class ApiError extends Error {
         return "Every permission on a role must belong to the role's own domain.";
       case "INVALID_RANGE":
         return "The start of the range must come before the end.";
+
+      /*
+       * Supply intake.
+       *
+       * AUDIT_WRITE_FAILED is the one that matters: the mutation commits in
+       * its own transaction and the audit row is appended AFTER it, so an
+       * audit failure is "the data changed and you were told it failed". The
+       * operator must not read this as "nothing happened" and retry — a
+       * second consignment or a second manifest is a real cost.
+       */
+      case "AUDIT_WRITE_FAILED":
+        return "The change may have gone through even though this failed — the audit record did not. Reload and check before trying again.";
+      case "SUPPLY_FORBIDDEN":
+        return "Your role does not reach this part of supply.";
+      case "SUPPLY_VENDOR_ARCHIVED":
+        return "This vendor has been retired and cannot take new consignments.";
+      case "SUPPLY_BATCH_STATE_INVALID":
+        return "That is not a legal move from this consignment's current state — reload, it may already have been decided.";
+      case "SUPPLY_BATCH_ITEM_TYPE_INVALID":
+        return "This consignment carries no chips, so it takes no manifest.";
+      case "SUPPLY_BATCH_QUANTITY_EXCEEDED":
+        return "That would register more items than the consignment declared. The declared quantity is a ceiling.";
+      case "SUPPLY_TAG_UID_TAKEN":
+        return "A chip in this manifest is already registered on the platform. Nothing was written — two rows claiming one chip is what a counterfeit looks like.";
+      case "SUPPLY_TAG_UID_DUPLICATED":
+        return "The manifest lists the same chip twice. Nothing was written.";
+      case "SUPPLY_NO_CHANGES":
+        return "Nothing in that would change anything.";
+      case "SUPPLY_TAG_KEY_UNAVAILABLE":
+        return "This deployment has no chip-UID key configured, so chips cannot be registered. Rows written without it could never be matched against a real tap.";
+
+      /* Unit inventory. */
+      case "SKUS_BATCH_REJECTED":
+        return "At least one unit refused the change, so nothing was written.";
+      case "SKUS_BATCH_EMPTY":
+        return "That selection matched no units.";
+      case "SKUS_FILTER_FORBIDDEN":
+        return "You may not filter by those columns — filtering one is a read of it.";
+      case "SKUS_UPDATE_FORBIDDEN":
+        return "Your grants do not cover every field in that change, so none of it was applied.";
+      case "SKUS_NO_CHANGES":
+        return "That names no editable field.";
+      case "SKUS_VARIANT_MISMATCH":
+        return "That variant belongs to a different drop.";
       case "STORAGE_UNAVAILABLE":
         return "Media storage is not configured on this deployment.";
 

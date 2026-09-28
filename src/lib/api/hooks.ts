@@ -52,11 +52,7 @@ import type {
   DashboardResponse,
   DemandSignalRow,
   FinanceSection,
-  ArtistSummary,
   MarketInput,
-  MetaPaginated,
-  OrganizationSummary,
-  OrganizationType,
   ProductCreateInput,
   MarketRow,
   MediaAssetUrl,
@@ -73,6 +69,25 @@ import type {
   ReleaseApprovalDetail,
   ReleaseApprovalRow,
   ReleaseDecisionInput,
+  MetaPaginated,
+  NfcTagRow,
+  SkuBatchInput,
+  SkuBatchResult,
+  SkuFilters,
+  SkuUpdateInput,
+  SupplyBatch,
+  SupplyBatchDecisionInput,
+  SupplyBatchFilters,
+  SupplyBatchInput,
+  SupplyMetrics,
+  SupplyMetricsParams,
+  SupplyTagFilters,
+  TagManifestInput,
+  TagManifestResult,
+  TagQcInput,
+  Vendor,
+  VendorFilters,
+  VendorInput,
   ReleaseReopenInput,
   ResaleListResponse,
   AssetType,
@@ -2262,5 +2277,265 @@ export function useWebhookEvents(params: WebhookEventFilters, enabled = true) {
     queryFn: () =>
       api.get<Paginated<WebhookEvent>>("admin/payments/webhook-events", { ...params }),
     placeholderData: (prev) => prev,
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Supply & inventory — @hitbox/supply                                  */
+/*                                                                      */
+/* Reads are organization-scoped; every WRITE is globalOnly. Supply      */
+/* intake is a platform custody function: a brand does not take          */
+/* delivery of the platform's chip stock, and an org-scoped grant here   */
+/* would let one brand register chips against another's consignment.    */
+/* ------------------------------------------------------------------ */
+
+function invalidateSupply(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["supply-vendors"] });
+  qc.invalidateQueries({ queryKey: ["supply-vendor"] });
+  qc.invalidateQueries({ queryKey: ["supply-batches"] });
+  qc.invalidateQueries({ queryKey: ["supply-batch"] });
+  qc.invalidateQueries({ queryKey: ["supply-tags"] });
+  qc.invalidateQueries({ queryKey: ["supply-tag"] });
+  qc.invalidateQueries({ queryKey: ["supply-metrics"] });
+  // The dashboard's own supply section reads the same tables.
+  qc.invalidateQueries({ queryKey: ["supply"] });
+  qc.invalidateQueries({ queryKey: ["dashboard"] });
+  qc.invalidateQueries({ queryKey: ["activity"] });
+}
+
+/* ---- Vendors: the directory is platform-level ---- */
+
+export function useVendors(params: VendorFilters = {}) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["supply-vendors", params],
+    queryFn: () =>
+      api.get<MetaPaginated<Vendor>>("admin/supply/vendors", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useVendor(vendorId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["supply-vendor", vendorId],
+    enabled: !!vendorId,
+    queryFn: () =>
+      api.get<unknown>(`admin/supply/vendors/${vendorId}`).then(unwrap<Vendor>),
+  });
+}
+
+export function useCreateVendor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: VendorInput) =>
+      api.post<unknown>("admin/supply/vendors", payload).then(unwrap<Vendor>),
+    onSuccess: () => invalidateSupply(qc),
+  });
+}
+
+/**
+ * Every field optional, at least one required: a PATCH that changes nothing
+ * is a mistake on the caller's side, not a no-op worth a 200.
+ */
+export function useUpdateVendor(vendorId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: VendorInput) =>
+      api
+        .patch<unknown>(`admin/supply/vendors/${vendorId}`, payload)
+        .then(unwrap<Vendor>),
+    onSuccess: () => invalidateSupply(qc),
+  });
+}
+
+/* ---- Consignments ---- */
+
+export function useSupplyBatches(params: SupplyBatchFilters = {}) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["supply-batches", params],
+    queryFn: () =>
+      api.get<MetaPaginated<SupplyBatch>>("admin/supply/batches", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useCreateSupplyBatch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: SupplyBatchInput) =>
+      api.post<unknown>("admin/supply/batches", payload).then(unwrap<SupplyBatch>),
+    onSuccess: () => invalidateSupply(qc),
+  });
+}
+
+/**
+ * ACCEPTED and REJECTED are terminal. A consignment accepted in error is not
+ * walked backwards — the stock is physically in the building by then, and
+ * pretending otherwise loses the record that it ever arrived. The correction
+ * is a second consignment with a note, which keeps both facts.
+ */
+export function useSupplyBatchDecision(batchId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: SupplyBatchDecisionInput) =>
+      api
+        .post<unknown>(`admin/supply/batches/${batchId}/decision`, payload)
+        .then(unwrap<SupplyBatch>),
+    onSuccess: () => invalidateSupply(qc),
+  });
+}
+
+/**
+ * Register chips against a consignment.
+ *
+ * Rows go in BEFORE the acceptance decision, not after: the reviewer watches
+ * them register and then decides with the registered rows in front of them.
+ * Appending to an already-accepted consignment would silently change counts
+ * somebody has signed off.
+ *
+ * A dry run returns the identical shape, so the screen previews a carton and
+ * commits the same payload.
+ */
+export function useRegisterTagManifest(batchId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: TagManifestInput) =>
+      api
+        .post<unknown>(`admin/supply/batches/${batchId}/tags`, payload)
+        .then(unwrap<TagManifestResult>),
+    onSuccess: (result) => {
+      // A dry run wrote nothing; invalidating would refetch for no reason and
+      // make the preview look like it had taken effect.
+      if (!result.dryRun) invalidateSupply(qc);
+    },
+  });
+}
+
+/* ---- Chip inventory ---- */
+
+export function useSupplyTags(params: SupplyTagFilters = {}, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["supply-tags", params],
+    enabled,
+    queryFn: () =>
+      api.get<MetaPaginated<NfcTagRow>>("admin/supply/tags", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useSupplyTag(tagId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["supply-tag", tagId],
+    enabled: !!tagId,
+    queryFn: () =>
+      api.get<unknown>(`admin/supply/tags/${tagId}`).then(unwrap<NfcTagRow>),
+  });
+}
+
+/**
+ * Record a QC verdict. This deliberately does NOT move the consignment's
+ * counters: rowsAccepted/rowsRejected record what the manifest said on
+ * intake, and rewriting them would change a figure an acceptance decision was
+ * already taken against.
+ */
+export function useTagQc(tagId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: TagQcInput) =>
+      api
+        .patch<unknown>(`admin/supply/tags/${tagId}/qc`, payload)
+        .then(unwrap<NfcTagRow>),
+    onSuccess: () => invalidateSupply(qc),
+  });
+}
+
+/* ---- The rollup ---- */
+
+export function useSupplyMetrics(params: SupplyMetricsParams = {}) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["supply-metrics", params],
+    queryFn: () =>
+      api
+        .get<unknown>("admin/supply/metrics", { ...params })
+        .then(unwrap<SupplyMetrics>),
+    placeholderData: (prev) => prev,
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Drop inventory — editing SKU records                                 */
+/* ------------------------------------------------------------------ */
+
+function invalidateSkus(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["skus"] });
+  qc.invalidateQueries({ queryKey: ["product-skus"] });
+  qc.invalidateQueries({ queryKey: ["product-sku-summary"] });
+  qc.invalidateQueries({ queryKey: ["sku"] });
+  qc.invalidateQueries({ queryKey: ["sku-by-code"] });
+  qc.invalidateQueries({ queryKey: ["supply-tags"] });
+  qc.invalidateQueries({ queryKey: ["supply-metrics"] });
+  qc.invalidateQueries({ queryKey: ["activity"] });
+}
+
+/** The cross-drop unit list. Global grants only — see useAllSkus above. */
+export function useInventory(params: SkuFilters = {}, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["skus", params],
+    enabled,
+    queryFn: () => api.get<SkuListResponse>("admin/skus", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+}
+
+/**
+ * Edit one unit. A body that changes nothing is a 200 with the unit
+ * unchanged, not an error — the endpoint is safe to retry, which matters
+ * because the batch form is a transaction a client may well have to resend.
+ */
+export function useUpdateSku(skuId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: SkuUpdateInput) =>
+      api.patch<unknown>(`admin/skus/${skuId}`, payload).then(unwrap<SkuUnitDetail>),
+    onSuccess: () => invalidateSkus(qc),
+  });
+}
+
+/**
+ * One set of changes, applied to every selected unit, in ONE transaction.
+ *
+ * All or nothing: if one selected unit refuses the change, nothing is written
+ * and the response names every refusal at once. Partial application is the
+ * state to avoid, not the error — an operator told "312 of your 400 units
+ * took the change" has a reconciliation problem only the warehouse can
+ * answer.
+ *
+ * `productId` picks the route rather than only filling the body: a router
+ * with no product in its path has no organization to check a grant against,
+ * so the flat /admin/skus/batch admits GLOBAL grants only. An
+ * organization-scoped caller reaches batch editing through the nested form
+ * and is confined to that drop by the same context check.
+ */
+export function useBatchUpdateSkus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ productId, ...payload }: SkuBatchInput) =>
+      api
+        .patch<unknown>(
+          productId
+            ? `admin/products/${productId}/skus/batch`
+            : "admin/skus/batch",
+          payload
+        )
+        .then(unwrap<SkuBatchResult>),
+    onSuccess: (result) => {
+      if (!result.dryRun) invalidateSkus(qc);
+    },
   });
 }
