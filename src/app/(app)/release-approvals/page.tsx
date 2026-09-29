@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useSearchParams } from "next/navigation";
 import { BadgeCheck, FileWarning } from "lucide-react";
 import { usePrefetchRelease, useReleases } from "@/lib/api/hooks";
 import { formatDate, humanize } from "@/lib/format";
@@ -29,6 +30,8 @@ const AUTHORITY_LABEL: Record<ReleaseAuthority, string> = {
   ARTIST: "Artist",
   ORGANIZATION: "Brand",
   PLATFORM: "Platform",
+  // No artist and no organization: nobody outside HitBox to ask.
+  NONE: "Auto-passed",
 };
 
 export default function ReleaseApprovalsPage() {
@@ -38,12 +41,16 @@ export default function ReleaseApprovalsPage() {
       what="The release approval queue"
       requires="release-approval:read"
     >
-      <ReleaseApprovalsView />
+      {/* ?open= lets a drop's detail link straight to its latest review. */}
+      <React.Suspense fallback={<TableSkeleton rows={10} cols={6} />}>
+        <ReleaseApprovalsView />
+      </React.Suspense>
     </PageGuard>
   );
 }
 
 function ReleaseApprovalsView() {
+  const searchParams = useSearchParams();
   const list = useListState<{ status?: string; complianceStatus?: string }>({
     status: "PENDING",
     complianceStatus: undefined,
@@ -54,7 +61,7 @@ function ReleaseApprovalsView() {
    * view: an append-only trail where a twice-bounced drop appears three times.
    */
   const [latestOnly, setLatestOnly] = React.useState(true);
-  const [openId, setOpenId] = React.useState<string | null>(null);
+  const [openId, setOpenId] = React.useState<string | null>(searchParams.get("open"));
   const prefetchRelease = usePrefetchRelease();
 
   const query = useReleases({ ...list.params, latestOnly });
@@ -97,11 +104,20 @@ function ReleaseApprovalsView() {
           content={
             r.authority === "PLATFORM"
               ? "HitBox staff decide this drop."
-              : "A HitBox administrator can reject or reopen this, but cannot approve it — the approval records the owner's own acceptance of the compliance terms."
+              : r.authority === "NONE"
+                ? "The drop names neither an artist nor an organization, so no owner's consent was needed. Approved on submit and filed under HitBox — no legal acceptance was recorded."
+                : "A HitBox administrator can reject or reopen this, but cannot approve it — the approval records the owner's own acceptance of the compliance terms."
           }
         >
           <span className="cursor-help text-[12px] text-[var(--text-2)]">
             {r.authority ? AUTHORITY_LABEL[r.authority] ?? humanize(r.authority) : "—"}
+            {r.requiredArtistName || r.requiredOrganizationName ? (
+              <span className="block text-[10.5px] text-[var(--text-3)]">
+                {r.authority === "ORGANIZATION"
+                  ? r.requiredOrganizationName
+                  : r.requiredArtistName}
+              </span>
+            ) : null}
           </span>
         </Tooltip>
       ),

@@ -113,6 +113,17 @@ export function MintUnitsDialog({
           onClose();
         },
         onError: (err) => {
+          if (err instanceof ApiError && err.code === "SKUS_NOT_APPROVED") {
+            // details names the review that is blocking — say which, and why.
+            const d = (err.details ?? {}) as { version?: number; status?: string };
+            toast.error(
+              d.version
+                ? `Review v${d.version} is ${String(d.status ?? "not approved").toLowerCase()} — units can be minted once the owner approves it.`
+                : err.friendly
+            );
+            onClose();
+            return;
+          }
           if (err instanceof ApiError && err.code === "SKUS_TAG_TAKEN") {
             // The message names the conflicting tag and the unit holding it.
             setErrors({ tagIds: err.message });

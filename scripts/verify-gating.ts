@@ -49,7 +49,10 @@ const ROLE_GRANTS: Record<string, string[]> = {
     "payment-royalty:override:global",
     "buyer-profile:manage:global",
     "drop:manage:global",
-    "release-approval:approve:global",
+    // manage + override, NOT approve — the catalog withholds approve on
+    // purpose: an administrator may never consent on an owner's behalf.
+    "release-approval:manage:global",
+    "release-approval:override:global",
     "content-unlock:manage:global",
     "brand-artist-record:manage:global",
     "nfc-tag-claim:manage:global",
@@ -123,6 +126,7 @@ const ROLE_GRANTS: Record<string, string[]> = {
     "drop:manage:organization",
     "release-approval:read:organization",
     "release-approval:approve:organization",
+    "release-approval:reject:organization",
     "collectible-instance:manage:organization",
     "assets-documents-upload:manage:organization",
     "content-unlock:manage:organization",
@@ -131,6 +135,27 @@ const ROLE_GRANTS: Record<string, string[]> = {
     "brand-artist-record:read:own",
     "brand-artist-record:update:own",
     "notification-config:update:own",
+  ],
+  // Same authoring rights as Brand Admin, no approval authority.
+  BRAND_EMPLOYEE: [
+    "drop:manage:organization",
+    "release-approval:read:organization",
+    "collectible-instance:manage:organization",
+    "assets-documents-upload:manage:organization",
+    "content-unlock:manage:organization",
+    "reports-dashboards:read:organization",
+    "notification-config:update:organization",
+    "order:read:organization",
+  ],
+  // Manages every brand's drops; reads reviews, decides none.
+  HITBOX_DROP_MANAGER: [
+    "drop:manage:global",
+    "release-approval:read:global",
+    "collectible-instance:manage:global",
+    "assets-documents-upload:manage:global",
+    "general-location:read:masked",
+    "search-discover:manage:global",
+    "reports-dashboards:read:global",
   ],
   HITBOX_PLATFORM_ENGINEER: [
     "platform-config:manage:global",
@@ -453,16 +478,91 @@ function main() {
     false
   );
 
-  // The review workflow now exists (/admin/releases), so this is no longer
-  // "no backend" — it is specifically the publish transition that is missing:
-  // there is no APPROVED -> PUBLISHED/ACTIVE endpoint, no product-image join
-  // and no price upsert (admin-console-api.md §14). Approving a drop is done
-  // from Release approvals; a wizard ending in a button that cannot publish
-  // would be worse than no wizard.
-  console.log("\nPublish drop has no nav entry — the publish step does not exist\n");
+  // Publishing is a transition on one drop, offered from its detail — not a
+  // screen of its own.
+  console.log("\nPublish drop has no nav entry — it is an action on a drop\n");
   check(
     "no role is offered a publish-drop route",
     Object.keys(ROLE_GRANTS).some((r) => navFor(r).includes("/publish-drop")),
+    false
+  );
+
+  /*
+   * drop-approval-lifecycle.md §9, row by row. These assert which ROUTES a
+   * role reaches. Whether it may approve a particular drop turns on the
+   * review's frozen authority and comes back as canApprove from the server;
+   * the table's "own drops" qualifiers are exactly that server-side narrowing.
+   *
+   *   role   read  submit  amend  decide  reopen  catalog (edit / publish)
+   */
+  const LIFECYCLE: Record<string, [boolean, boolean, boolean, boolean, boolean, boolean]> = {
+    ARTIST: [true, true, false, true, false, false],
+    BRAND_ADMIN: [true, true, false, true, false, false],
+    BRAND_EMPLOYEE: [true, true, false, false, false, false],
+    HITBOX_SYSTEM_ADMIN: [true, true, true, true, true, true],
+    HITBOX_DROP_MANAGER: [true, true, false, false, false, true],
+    BUYER_COLLECTOR: [false, false, false, false, false, false],
+    HITBOX_PLATFORM_ENGINEER: [false, false, false, false, false, false],
+  };
+  console.log("\nRelease lifecycle — who reaches which route (§9)\n");
+  for (const [role, [read, submit, amend, decide, reopen, catalog]] of Object.entries(
+    LIFECYCLE
+  )) {
+    const p = permsFor(role);
+    check(`${role} reads reviews`, p.canRead("release-approval"), read);
+    check(`${role} submits for review`, p.canSubmitRelease(), submit);
+    check(`${role} amends review notes`, p.canAmendRelease(), amend);
+    check(`${role} reaches the decision route`, p.canReachReleaseDecision(), decide);
+    check(`${role} reopens a decided review`, p.canReopenRelease(), reopen);
+    check(`${role} edits and publishes drops`, p.canManageCatalog(), catalog);
+  }
+
+  console.log("\nThe decision route admits approve, reject OR manage — none implies another\n");
+  check(
+    "approve alone reaches it (the bug §9 records: it used to need manage)",
+    new Permissions(["release-approval:approve:organization"]).canReachReleaseDecision(),
+    true
+  );
+  check(
+    "reject alone reaches it",
+    new Permissions(["release-approval:reject:global"]).canReachReleaseDecision(),
+    true
+  );
+  check(
+    "read alone does not",
+    new Permissions(["release-approval:read:global"]).canReachReleaseDecision(),
+    false
+  );
+  check(
+    "approve does not imply manage, so it cannot amend notes",
+    new Permissions(["release-approval:approve:global"]).canAmendRelease(),
+    false
+  );
+  check(
+    "manage does not imply override, so it cannot reopen",
+    new Permissions(["release-approval:manage:global"]).canReopenRelease(),
+    false
+  );
+
+  console.log("\nSubmit rides on drop:manage at any scope; catalog writes need GLOBAL\n");
+  check(
+    "org-scoped drop:manage submits",
+    new Permissions(["drop:manage:organization"]).canSubmitRelease(),
+    true
+  );
+  check(
+    "org-scoped drop:manage cannot edit or publish (globalOnly routes)",
+    new Permissions(["drop:manage:organization"]).canManageCatalog(),
+    false
+  );
+  check(
+    "drop:read cannot submit",
+    new Permissions(["drop:read:global"]).canSubmitRelease(),
+    false
+  );
+  check(
+    "public drop:read cannot submit (BUYER_COLLECTOR's grant)",
+    new Permissions(["drop:read:public"]).canSubmitRelease(),
     false
   );
 

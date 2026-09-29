@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Info, Package, Plus, ShieldAlert } from "lucide-react";
 import {
   useAdminArtists,
@@ -28,8 +29,6 @@ import {
   useListState,
 } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
-import { ProductDrawer } from "@/components/products/product-drawer";
-import { ProductFormDrawer } from "@/components/products/product-form-drawer";
 import type { ProductRow } from "@/lib/types";
 
 const DROP_STATUSES = [
@@ -47,7 +46,10 @@ const DROP_STATUSES = [
 export default function ProductsPage() {
   return (
     <PageGuard can={(p) => p.canRead("drop")} what="The drop catalog" requires="drop:read">
-      <ProductsView />
+      {/* ProductsView reads ?open= so the Add and Edit pages can hand back to a drop. */}
+      <React.Suspense fallback={<TableSkeleton rows={10} cols={9} />}>
+        <ProductsView />
+      </React.Suspense>
     </PageGuard>
   );
 }
@@ -57,15 +59,25 @@ function ProductsView() {
   // applied to the rows after they arrive — see FILTERING below.
   const list = useListState<{ status?: string }>({ status: undefined });
   const query = useProducts(list.params);
-  const [openId, setOpenId] = React.useState<string | null>(null);
-  const [creating, setCreating] = React.useState(false);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  /*
+   * A drop is its own page now. `?open=<id>` was the drawer's deep link;
+   * anything still carrying one is forwarded rather than broken.
+   */
+  const legacyOpen = searchParams.get("open");
+  React.useEffect(() => {
+    if (legacyOpen) router.replace(`/products/${legacyOpen}`);
+  }, [legacyOpen, router]);
+  const openDrop = (id: string) => router.push(`/products/${id}`);
   const prefetchProduct = usePrefetchProduct();
   const perms = usePermissions();
 
-  // Creating a drop needs drop:manage at GLOBAL scope (admin-write-apis.md
-  // §0), so an org-scoped Brand Admin browses the catalog without being
-  // offered a button that would 403.
-  const canCreate = perms.widestScope("drop") === "global" && perms.can("drop", "manage");
+  // Creating a drop needs drop:manage at GLOBAL scope — the route is
+  // globalOnly — so an org-scoped Brand Admin browses the catalog without
+  // being offered a button that would 403.
+  const canCreate = perms.canManageCatalog();
+  const startCreate = () => router.push("/products/new");
 
   /*
    * FILTERING — why brand and artist behave differently from status.
@@ -242,10 +254,10 @@ function ProductsView() {
           size="sm"
           onClick={(e) => {
             e.stopPropagation();
-            setOpenId(r.id);
+            openDrop(r.id);
           }}
         >
-          Action
+          Open
         </Button>
       ),
     },
@@ -255,7 +267,7 @@ function ProductsView() {
     <>
       {canCreate ? (
         <PageActions>
-          <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
+          <Button variant="primary" size="sm" onClick={startCreate}>
             <Plus className="h-3.5 w-3.5" />
             Add drop
           </Button>
@@ -330,9 +342,9 @@ function ProductsView() {
               columns={columns}
               rows={rows}
               getRowKey={(r) => r.id}
-              onRowClick={(r) => setOpenId(r.id)}
-              // Mirrors the drawer's own first-page params — a prefetch under
-              // any other key is a request the drawer will never read.
+              onRowClick={(r) => openDrop(r.id)}
+              // Mirrors the detail page's own first-page params — a prefetch
+              // under any other key is a request the page will never read.
               onRowIntent={(r) => prefetchProduct(r.id, { skuPage: 1, skuLimit: 50 })}
               dimmed={query.isFetching}
               emptyState={
@@ -348,7 +360,7 @@ function ProductsView() {
                   }
                   action={
                     canCreate && !anyActive ? (
-                      <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
+                      <Button variant="primary" size="sm" onClick={startCreate}>
                         Add the first drop
                       </Button>
                     ) : undefined
@@ -366,19 +378,6 @@ function ProductsView() {
           </>
         )}
       </Panel>
-
-      {creating ? (
-        <ProductFormDrawer
-          onClose={() => setCreating(false)}
-          // Straight into the new drop, where Add SKUs lives — the workflow
-          // continues rather than dumping the operator back on the list.
-          onCreated={(id) => setOpenId(id)}
-        />
-      ) : null}
-
-      {openId ? (
-        <ProductDrawer productId={openId} onClose={() => setOpenId(null)} />
-      ) : null}
     </>
   );
 }

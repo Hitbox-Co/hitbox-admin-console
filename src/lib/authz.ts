@@ -183,6 +183,58 @@ export class Permissions {
   }
 
   /* ---------------------------------------------------------------- */
+  /* Drops and their review (drop-approval-lifecycle.md §9–11)         */
+  /*                                                                   */
+  /* These say whether a ROUTE is reachable. Whether this caller may    */
+  /* approve THIS drop turns on its frozen authority, which only the    */
+  /* server knows — so the review screen drives its buttons from       */
+  /* canApprove / canReject / canReopen on the detail, not from these.  */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * The admin catalog writes — create, PATCH, archive, publish, pricing.
+   * Every one is mounted globalOnly, so an org-scoped drop:manage (Brand
+   * Admin, Artist) is refused.
+   */
+  canManageCatalog(): boolean {
+    return this.can("drop", "manage", "global");
+  }
+
+  /**
+   * POST /admin/releases. Gated on drop:manage at ANY scope, not on a
+   * release capability: submitting is something done to your own drop, so
+   * whoever may edit the drop may submit it. Drop Managers, Brand Admins,
+   * Brand Employees and Artists all can.
+   */
+  canSubmitRelease(): boolean {
+    return this.can("drop", "manage");
+  }
+
+  /**
+   * POST /admin/releases/:id/decision accepts ANY of approve, reject or
+   * manage, because no single one is held by everyone entitled to call it:
+   * the owner's approve, an administrator's reject, the queue admin's
+   * manage. Exact actions — approve neither is nor implies manage.
+   */
+  canReachReleaseDecision(): boolean {
+    return (
+      this.hasAction("release-approval", "approve") ||
+      this.hasAction("release-approval", "reject") ||
+      this.hasAction("release-approval", "manage")
+    );
+  }
+
+  /** PATCH /admin/releases/:id — the reviewer's working notes. */
+  canAmendRelease(): boolean {
+    return this.hasAction("release-approval", "manage");
+  }
+
+  /** POST /admin/releases/:id/reopen. Override is exact; manage does not imply it. */
+  canReopenRelease(): boolean {
+    return this.hasAction("release-approval", "override");
+  }
+
+  /* ---------------------------------------------------------------- */
   /* Finance & payments                                                */
   /*                                                                   */
   /* Mirrors buildFinanceAccess() and buildPaymentAccess() so the UI    */
@@ -495,9 +547,9 @@ export const NAV_ITEMS: NavItem[] = [
   },
 ];
 
-// "Publish drop" is deliberately absent: admin-console-api.md §14 marks the
-// screen "Not built" — packages/releases is schema-only, no service, no
-// controller, no router. Do not add a nav entry with nothing behind it.
+// "Publish drop" has no nav entry of its own: publishing is a transition on
+// one drop (POST /admin/products/:id/publish), offered from that drop's
+// detail once its latest review is APPROVED — not a screen.
 
 export const NAV_GROUP_ORDER = [
   "Overview",

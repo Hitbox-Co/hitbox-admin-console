@@ -68,6 +68,10 @@ const AUTHORITY: Record<string, { label: string; who: string }> = {
     label: "Platform",
     who: "HitBox staff",
   },
+  NONE: {
+    label: "Auto-passed",
+    who: "nobody — the drop names no artist and no organization",
+  },
 };
 
 /**
@@ -99,14 +103,27 @@ export function ReleaseDrawer({
   const decide = useReleaseDecision(approvalId);
   const reopen = useReopenRelease(approvalId);
   const approval = query.data;
+  // Rendered verbatim from the server — the wording is versioned there.
+  const legalStatement = approval?.legalComplianceStatement?.trim() || null;
 
-  const canManage = perms.can("release-approval", "manage");
+  /*
+   * The decision route admits approve, reject OR manage. Gating the footer on
+   * manage alone locked out the two roles the authority rule exists to serve
+   * — Artist and Brand Admin hold approve/reject, never manage.
+   */
+  const canReachDecision = perms.canReachReleaseDecision();
+  // Working notes (PATCH) are the queue administrator's: manage, exactly.
+  const canAmend = perms.canAmendRelease();
   /*
    * Reopening is the override path, and an exact-action check: a manage grant
    * does not imply it, so can() would offer the button to a role the
-   * controller then refuses.
+   * controller then refuses. The server's canReopen is the real answer; the
+   * grant check covers a response that predates the field.
    */
-  const canOverride = perms.hasAction("release-approval", "override");
+  const canOverride = perms.canReopenRelease();
+  const canReopen = approval
+    ? (approval.canReopen ?? (canOverride && !!approval.decidedAt))
+    : false;
 
   const [mode, setMode] = React.useState<Mode>(null);
   const [comment, setComment] = React.useState("");
@@ -143,7 +160,7 @@ export function ReleaseDrawer({
     // bounced by a validation error they could have been told about.
     if (mode === "REJECTED" && !comment.trim()) return;
     // Likewise 422 RELEASES_LEGAL_ACCEPTANCE_REQUIRED.
-    if (mode === "APPROVED" && !acceptLegal) return;
+    if (mode === "APPROVED" && (!acceptLegal || !legalStatement)) return;
 
     decide.mutate(
       {
@@ -347,6 +364,12 @@ export function ReleaseDrawer({
                               ? ` · ${formatDateTime(approval.legalComplianceAcceptedAt)}`
                               : ""}
                           </span>
+                        ) : approval.authority === "NONE" ? (
+                          // The auto-pass: nobody accepted anything, and the
+                          // row says so rather than implying a signature.
+                          <span className="text-[12px] text-[var(--text-3)]">
+                            Not required — auto-passed
+                          </span>
                         ) : (
                           <span className="text-[12px] text-[var(--danger)]">
                             Not recorded
@@ -384,10 +407,11 @@ export function ReleaseDrawer({
 
           {approval ? (
             <div className="space-y-3 border-t border-[var(--hairline)] px-4 py-3">
-              {!canManage ? (
+              {!canReachDecision && !canReopen ? (
                 <p className="flex items-center gap-1.5 text-[11px] text-[var(--text-3)]">
                   <Lock className="h-3 w-3" aria-hidden />
-                  Deciding a review needs release-approval:manage
+                  Read-only — deciding a review needs release-approval:approve,
+                  :reject or :manage
                 </p>
               ) : mode === "REOPEN" ? (
                 <>
@@ -436,7 +460,7 @@ export function ReleaseDrawer({
                   {approval.blockedReason ??
                     approval.approveBlockedReason ??
                     "This review has already been decided."}
-                  {canOverride && approval.decidedAt ? (
+                  {canReopen ? (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -510,7 +534,17 @@ export function ReleaseDrawer({
                     hidden field: what gets stored is which wording was
                     accepted, so the operator has to have been shown it.
                   */}
-                  {mode === "APPROVED" ? (
+                  {mode === "APPROVED" && !legalStatement ? (
+                    /*
+                      Never a hard-coded fallback: the stored version would
+                      then sit next to wording the approver was never shown.
+                    */
+                    <p className="flex items-start gap-2 rounded-[8px] border border-[rgba(204,92,92,0.35)] bg-[var(--danger-dim)] px-3 py-2.5 text-[11.5px] leading-relaxed text-[var(--text-2)]">
+                      <FileWarning className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--danger)]" aria-hidden />
+                      The server did not send the legal compliance statement, so there is
+                      nothing to accept. Reload the review before approving.
+                    </p>
+                  ) : mode === "APPROVED" ? (
                     <div className="rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--surface-2)] px-3 py-2.5">
                       <label className="flex items-start gap-2.5 text-[12px] leading-relaxed text-[var(--text-1)]">
                         <input
@@ -519,10 +553,7 @@ export function ReleaseDrawer({
                           onChange={(e) => setAcceptLegal(e.target.checked)}
                           className="mt-[2px] h-3.5 w-3.5 shrink-0 accent-[var(--accent)]"
                         />
-                        <span>
-                          {approval.legalComplianceStatement ??
-                            "I accept the legal compliance terms for this release."}
-                        </span>
+                        <span>{legalStatement}</span>
                       </label>
                       <p className="mt-1.5 flex items-center gap-1.5 pl-6 text-[10.5px] text-[var(--text-3)]">
                         <ScrollText className="h-3 w-3 shrink-0" aria-hidden />
@@ -541,7 +572,7 @@ export function ReleaseDrawer({
                       disabled={
                         mode === "REJECTED"
                           ? !comment.trim()
-                          : !acceptLegal
+                          : !acceptLegal || !legalStatement
                       }
                       onClick={submitDecision}
                     >
@@ -550,15 +581,17 @@ export function ReleaseDrawer({
                     <Button variant="ghost" size="sm" onClick={() => setMode(null)}>
                       Back
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="ml-auto"
-                      loading={amend.isPending}
-                      onClick={saveNotes}
-                    >
-                      Save as notes only
-                    </Button>
+                    {canAmend && !approval.decidedAt ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="ml-auto"
+                        loading={amend.isPending}
+                        onClick={saveNotes}
+                      >
+                        Save as notes only
+                      </Button>
+                    ) : null}
                   </div>
                 </>
               ) : (
@@ -568,6 +601,11 @@ export function ReleaseDrawer({
                       <Button
                         variant="primary"
                         size="sm"
+                        // RELEASES_COMPLIANCE_INCOMPLETE — refused outright
+                        // server-side, so not offered as clickable here.
+                        disabled={
+                          approval.product.isAgeSpecific && !approval.product.minimumAge
+                        }
                         onClick={() => enterMode("APPROVED")}
                       >
                         <Check className="h-3.5 w-3.5" />
@@ -584,7 +622,7 @@ export function ReleaseDrawer({
                         Reject
                       </Button>
                     ) : null}
-                    {canOverride && approval.decidedAt ? (
+                    {canReopen ? (
                       <Button
                         variant="secondary"
                         size="sm"
@@ -629,6 +667,12 @@ export function ReleaseDrawer({
  */
 function AuthorityPanel({ approval }: { approval: ReleaseApprovalDetail }) {
   const authority = authorityOf(approval.authority);
+  const named =
+    approval.authority === "ORGANIZATION"
+      ? approval.requiredOrganizationName
+      : approval.authority === "ARTIST"
+        ? approval.requiredArtistName
+        : null;
 
   return (
     <Panel>
@@ -642,12 +686,31 @@ function AuthorityPanel({ approval }: { approval: ReleaseApprovalDetail }) {
             {authority.label}
           </span>
         </Row>
-        <p className="text-[11.5px] leading-relaxed text-[var(--text-3)]">
-          Approval must come from {authority.who}. It was resolved from the
-          drop&rsquo;s organization when the review opened and does not change
-          if the drop later does — the party that was asked is the party asked
-          again.
-        </p>
+        {named ? (
+          <Row label={approval.authority === "ORGANIZATION" ? "Brand" : "Artist"}>
+            <span className="text-[12px] text-[var(--text-1)]">{named}</span>
+          </Row>
+        ) : null}
+        {approval.authority === "NONE" ? (
+          <p className="text-[11.5px] leading-relaxed text-[var(--text-3)]">
+            This drop names neither an artist nor an organization, so there was no
+            owner whose consent a review could capture. It was approved on submit
+            and filed under HitBox — a real review row, but not a signed one.
+          </p>
+        ) : (
+          <p className="text-[11.5px] leading-relaxed text-[var(--text-3)]">
+            Approval must come from {authority.who}. It was resolved from the
+            drop&rsquo;s organization when the review opened and does not change
+            if the drop later does — the party that was asked is the party asked
+            again.
+          </p>
+        )}
+        {approval.reopenedFromVersion ? (
+          <p className="text-[11.5px] leading-relaxed text-[var(--text-2)]">
+            Reopened from v{approval.reopenedFromVersion}
+            {approval.reopenReason ? ` — “${approval.reopenReason}”` : ""}
+          </p>
+        ) : null}
       </div>
     </Panel>
   );
@@ -692,6 +755,21 @@ function History({ entries }: { entries: ReleaseHistoryEntry[] }) {
             {h.comment ? (
               <p className="mt-1 text-[12px] leading-relaxed text-[var(--text-2)]">
                 {h.comment}
+              </p>
+            ) : null}
+            {h.reopenedFromVersion ? (
+              <p className="mt-1 text-[11px] text-[var(--text-3)]">
+                Reopened from v{h.reopenedFromVersion}
+                {h.reopenReason ? ` — ${h.reopenReason}` : ""}
+              </p>
+            ) : null}
+            {h.status === "APPROVED" ? (
+              <p className="mt-0.5 text-[10.5px] text-[var(--text-3)]">
+                {h.authority === "NONE"
+                  ? "Auto-passed — no acceptance recorded"
+                  : h.legalComplianceAccepted
+                    ? `Terms accepted${h.legalComplianceVersion ? ` (${h.legalComplianceVersion})` : ""}`
+                    : "No acceptance recorded"}
               </p>
             ) : null}
             {h.approverEmail ? (

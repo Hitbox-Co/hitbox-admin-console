@@ -11,6 +11,7 @@ import { FilterSelect, SearchInput } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { BindTagsDialog } from "./bind-tags-dialog";
 import { MintUnitsDialog } from "./mint-units-dialog";
+import type { MintGate } from "@/lib/mint-gate";
 import type { ProductVariantRef, SkuListParams, SkuUnit } from "@/lib/types";
 
 /**
@@ -42,9 +43,16 @@ export function SkuUnitsPanel({
   productId,
   totalSupply,
   variants,
+  mintGate,
 }: {
   productId: string;
   totalSupply: number;
+  /**
+   * Whether the owner has cleared minting (drop-approval-lifecycle.md §10).
+   * Blocked disables Add SKUs with the reason; unknown leaves it to the
+   * server's SKUS_NOT_APPROVED.
+   */
+  mintGate?: MintGate;
   /** Read-only on this API — offered as a mint target, never authored here. */
   variants: ProductVariantRef[];
 }) {
@@ -201,10 +209,21 @@ export function SkuUnitsPanel({
               </Button>
             ) : null}
             {perms.canMintUnits() ? (
-              <Button variant="secondary" size="sm" onClick={() => setMinting(true)}>
-                <Plus className="h-3.5 w-3.5" />
-                Add SKUs
-              </Button>
+              mintGate?.state === "blocked" ? (
+                <Tooltip content={mintGate.reason ?? "Waiting on the owner's approval."}>
+                  <span>
+                    <Button variant="secondary" size="sm" disabled>
+                      <Plus className="h-3.5 w-3.5" />
+                      Add SKUs
+                    </Button>
+                  </span>
+                </Tooltip>
+              ) : (
+                <Button variant="secondary" size="sm" onClick={() => setMinting(true)}>
+                  <Plus className="h-3.5 w-3.5" />
+                  Add SKUs
+                </Button>
+              )
             ) : null}
           </div>
         </div>

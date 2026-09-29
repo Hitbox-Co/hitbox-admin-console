@@ -88,6 +88,7 @@ export const API: Endpoint[] = [
   { method: "POST", path: "admin/products", kind: "write", requires: "drop:manage", workflow: "drop-creation" },
   { method: "PATCH", path: "admin/products/:productId", kind: "write", requires: "drop:manage", workflow: "drop-creation" },
   { method: "DELETE", path: "admin/products/:productId", kind: "write", requires: "drop:manage", workflow: "drop-creation" },
+  { method: "POST", path: "admin/products/:productId/publish", kind: "act", requires: "drop:manage:global", workflow: "release-approval" },
   { method: "POST", path: "admin/products/:productId/images", kind: "write", requires: "drop:manage", workflow: "drop-gallery" },
   { method: "PUT", path: "admin/products/:productId/images", kind: "write", requires: "drop:manage", workflow: "drop-gallery" },
   { method: "PUT", path: "admin/products/:productId/prices", kind: "write", requires: "drop:manage", workflow: "drop-pricing" },
@@ -99,9 +100,10 @@ export const API: Endpoint[] = [
   /* ---- release approvals ------------------------------------------- */
   { method: "GET", path: "admin/releases", kind: "read", requires: "release-approval:read", probe: "admin/releases" },
   { method: "GET", path: "admin/releases/:approvalId", kind: "read", requires: "release-approval:read" },
-  { method: "POST", path: "admin/releases", kind: "act", requires: "release-approval:manage", workflow: "release-approval" },
+  { method: "POST", path: "admin/releases", kind: "act", requires: "drop:manage", workflow: "release-approval" },
   { method: "PATCH", path: "admin/releases/:approvalId", kind: "act", requires: "release-approval:manage", workflow: "release-approval" },
-  { method: "POST", path: "admin/releases/:approvalId/decision", kind: "act", requires: "release-approval:manage", workflow: "release-approval" },
+  { method: "POST", path: "admin/releases/:approvalId/decision", kind: "act", requires: "release-approval:approve|reject|manage", workflow: "release-approval" },
+  { method: "POST", path: "admin/releases/:approvalId/reopen", kind: "act", requires: "release-approval:override", workflow: "release-approval" },
 
   /* ---- markets ----------------------------------------------------- */
   { method: "GET", path: "admin/markets", kind: "read", requires: "reports-dashboards:read", probe: "admin/markets" },
@@ -194,7 +196,7 @@ export const WORKFLOWS: Workflow[] = [
   {
     name: "release-approval",
     screen: "/release-approvals",
-    steps: ["submit", "amend", "decision"],
+    steps: ["submit", "amend", "decision", "reopen", "publish"],
     stakes:
       "an approval is a compliance record attributed to whoever made it; reversing one needs the override permission",
   },

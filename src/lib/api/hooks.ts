@@ -63,6 +63,8 @@ import type {
   PermissionGroup,
   Period,
   ProductInput,
+  PublishProductInput,
+  PublishProductResult,
   ProductRow,
   ProvenanceListResponse,
   ReleaseApproval,
@@ -946,6 +948,26 @@ export function useUpdateProduct(productId: string) {
   });
 }
 
+/**
+ * APPROVED -> ACTIVE | PUBLISHED. The only way a drop goes live: PATCH no
+ * longer takes `status`. The server re-reads the LATEST review before
+ * allowing it, re-checks the age gate, and needs an active price and (when
+ * supply is declared) a minted unit.
+ */
+export function usePublishProduct(productId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: PublishProductInput) =>
+      api
+        .post<unknown>(`admin/products/${productId}/publish`, payload)
+        .then(unwrap<PublishProductResult>),
+    onSuccess: () => {
+      invalidateProducts(qc);
+      qc.invalidateQueries({ queryKey: ["releases"] });
+    },
+  });
+}
+
 /** Soft archive — sets archivedAt, isActive false and status ARCHIVED. */
 export function useArchiveProduct() {
   const qc = useQueryClient();
@@ -982,6 +1004,28 @@ export function useReleases(params: ReleaseFilters) {
   return query;
 }
 
+/**
+ * The newest review of one drop — what publishing is gated on. Separate from
+ * useReleases so it can be switched off for a caller without
+ * release-approval:read, and so a drawer never shows another drop's review
+ * as placeholder data.
+ */
+export function useLatestRelease(productId: string, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["releases", { productId, latestOnly: true, limit: 1 }],
+    enabled,
+    queryFn: () =>
+      api
+        .get<Paginated<ReleaseApproval>>("admin/releases", {
+          productId,
+          latestOnly: true,
+          limit: 1,
+        })
+        .then((page) => page.items[0] ?? null),
+  });
+}
+
 /** Detail adds the per-version history plus canDecide / blockedReason. */
 export const releaseDetailOptions = (approvalId: string) => ({
   ...baseOptions,
@@ -1012,6 +1056,8 @@ function invalidateReleases(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["release"] });
   qc.invalidateQueries({ queryKey: ["release-approvals"] });
   qc.invalidateQueries({ queryKey: ["products"] });
+  // Submit and decide move Drop.status too, which the drop's own detail shows.
+  qc.invalidateQueries({ queryKey: ["admin-product"] });
   qc.invalidateQueries({ queryKey: ["dashboard"] });
   qc.invalidateQueries({ queryKey: ["activity"] });
 }

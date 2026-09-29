@@ -184,6 +184,30 @@ export class ApiError extends Error {
         return "An age-restricted drop cannot be approved until it carries a minimum age.";
       case "RELEASES_NOT_FOUND":
         return "Review not found — or outside your scope.";
+      case "RELEASES_NOT_THE_APPROVER":
+        // The server's sentence names who may decide — more useful than ours.
+        return this.message || "You are not the party entitled to decide this drop.";
+      case "RELEASES_LEGAL_ACCEPTANCE_REQUIRED":
+        return "Approving needs the legal compliance statement ticked.";
+      case "RELEASES_NOT_REOPENABLE":
+        return "Only a decided review can be reopened.";
+
+      /* Publishing — the last gate. */
+      case "PRODUCTS_NOT_APPROVED":
+        // One code, two routes: 400 is a `skus` block on create for an owned
+        // drop; 409 is publishing without an approved latest review.
+        return this.status === 400
+          ? "A drop with an artist or brand cannot mint units at creation. Create it, get it approved, then add SKUs."
+          : "The latest review of this drop is not approved, so it cannot go live.";
+      case "SKUS_NOT_APPROVED":
+        return "Units cannot be minted until the drop's owner approves it.";
+      case "PRODUCTS_NOT_PUBLISHABLE":
+        return "This drop cannot be published from its current state — it is archived, ended, or already there.";
+      case "PRODUCTS_PUBLISH_BLOCKED":
+        // details.field names the missing piece; the server's message says which.
+        return this.message || "This drop is missing something it needs to go live.";
+      case "PRODUCTS_RELEASE_GATE_UNAVAILABLE":
+        return "The approval check is not wired up on this deployment, so publishing is refused.";
 
       /* Product upload and the image gallery. */
       case "BODY_REQUIRED":

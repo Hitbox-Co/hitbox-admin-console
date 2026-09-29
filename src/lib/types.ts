@@ -1046,9 +1046,9 @@ export interface ProductVariantRef {
 export interface ProductInput {
   name?: string;
   description?: string | null;
-  vertical?: string;
-  category?: string;
-  rarity?: string;
+  vertical?: string | null;
+  category?: string | null;
+  rarity?: string | null;
   totalSupply?: number;
   purchaseLimit?: number | null;
   collectionId?: string | null;
@@ -1056,7 +1056,12 @@ export interface ProductInput {
   organizationId?: string | null;
   releaseStart?: string | null;
   releaseEnd?: string | null;
-  status?: string;
+  /*
+   * No `status`. A drop's status is the outcome of the workflow — submit and
+   * decide (/admin/releases), publish (POST /admin/products/:id/publish),
+   * archive (DELETE) — and the update schema is .strict(), so sending it is
+   * a 422 naming the field. Create defaults to DRAFT on its own.
+   */
   isAgeSpecific?: boolean;
   minimumAge?: number | null;
   oddsDisclosureRef?: string | null;
@@ -1122,9 +1127,16 @@ export type ComplianceStatus = "PENDING" | "CLEARED" | "FLAGGED";
  * drop that changes hands mid-review is still answered by the party that was
  * asked.
  *
- *   ARTIST_INDIVIDUAL org -> ARTIST       the artist named on the drop
- *   BRAND org             -> ORGANIZATION someone with a role in that brand
- *   HITBOX org, or none   -> PLATFORM     HitBox staff
+ *   ARTIST_INDIVIDUAL org      -> ARTIST       the artist named on the drop
+ *   BRAND org                  -> ORGANIZATION someone with a role in that brand
+ *   HITBOX org                 -> PLATFORM     HitBox staff
+ *   no org, but an artist      -> ARTIST       the artist
+ *   no org AND no artist       -> NONE         nobody — the review auto-passes
+ *
+ * NONE is not a bypass: the row is real, APPROVED on creation, with
+ * legalComplianceAccepted false and no checker, because nobody accepted
+ * anything. The drop is filed under the HitBox organization in the same
+ * transaction.
  *
  * The discriminator is Organization.type, NOT "does the drop have an
  * artistId": most brand drops carry both, because the artist is signed to the
@@ -1135,7 +1147,7 @@ export type ComplianceStatus = "PENDING" | "CLEARED" | "FLAGGED";
  * the legal compliance terms, and an administrator accepting on a brand's
  * behalf would record consent that brand never gave.
  */
-export type ReleaseAuthority = "ARTIST" | "ORGANIZATION" | "PLATFORM";
+export type ReleaseAuthority = "ARTIST" | "ORGANIZATION" | "PLATFORM" | "NONE";
 
 export interface ReleaseApproval {
   id: string;
@@ -1144,6 +1156,11 @@ export interface ReleaseApproval {
   version: number;
   /** Frozen when the review opened. See ReleaseAuthority. */
   authority: ReleaseAuthority;
+  /** Who the frozen authority names, carried forward by /reopen. */
+  requiredArtistId: string | null;
+  requiredArtistName: string | null;
+  requiredOrganizationId: string | null;
+  requiredOrganizationName: string | null;
   comment: string | null;
   complianceStatus: ComplianceStatus;
   oddsDisclosureRef: string | null;
@@ -1190,10 +1207,18 @@ export interface ReleaseHistoryEntry {
   id: string;
   version: number;
   status: ReleaseStatus;
+  /** The rejection note, when this version was rejected. */
   comment: string | null;
   complianceStatus: ComplianceStatus;
+  authority: ReleaseAuthority;
   approverId: string | null;
   approverEmail: string | null;
+  /** Who actually recorded the decision — null on an auto-pass. */
+  checkedById: string | null;
+  legalComplianceAccepted: boolean;
+  legalComplianceVersion: string | null;
+  reopenedFromVersion: number | null;
+  reopenReason: string | null;
   decidedAt: string | null;
   createdAt: string;
 }
@@ -1213,6 +1238,8 @@ export interface ReleaseApprovalDetail extends ReleaseApproval {
   /** Both decisions barred — already decided, typically. */
   canDecide: boolean;
   blockedReason: string | null;
+  /** Needs release-approval:override, and a decided review to send back. */
+  canReopen: boolean;
   /*
    * The exact wording to put beside the tickmark, and the version that gets
    * recorded. Render it as an UNTICKED checkbox — never pre-ticked, never a
@@ -1238,6 +1265,37 @@ export interface ReleaseDecisionInput {
 /** POST /admin/releases/:approvalId/reopen — needs release-approval:override. */
 export interface ReleaseReopenInput {
   reason: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* Publishing — POST /admin/products/:id/publish                        */
+/* (drop-approval-lifecycle.md §11)                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ACTIVE is what the public storefront lists; PUBLISHED is staged — orders
+ * accept it, the storefront does not show it.
+ */
+export type PublishTarget = "ACTIVE" | "PUBLISHED";
+
+export interface PublishProductInput {
+  /** Defaults to ACTIVE server-side. */
+  target?: PublishTarget;
+  /** Recorded on the audit entry, not on the drop. */
+  note?: string;
+}
+
+/** Which review authorised the drop going live — echoed so no second read is needed. */
+export interface ClearedReview {
+  approvalId: string | null;
+  version: number | null;
+  status: string | null;
+  authority: string | null;
+}
+
+export interface PublishProductResult {
+  product: AdminProductDetail;
+  clearedReview: ClearedReview;
 }
 
 /** GET /admin/media?archived=… — `live` is the default, deliberately. */
