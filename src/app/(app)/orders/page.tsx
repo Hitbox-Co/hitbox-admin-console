@@ -27,7 +27,7 @@ const STATUSES = [
 
 export default function OrdersPage() {
   return (
-    <PageGuard can={(p) => p.canRead("order")} what="Orders" requires="order:read">
+    <PageGuard can={(p) => p.canOpen("/orders")} what="Orders" requires="order:read (platform-wide)">
       {/* OrdersView reads ?status= to accept deep links from the dashboard. */}
       <React.Suspense fallback={<TableSkeleton rows={10} cols={6} />}>
         <OrdersView />

@@ -1,5 +1,6 @@
 import { test, expect, open } from "../../support/authed";
 import { APP_ROUTES } from "../../support/routes";
+import { Permissions } from "../../../src/lib/authz";
 
 /**
  * Permission gating, checked against the caller's own grant list.
@@ -25,16 +26,6 @@ async function grants(page: import("@playwright/test").Page): Promise<string[]> 
   return Array.isArray(me?.permissions) ? me.permissions : [];
 }
 
-/** `manage` subsumes the non-destructive actions, as Permissions.can() does. */
-function holds(keys: string[], required: string): boolean {
-  const [resource, action] = required.split(":");
-  return keys.some((k) => {
-    const [r, a] = k.split(":");
-    if (r !== resource) return false;
-    return a === action || (a === "manage" && action !== "manage");
-  });
-}
-
 test.describe("Permission gating", () => {
   test("the sidebar offers exactly what the grant list supports", async ({ page }) => {
     await open(page, "/dashboard");
@@ -52,7 +43,9 @@ test.describe("Permission gating", () => {
 
     const disagreements: string[] = [];
     for (const route of APP_ROUTES.filter((r) => r.inNav && r.requires)) {
-      const canSee = holds(keys, route.requires!);
+      // The console's own route map — the rule each backend route enforces,
+      // scope included (an org-scoped grant does not open a no-context route).
+      const canSee = new Permissions(keys).canOpen(route.path);
       const isOffered = offered.has(route.path);
       if (canSee && !isOffered) {
         disagreements.push(`HELD BUT HIDDEN: ${route.path} (holds ${route.requires})`);
@@ -71,7 +64,8 @@ test.describe("Permission gating", () => {
     const keys = await grants(page);
     test.skip(keys.length === 0, "/authz/me returned no permissions");
 
-    const denied = APP_ROUTES.filter((r) => r.requires && !holds(keys, r.requires));
+    const perms = new Permissions(keys);
+    const denied = APP_ROUTES.filter((r) => r.requires && !perms.canOpen(r.path));
     test.skip(denied.length === 0, "this role reaches every route");
 
     for (const route of denied.slice(0, 6)) {
@@ -93,7 +87,8 @@ test.describe("Permission gating", () => {
   test("a denial is not styled as a failure", async ({ page }) => {
     const keys = await grants(page);
     test.skip(keys.length === 0, "/authz/me returned no permissions");
-    const denied = APP_ROUTES.find((r) => r.requires && !holds(keys, r.requires));
+    const perms = new Permissions(keys);
+    const denied = APP_ROUTES.find((r) => r.requires && !perms.canOpen(r.path));
     test.skip(!denied, "this role reaches every route");
 
     await open(page, denied!.path);

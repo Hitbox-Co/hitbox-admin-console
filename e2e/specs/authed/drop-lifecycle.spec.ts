@@ -37,6 +37,13 @@ const hasGlobal = (keys: string[], resource: string, action: string) =>
     return r === resource && a === action && s === "global";
   });
 
+/** The drop's own page needs platform-wide drop reach (ROUTE_ACCESS "/products/detail"). */
+const reachesDrop = (keys: string[]) =>
+  keys.some((k) => {
+    const [r, a, sc] = k.split(":");
+    return r === "drop" && (a === "read" || a === "manage") && ["global", "masked", "masked-partial"].includes(sc);
+  });
+
 async function products(page: Page, status?: string): Promise<JsonRow[]> {
   const qs = status ? `?status=${status}&limit=20` : "?limit=20";
   const res = await page.request.get(`/api/hitbox/admin/dashboard/products${qs}`);
@@ -127,6 +134,7 @@ const WRITES_ENABLED = process.env.E2E_ALLOW_WRITES === "1";
 
 test.describe("Minting waits for approval", () => {
   test("Add SKUs is not offered on an owned drop that is not yet approved", async ({ page }) => {
+    test.skip(!reachesDrop(await grants(page)), "this role reviews drops from Approvals, not the drop page");
     const drafts = await products(page, "DRAFT");
     const owned = drafts.find((p) => str(p, "artistId") || str(p, "organizationId"));
     test.skip(!owned, "no owned DRAFT drop to inspect");
@@ -363,6 +371,7 @@ test.describe("Drop pages", () => {
   });
 
   test("the drop detail offers only the next legal transition", async ({ page }) => {
+    test.skip(!reachesDrop(await grants(page)), "this role reviews drops from Approvals, not the drop page");
     const any = (await products(page))[0];
     test.skip(!any, "no drop readable");
     const status = str(any, "status") ?? "";
@@ -380,7 +389,19 @@ test.describe("Drop pages", () => {
     }
   });
 
+  test("without platform drop reach, drops are listed but not clickable", async ({ page }) => {
+    test.skip(reachesDrop(await grants(page)), "this role may open drop pages");
+    await open(page, "/products");
+    await settled(page, "Drops");
+    const row = page.locator("tbody tr").first();
+    test.skip((await row.count()) === 0, "no drops listed");
+    await row.click();
+    await expect(page).toHaveURL(/\/products$/);
+    await expect(page.getByRole("button", { name: /^open$/i })).toHaveCount(0);
+  });
+
   test("clicking a drop opens its page, not a drawer", async ({ page }) => {
+    test.skip(!reachesDrop(await grants(page)), "this role reviews drops from Approvals, not the drop page");
     const any = (await products(page))[0];
     test.skip(!any, "no drop readable");
 
@@ -393,6 +414,7 @@ test.describe("Drop pages", () => {
   });
 
   test("the drawer's old ?open= link still lands on the drop", async ({ page }) => {
+    test.skip(!reachesDrop(await grants(page)), "this role reviews drops from Approvals, not the drop page");
     const any = (await products(page))[0];
     test.skip(!any, "no drop readable");
 

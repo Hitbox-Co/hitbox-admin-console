@@ -61,17 +61,17 @@ function ProductsView() {
   const query = useProducts(list.params);
   const router = useRouter();
   const searchParams = useSearchParams();
+  const perms = usePermissions();
   /*
    * A drop is its own page now. `?open=<id>` was the drawer's deep link;
    * anything still carrying one is forwarded rather than broken.
    */
   const legacyOpen = searchParams.get("open");
   React.useEffect(() => {
-    if (legacyOpen) router.replace(`/products/${legacyOpen}`);
-  }, [legacyOpen, router]);
+    if (legacyOpen && perms.canOpenDropPage()) router.replace(`/products/${legacyOpen}`);
+  }, [legacyOpen, router, perms]);
   const openDrop = (id: string) => router.push(`/products/${id}`);
   const prefetchProduct = usePrefetchProduct();
-  const perms = usePermissions();
 
   // Creating a drop needs drop:manage at GLOBAL scope — the route is
   // globalOnly — so an org-scoped Brand Admin browses the catalog without
@@ -101,10 +101,15 @@ function ProductsView() {
   const [brandId, setBrandId] = React.useState<string | undefined>();
   const [artistId, setArtistId] = React.useState<string | undefined>();
 
-  // Owner directories, for names on the rows and options in the pickers.
-  // Both take `drop:read`, the same grant this page already required.
-  const orgs = useAdminOrganizations();
-  const artists = useAdminArtists(brandId);
+  /*
+   * Only a platform-wide drop reader can open a drop's page, or read the
+   * owner directories: both routes carry no organization context, so an
+   * Artist's or Brand's org-scoped grant is refused there. For them this is
+   * a read-only list of their own drops — they review a drop from Approvals.
+   */
+  const canOpenDetail = perms.canOpenDropPage();
+  const orgs = useAdminOrganizations(canOpenDetail);
+  const artists = useAdminArtists(brandId, canOpenDetail);
 
   const orgName = React.useMemo(() => {
     const map = new Map<string, string>();
@@ -245,7 +250,7 @@ function ProductsView() {
       header: "Created",
       cell: (r) => <span className="tnum text-[12px]">{formatDate(r.createdAt)}</span>,
     },
-    {
+    ...(canOpenDetail ? [{
       key: "actions",
       header: "Action",
       cell: (r) => (
@@ -260,7 +265,7 @@ function ProductsView() {
           Open
         </Button>
       ),
-    },
+    }] as Column<ProductRow>[] : []),
   ];
 
   return (
@@ -283,6 +288,8 @@ function ProductsView() {
             options={DROP_STATUSES}
             allLabel="All states"
           />
+          {canOpenDetail ? (
+          <>
           <FilterPicker
             label="Brand"
             value={brandId}
@@ -317,6 +324,8 @@ function ProductsView() {
             disabled={!artists.data?.length}
             allLabel="All artists"
           />
+          </>
+          ) : null}
         </FilterRow>
 
         {beyondPage ? (
@@ -342,10 +351,12 @@ function ProductsView() {
               columns={columns}
               rows={rows}
               getRowKey={(r) => r.id}
-              onRowClick={(r) => openDrop(r.id)}
+              onRowClick={canOpenDetail ? (r) => openDrop(r.id) : undefined}
               // Mirrors the detail page's own first-page params — a prefetch
               // under any other key is a request the page will never read.
-              onRowIntent={(r) => prefetchProduct(r.id, { skuPage: 1, skuLimit: 50 })}
+              onRowIntent={
+                canOpenDetail ? (r) => prefetchProduct(r.id, { skuPage: 1, skuLimit: 50 }) : undefined
+              }
               dimmed={query.isFetching}
               emptyState={
                 <EmptyState

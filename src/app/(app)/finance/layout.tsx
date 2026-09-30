@@ -25,9 +25,9 @@ import { usePermissions } from "@/components/layout/authz-provider";
 export default function FinanceLayout({ children }: { children: React.ReactNode }) {
   return (
     <PageGuard
-      can={(p) => p.canReadFinance()}
+      can={(p) => p.canOpen("/finance")}
       what="Finance"
-      requires="payment-royalty:read"
+      requires="payment-royalty:read (own or platform-wide)"
     >
       <FinanceChrome>{children}</FinanceChrome>
     </PageGuard>

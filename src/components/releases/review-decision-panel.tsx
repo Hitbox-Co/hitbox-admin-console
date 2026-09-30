@@ -7,7 +7,7 @@ import { Check, FileWarning, Lock, RotateCcw, ScrollText, X } from "lucide-react
 import { ApiError } from "@/lib/api/client";
 import { useAmendRelease, useReleaseDecision, useReopenRelease } from "@/lib/api/hooks";
 import { formatDateTime, humanize } from "@/lib/format";
-import { usePermissions } from "@/components/layout/authz-provider";
+import { useAuthz, usePermissions } from "@/components/layout/authz-provider";
 import {
   Badge,
   Button,
@@ -226,7 +226,7 @@ export function ReviewDecisionPanel({
                   id="decision-compliance"
                   value={compliance}
                   onChange={(e) => setCompliance(e.target.value as ComplianceStatus | "")}
-                  className="h-8 w-full rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-2 text-[13px] text-[var(--text-1)]"
+                  className="h-8 w-full rounded-[6px] border border-hairline bg-surface-2 px-2 text-[13px] text-text-1"
                 >
                   <option value="">
                     Default ({mode === "APPROVED" ? "Cleared" : "Flagged"})
@@ -254,17 +254,17 @@ export function ReviewDecisionPanel({
 
             {mode === "APPROVED" ? (
               legalStatement ? (
-                <div className="rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--surface-2)] px-3 py-2.5">
-                  <label className="flex items-start gap-2.5 text-[12.5px] leading-relaxed text-[var(--text-1)]">
+                <div className="rounded-[8px] border border-hairline-strong bg-surface-2 px-3 py-2.5">
+                  <label className="flex items-start gap-2.5 text-[12.5px] leading-relaxed text-text-1">
                     <input
                       type="checkbox"
                       checked={acceptLegal}
                       onChange={(e) => setAcceptLegal(e.target.checked)}
-                      className="mt-[3px] h-3.5 w-3.5 shrink-0 accent-[var(--accent)]"
+                      className="mt-0.75 h-3.5 w-3.5 shrink-0 accent-accent"
                     />
                     <span>{legalStatement}</span>
                   </label>
-                  <p className="mt-1.5 flex items-center gap-1.5 pl-6 text-[10.5px] text-[var(--text-3)]">
+                  <p className="mt-1.5 flex items-center gap-1.5 pl-6 text-[10.5px] text-text-3">
                     <ScrollText className="h-3 w-3 shrink-0" aria-hidden />
                     Recorded with your name and the time.
                   </p>
@@ -310,7 +310,7 @@ export function ReviewDecisionPanel({
         {/* Reopen — administrators, on a decided review. */}
         {!pending && canReopen ? (
           mode === "REOPEN" ? (
-            <div className="space-y-2 border-t border-[var(--hairline)] pt-3">
+            <div className="space-y-2 border-t border-hairline pt-3">
               <Field
                 label="Why send it back"
                 htmlFor="reopen-reason"
@@ -326,7 +326,7 @@ export function ReviewDecisionPanel({
                   autoFocus
                 />
               </Field>
-              <p className="text-[11px] leading-relaxed text-[var(--text-3)]">
+              <p className="text-[11px] leading-relaxed text-text-3">
                 Opens v{approval.version + 1} as pending for the same party. It approves
                 nothing — the {humanize(approval.status).toLowerCase()} on v
                 {approval.version} stays on the record.
@@ -358,21 +358,50 @@ export function ReviewDecisionPanel({
   );
 }
 
+/**
+ * Who DECIDED, which is not `approverName`.
+ *
+ * The backend sets `approverId` to whoever SUBMITTED the review (releases
+ * service, submit: `approverId: actorId`); the person who approved or rejected
+ * is `checkedById`, and the response carries no name for them. So the name is
+ * derived from what the rules guarantee:
+ *
+ *   the caller decided it           → "you"
+ *   auto-passed                     → nobody
+ *   APPROVED on an ARTIST review    → only that artist can approve
+ *   APPROVED on an ORGANIZATION one → a member of that brand
+ *   APPROVED on a PLATFORM one      → HitBox staff
+ *   REJECTED                        → the owner OR an administrator — no name
+ *                                     is sent, so none is guessed
+ */
+function decidedBy(approval: ReleaseApprovalDetail, myUserId: string | undefined): string | null {
+  if (approval.checkedById && approval.checkedById === myUserId) return "by you";
+  if (approval.authority === "NONE") return "automatically — no owner to ask";
+  if (approval.status !== "APPROVED") return null;
+  if (approval.authority === "ARTIST") return approval.requiredArtistName ? `by ${approval.requiredArtistName}` : "by the artist";
+  if (approval.authority === "ORGANIZATION")
+    return approval.requiredOrganizationName ? `by ${approval.requiredOrganizationName}` : "by the brand";
+  if (approval.authority === "PLATFORM") return "by HitBox staff";
+  return null;
+}
+
 function Decided({ approval }: { approval: ReleaseApprovalDetail }) {
+  const { me } = useAuthz();
+  const by = decidedBy(approval, me?.userId);
+  const submitter = approval.approverName ?? approval.approverEmail;
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone={toneForStatus(approval.status)} dot>
           {humanize(approval.status)}
         </Badge>
-        {approval.approverName || approval.approverEmail ? (
-          <span className="text-[12px] text-[var(--text-2)]">
-            by {approval.approverName ?? approval.approverEmail}
-          </span>
-        ) : null}
+        {by ? <span className="text-[12px] text-text-2">{by}</span> : null}
       </div>
+      {submitter ? (
+        <p className="text-[12px] text-text-3">Submitted for review by {submitter}.</p>
+      ) : null}
       {approval.status === "APPROVED" ? (
-        <p className="text-[12px] text-[var(--text-3)]">
+        <p className="text-[12px] text-text-3">
           {approval.legalComplianceAccepted
             ? `Legal terms accepted${
                 approval.legalComplianceVersion ? ` (${approval.legalComplianceVersion})` : ""
@@ -396,14 +425,14 @@ function Reason({ children, danger }: { children: React.ReactNode; danger?: bool
     <p
       className={
         danger
-          ? "flex items-start gap-2 rounded-[8px] border border-[rgba(204,92,92,0.35)] bg-[var(--danger-dim)] px-3 py-2 text-[11.5px] leading-relaxed text-[var(--text-2)]"
-          : "flex items-start gap-1.5 text-[11.5px] leading-relaxed text-[var(--text-3)]"
+          ? "flex items-start gap-2 rounded-[8px] border border-[rgba(204,92,92,0.35)] bg-danger-dim px-3 py-2 text-[11.5px] leading-relaxed text-text-2"
+          : "flex items-start gap-1.5 text-[11.5px] leading-relaxed text-text-3"
       }
     >
       {danger ? (
-        <FileWarning className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--danger)]" aria-hidden />
+        <FileWarning className="mt-px h-3.5 w-3.5 shrink-0 text-danger" aria-hidden />
       ) : (
-        <Lock className="mt-[2px] h-3 w-3 shrink-0" aria-hidden />
+        <Lock className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
       )}
       <span>{children}</span>
     </p>

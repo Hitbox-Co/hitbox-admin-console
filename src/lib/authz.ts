@@ -313,7 +313,124 @@ export class Permissions {
   get isEmpty(): boolean {
     return this.parsed.length === 0;
   }
+
+  /* ---------------------------------------------------------------- */
+  /* Route reach — what the backend guard actually admits              */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Does a grant REACH every record of this resource?
+   *
+   * The backend's authorization engine admits an ORGANIZATION-scoped grant
+   * only when the route supplies an organization context, and an OWN grant
+   * only when it supplies an owner context
+   * (access-control/src/engine/authorization-engine.ts). Most admin routes
+   * supply neither — orders, payments, supply, SKUs, media, team, market
+   * configuration, the owner directories — so for them only GLOBAL and the
+   * masking scopes (which reach every record, showing less of each) pass.
+   * PUBLIC also passes the engine but every such service refuses it.
+   *
+   * So `canRead()` answering yes for an org-scoped Brand Admin does not mean
+   * `GET /admin/orders` will: use this for any route with no context.
+   */
+  reaches(resource: string, action = "read"): boolean {
+    return this.can(resource, action, "masked");
+  }
+
+  /**
+   * The finance module (rules, royalties, balances, payouts, ledger,
+   * adjustments). Its guard supplies an OWNER context and nothing else, so an
+   * OWN grant passes (an artist's own royalties) and GLOBAL passes — but an
+   * ORGANIZATION grant has no organization to match and is refused, even
+   * though finance's own scope code was written for it.
+   */
+  canReadFinanceModule(): boolean {
+    return this.parsed.some(
+      (p) =>
+        p.resource === "payment-royalty" &&
+        (p.action === "read" || p.action === "manage") &&
+        (p.scope === "own" || p.scope === "global")
+    );
+  }
+
+  /**
+   * The drop's own page (/products/:id and everything it loads — prices,
+   * images, units, the owner directories). Offered to catalog operators with
+   * platform-wide drop reach. Organization-scoped callers (Artist, Brand)
+   * review a drop from its approval page instead.
+   */
+  canOpenDropPage(): boolean {
+    return this.reaches("drop");
+  }
+
+  /**
+   * May the caller open this console route? The one source for nav, guards
+   * and links. A sub-route with no rule of its own inherits its nearest
+   * parent's (`/finance/balances` → `/finance`). Dynamic routes are named
+   * explicitly — the drop page is `/products/detail`, never `/products/:id`.
+   */
+  canOpen(href: string): boolean {
+    let path = href.split(/[?#]/)[0];
+    while (path) {
+      const rule = ROUTE_ACCESS[path];
+      if (rule) return rule(this);
+      path = path.slice(0, path.lastIndexOf("/"));
+    }
+    return false;
+  }
 }
+
+/**
+ * Every console route, with the rule the backend route behind it enforces —
+ * the sidebar, each page guard and every cross-page link read this, so a
+ * destination a role cannot load is never offered to it.
+ *
+ * "any scope" routes are the dashboard projections, which gate by capability
+ * and then filter rows to the caller's organizations; "reaches" routes carry
+ * no organization/owner context and so admit GLOBAL (or masked) grants only.
+ */
+const ROUTE_ACCESS: Record<string, (p: Permissions) => boolean> = {
+  "/dashboard": () => true,
+  // A personal workspace only makes sense for someone with a profile of
+  // their own — derived from scope, never from the role name.
+  "/artist": (p) => {
+    const scope = p.widestScope("brand-artist-record");
+    return scope === "own" || scope === "organization";
+  },
+  // dashboard/markets — reports-dashboards at any scope. Its Configuration
+  // tab (admin/markets) additionally needs reach; the page gates that tab.
+  "/markets": (p) =>
+    p.canRead("reports-dashboards") && (p.canRead("order") || p.canRead("buyer-profile")),
+  "/users": (p) => p.canRead("buyer-profile"),
+  "/orders": (p) => p.reaches("order"),
+  "/finance": (p) => p.canReadFinanceModule(),
+  "/finance/ledger": (p) => p.canReadFinanceModule() && p.financeScope() !== "own",
+  "/finance/adjustments": (p) => p.canReadFinanceModule() && p.financeScope() !== "own",
+  "/payments": (p) => p.reaches("payment-royalty"),
+  "/payments/gateways": (p) => p.canConfigureGateways(),
+  "/payments/webhooks": (p) => p.canManageFinance(),
+  // dashboard/resale — order:read at any scope.
+  "/resale": (p) => p.canRead("order"),
+  "/products": (p) => p.canRead("drop"),
+  "/products/detail": (p) => p.canOpenDropPage(),
+  "/products/new": (p) => p.canManageCatalog(),
+  "/release-approvals": (p) => p.canRead("release-approval"),
+  "/supply": (p) => p.reaches("reports-dashboards"),
+  "/supply/consignments": (p) => p.reaches("drop"),
+  "/supply/chips": (p) => p.reaches("nfc-tag-claim"),
+  // GLOBAL or masked — Support reaches every unit with masked owners.
+  "/inventory": (p) => p.reaches("collectible-instance"),
+  "/supply/vendors": (p) => p.can("drop", "read", "global"),
+  "/demand": (p) => p.canRead("drop"),
+  "/content": (p) => p.canRead("content-unlock"),
+  "/media": (p) => p.reaches("assets-documents-upload"),
+  // dashboard/provenance gates on nfc-tag-claim only — a collectible-instance
+  // grant alone (Drop Manager) is refused.
+  "/provenance": (p) => p.canRead("nfc-tag-claim"),
+  "/activity": (p) => p.canRead("audit-log"),
+  "/roles": (p) => p.reaches("employee-role-mgmt"),
+  "/team": (p) => p.reaches("employee-role-mgmt"),
+};
 
 /** Resources that put something on the BUSINESS dashboard. */
 export const BUSINESS_RESOURCES = [
@@ -358,7 +475,7 @@ export const NAV_ITEMS: NavItem[] = [
     icon: "LayoutDashboard",
     group: "Overview",
     // "always — the payload itself is filtered" (admin-console-api.md §0)
-    visible: () => true,
+    visible: (p) => p.canOpen("/dashboard"),
   },
   {
     /*
@@ -372,19 +489,14 @@ export const NAV_ITEMS: NavItem[] = [
     label: "My workspace",
     icon: "Palette",
     group: "Overview",
-    visible: (p) => {
-      const scope = p.widestScope("brand-artist-record");
-      return scope === "own" || scope === "organization";
-    },
+    visible: (p) => p.canOpen("/artist"),
   },
   {
     href: "/markets",
     label: "Markets",
     icon: "Globe",
     group: "Overview",
-    visible: (p) =>
-      p.canRead("reports-dashboards") &&
-      (p.canRead("order") || p.canRead("buyer-profile")),
+    visible: (p) => p.canOpen("/markets"),
   },
   // Commerce reads buyer -> order -> money -> aftermarket: the person, what
   // they bought, what it was worth, what happened to it next.
@@ -393,21 +505,21 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Buyers",
     icon: "Users",
     group: "Commerce",
-    visible: (p) => p.canRead("buyer-profile"),
+    visible: (p) => p.canOpen("/users"),
   },
   {
     href: "/orders",
     label: "Orders",
     icon: "ShoppingCart",
     group: "Commerce",
-    visible: (p) => p.canRead("order"),
+    visible: (p) => p.canOpen("/orders"),
   },
   {
     href: "/finance",
     label: "Finance",
     icon: "Banknote",
     group: "Commerce",
-    visible: (p) => p.canRead("payment-royalty"),
+    visible: (p) => p.canOpen("/finance"),
   },
   {
     // Charges, refunds and disputes — the money moving, as opposed to the
@@ -416,14 +528,14 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Payments",
     icon: "CreditCard",
     group: "Commerce",
-    visible: (p) => p.canReadFinance(),
+    visible: (p) => p.canOpen("/payments"),
   },
   {
     href: "/resale",
     label: "Resale",
     icon: "Repeat",
     group: "Commerce",
-    visible: (p) => p.canRead("order"),
+    visible: (p) => p.canOpen("/resale"),
   },
   {
     // "Drop" is the word the backend uses throughout — DropStatus, drop:read,
@@ -433,14 +545,14 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Drops",
     icon: "Package",
     group: "Catalog",
-    visible: (p) => p.canRead("drop"),
+    visible: (p) => p.canOpen("/products"),
   },
   {
     href: "/release-approvals",
     label: "Approvals",
     icon: "BadgeCheck",
     group: "Catalog",
-    visible: (p) => p.canRead("release-approval"),
+    visible: (p) => p.canOpen("/release-approvals"),
   },
   /*
    * Supply & inventory. Its own group rather than more Catalog entries: this
@@ -456,7 +568,7 @@ export const NAV_ITEMS: NavItem[] = [
     // The rollup itself. Every block inside is gated separately, and a caller
     // with no supply grant at all gets an empty envelope, which the page
     // explains rather than rendering as zeroes.
-    visible: (p) => p.canRead("reports-dashboards"),
+    visible: (p) => p.canOpen("/supply"),
   },
   {
     href: "/supply/consignments",
@@ -466,14 +578,14 @@ export const NAV_ITEMS: NavItem[] = [
     // Headers are planning data. Gated on drop:read because
     // HITBOX_DROP_MANAGER holds no nfc-tag-claim grant and could not run a
     // drop without seeing what arrived.
-    visible: (p) => p.canRead("drop"),
+    visible: (p) => p.canOpen("/supply/consignments"),
   },
   {
     href: "/supply/chips",
     label: "Chip inventory",
     icon: "Cpu",
     group: "Inventory",
-    visible: (p) => p.canRead("nfc-tag-claim"),
+    visible: (p) => p.canOpen("/supply/chips"),
   },
   {
     href: "/inventory",
@@ -482,7 +594,7 @@ export const NAV_ITEMS: NavItem[] = [
     group: "Inventory",
     // The cross-drop list admits global grants only; an org-scoped caller
     // reaches the same rows through a drop's own units panel.
-    visible: (p) => p.can("collectible-instance", "read", "global"),
+    visible: (p) => p.canOpen("/inventory"),
   },
   {
     href: "/supply/vendors",
@@ -492,21 +604,21 @@ export const NAV_ITEMS: NavItem[] = [
     // The directory is platform-level: who HitBox buys from, on what terms
     // and at which address is a commercial relationship of the platform's,
     // not a brand's, so GLOBAL reach rather than merely a consignment grant.
-    visible: (p) => p.can("drop", "read", "global"),
+    visible: (p) => p.canOpen("/supply/vendors"),
   },
   {
     href: "/demand",
     label: "Product demand",
     icon: "TrendingUp",
     group: "Catalog",
-    visible: (p) => p.canRead("drop"),
+    visible: (p) => p.canOpen("/demand"),
   },
   {
     href: "/content",
     label: "Exclusive content",
     icon: "Sparkles",
     group: "Catalog",
-    visible: (p) => p.canRead("content-unlock"),
+    visible: (p) => p.canOpen("/content"),
   },
   {
     href: "/media",
@@ -514,36 +626,35 @@ export const NAV_ITEMS: NavItem[] = [
     icon: "Image",
     group: "Catalog",
     // Docs table is explicit: assets-documents-upload:READ, not "any grant".
-    visible: (p) => p.canRead("assets-documents-upload"),
+    visible: (p) => p.canOpen("/media"),
   },
   {
     href: "/provenance",
     label: "Provenance",
     icon: "ShieldCheck",
     group: "Trust",
-    visible: (p) =>
-      p.canRead("nfc-tag-claim") || p.canRead("collectible-instance"),
+    visible: (p) => p.canOpen("/provenance"),
   },
   {
     href: "/activity",
     label: "Audit log",
     icon: "ScrollText",
     group: "Trust",
-    visible: (p) => p.canRead("audit-log"),
+    visible: (p) => p.canOpen("/activity"),
   },
   {
     href: "/roles",
     label: "Roles",
     icon: "KeyRound",
     group: "Administration",
-    visible: (p) => p.canRead("employee-role-mgmt"),
+    visible: (p) => p.canOpen("/roles"),
   },
   {
     href: "/team",
     label: "Team",
     icon: "UserCog",
     group: "Administration",
-    visible: (p) => p.canRead("employee-role-mgmt"),
+    visible: (p) => p.canOpen("/team"),
   },
 ];
 

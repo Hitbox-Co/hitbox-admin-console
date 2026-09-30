@@ -24,7 +24,7 @@ import { VENDOR_TYPES, type Vendor } from "@/lib/types";
 export default function VendorsPage() {
   return (
     <PageGuard
-      can={(p) => p.can("drop", "read", "global")}
+      can={(p) => p.canOpen("/supply/vendors")}
       what="The vendor directory"
       requires="drop:read:global"
     >

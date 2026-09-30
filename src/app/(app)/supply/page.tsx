@@ -15,6 +15,7 @@ import { useSupplyMetrics } from "@/lib/api/hooks";
 import { formatDateTime, formatNumber, humanize } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
 import { PageGuard } from "@/components/layout/page-guard";
+import { usePermissions } from "@/components/layout/authz-provider";
 import { Badge, Mono, Panel, Tooltip } from "@/components/ui/primitives";
 import { DataTable, type Column } from "@/components/ui/table";
 import { StatCard } from "@/components/dashboard/stat-card";
@@ -24,9 +25,9 @@ import type { SupplyMetrics } from "@/lib/types";
 export default function SupplyOverviewPage() {
   return (
     <PageGuard
-      can={(p) => p.canRead("reports-dashboards")}
+      can={(p) => p.canOpen("/supply")}
       what="The supply rollup"
-      requires="reports-dashboards:read"
+      requires="reports-dashboards:read (platform-wide)"
     >
       <SupplyOverviewView />
     </PageGuard>
@@ -209,6 +210,9 @@ function SubLink({
   icon: React.ComponentType<{ className?: string }>;
   children: React.ReactNode;
 }) {
+  // Each sub-screen has its own, narrower gate than this overview.
+  const perms = usePermissions();
+  if (!perms.canOpen(href)) return null;
   return (
     <Link
       href={href}

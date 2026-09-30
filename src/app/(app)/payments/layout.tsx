@@ -28,9 +28,9 @@ import { usePermissions } from "@/components/layout/authz-provider";
 export default function PaymentsLayout({ children }: { children: React.ReactNode }) {
   return (
     <PageGuard
-      can={(p) => p.canReadFinance()}
+      can={(p) => p.canOpen("/payments")}
       what="Payments"
-      requires="payment-royalty:read"
+      requires="payment-royalty:read (platform-wide)"
     >
       <PaymentsChrome>{children}</PaymentsChrome>
     </PageGuard>

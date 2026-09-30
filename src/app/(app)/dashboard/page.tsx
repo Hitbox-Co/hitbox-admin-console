@@ -14,6 +14,7 @@ import { cn } from "@/lib/cn";
 import { useDashboard } from "@/lib/api/hooks";
 import { formatCompact, formatNumber, humanize } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
+import { IfCanOpen } from "@/components/layout/if-can-open";
 import { useAuthz } from "@/components/layout/authz-provider";
 import { FilterBar, type PeriodState } from "@/components/dashboard/filter-bar";
 import { StatCard } from "@/components/dashboard/stat-card";
@@ -109,12 +110,14 @@ export default function DashboardPage() {
                 title="Recent activity"
                 description="The 20 most recent audit events."
                 action={
+                  <IfCanOpen href="/activity">
                   <Button variant="ghost" size="sm" asChild>
                     <Link href="/activity">
                       Full audit log
                       <ArrowRight className="h-3 w-3" />
                     </Link>
                   </Button>
+                  </IfCanOpen>
                 }
               />
               <ActivityFeed events={d!.activity} />
@@ -389,12 +392,14 @@ function OperationsPanel({ data }: { data: NonNullable<ReturnType<typeof useDash
         title="Operations queue"
         description="What needs a human right now."
         action={
+          <IfCanOpen href="/orders">
           <Button variant="ghost" size="sm" asChild>
             <Link href="/orders">
               Orders
               <ArrowRight className="h-3 w-3" />
             </Link>
           </Button>
+          </IfCanOpen>
         }
       />
 
@@ -523,12 +528,14 @@ function FinancePanel({ data }: { data: NonNullable<ReturnType<typeof useDashboa
         title="Finance"
         description="Per currency — figures are never summed across them."
         action={
+          <IfCanOpen href="/finance">
           <Button variant="ghost" size="sm" asChild>
             <Link href="/finance">
               Detail
               <ArrowRight className="h-3 w-3" />
             </Link>
           </Button>
+          </IfCanOpen>
         }
       />
       <div className="divide-y divide-[var(--hairline)]">
@@ -605,12 +612,14 @@ function MarketsPanel({ data }: { data: NonNullable<ReturnType<typeof useDashboa
         title="Markets"
         description={hasOrders ? "Orders by market" : "Buyers by market"}
         action={
+          <IfCanOpen href="/markets">
           <Button variant="ghost" size="sm" asChild>
             <Link href="/markets">
               All markets
               <ArrowRight className="h-3 w-3" />
             </Link>
           </Button>
+          </IfCanOpen>
         }
       />
       <div className="p-3">
@@ -650,12 +659,14 @@ function ProductsPanel({ data }: { data: NonNullable<ReturnType<typeof useDashbo
         title="Drops"
         description={`${formatNumber(p.total)} products · ${formatNumber(p.new)} new this period`}
         action={
+          <IfCanOpen href="/products">
           <Button variant="ghost" size="sm" asChild>
             <Link href="/products">
               Catalog
               <ArrowRight className="h-3 w-3" />
             </Link>
           </Button>
+          </IfCanOpen>
         }
       />
 
@@ -733,12 +744,14 @@ function ProvenancePanel({ data }: { data: NonNullable<ReturnType<typeof useDash
         title="Provenance"
         description="Tag claims and open cases."
         action={
+          <IfCanOpen href="/provenance">
           <Button variant="ghost" size="sm" asChild>
             <Link href="/provenance">
               Cases
               <ArrowRight className="h-3 w-3" />
             </Link>
           </Button>
+          </IfCanOpen>
         }
       />
       <div className="space-y-3.5 px-4 py-3.5">

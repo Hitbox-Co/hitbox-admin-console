@@ -41,6 +41,9 @@ export default function MarketsPage() {
 
 function MarketsView() {
   const [tab, setTab] = React.useState<Tab>("performance");
+  // admin/markets carries no organization context, so only a platform-wide
+  // reports grant loads it — Artist and Brand roles see Performance alone.
+  const canConfigure = usePermissions().reaches("reports-dashboards");
 
   usePageChrome({
     title: "Markets",
@@ -50,15 +53,17 @@ function MarketsView() {
 
   return (
     <div className="space-y-4">
-      <Segmented
-        value={tab}
-        onChange={setTab}
-        options={[
-          { value: "performance" as Tab, label: "Performance" },
-          { value: "configuration" as Tab, label: "Configuration" },
-        ]}
-      />
-      {tab === "performance" ? <PerformanceTab /> : <ConfigurationTab />}
+      {canConfigure ? (
+        <Segmented
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: "performance" as Tab, label: "Performance" },
+            { value: "configuration" as Tab, label: "Configuration" },
+          ]}
+        />
+      ) : null}
+      {tab === "configuration" && canConfigure ? <ConfigurationTab /> : <PerformanceTab />}
     </div>
   );
 }

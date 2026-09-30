@@ -156,6 +156,7 @@ export default function RoyaltyRulesPage() {
 
         <Panel className="overflow-hidden">
           <FilterRow onReset={list.reset} active={list.active}>
+            {perms.reaches("drop") ? (
             <ArtistPicker
               size="sm"
               aria-label="All artists"
@@ -164,6 +165,7 @@ export default function RoyaltyRulesPage() {
               value={list.filters.artistId}
               onChange={(v) => list.setFilter("artistId", v)}
             />
+            ) : null}
             <DropPicker
               size="sm"
               aria-label="All drops"

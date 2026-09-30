@@ -18,9 +18,9 @@ import type { Role } from "@/lib/types";
 export default function RolesPage() {
   return (
     <PageGuard
-      can={(p) => p.canRead("employee-role-mgmt")}
+      can={(p) => p.canOpen("/roles")}
       what="Roles"
-      requires="employee-role-mgmt:read"
+      requires="employee-role-mgmt:read (platform-wide)"
     >
       <RolesView />
     </PageGuard>

@@ -9,6 +9,7 @@ import { Badge, Mono, Panel } from "@/components/ui/primitives";
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterRow, FilterSelect, useListState } from "@/components/ui/filters";
 import { OrderPicker } from "@/components/finance/entity-pickers";
+import { usePermissions } from "@/components/layout/authz-provider";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { ScopeNotice } from "@/components/finance/scope-notice";
 import { FINANCE_CURRENCIES, type FinanceEntry } from "@/lib/types";
@@ -45,6 +46,9 @@ export default function FinanceLedgerPage() {
     currency: undefined,
     orderId: undefined,
   });
+  // Pickers read the order list and the artist directory, which need
+  // platform-wide reach — hidden rather than offered to answer 403.
+  const perms = usePermissions();
 
   const query = useFinanceLedger(list.params);
 
@@ -162,6 +166,7 @@ export default function FinanceLedgerPage() {
             options={[...FINANCE_CURRENCIES]}
             allLabel="Any"
           />
+          {perms.reaches("order") ? (
           <OrderPicker
             size="sm"
             aria-label="All orders"
@@ -170,6 +175,7 @@ export default function FinanceLedgerPage() {
             value={list.filters.orderId}
             onChange={(v) => list.setFilter("orderId", v)}
           />
+          ) : null}
         </FilterRow>
 
         {query.isLoading ? (

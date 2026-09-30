@@ -9,6 +9,7 @@ import { Badge, Mono, Panel, toneForStatus } from "@/components/ui/primitives";
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterRow, FilterSelect, useListState } from "@/components/ui/filters";
 import { ArtistPicker, OrderPicker } from "@/components/finance/entity-pickers";
+import { usePermissions } from "@/components/layout/authz-provider";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { RoyaltyEntryDrawer } from "@/components/finance/royalty-entry-drawer";
 import { FINANCE_CURRENCIES, type RoyaltyEntry } from "@/lib/types";
@@ -38,6 +39,9 @@ export default function RoyaltyEntriesPage() {
     orderId: undefined,
     artistId: undefined,
   });
+  // Pickers read the order list and the artist directory, which need
+  // platform-wide reach — hidden rather than offered to answer 403.
+  const perms = usePermissions();
 
   const [openId, setOpenId] = React.useState<string | null>(null);
   const prefetch = usePrefetchRoyaltyEntry();
@@ -167,6 +171,7 @@ export default function RoyaltyEntriesPage() {
             options={[...FINANCE_CURRENCIES]}
             allLabel="Any"
           />
+          {perms.reaches("order") ? (
           <OrderPicker
             size="sm"
             aria-label="All orders"
@@ -175,6 +180,8 @@ export default function RoyaltyEntriesPage() {
             value={list.filters.orderId}
             onChange={(v) => list.setFilter("orderId", v)}
           />
+          ) : null}
+          {perms.reaches("drop") ? (
           <ArtistPicker
             size="sm"
             aria-label="All artists"
@@ -183,6 +190,7 @@ export default function RoyaltyEntriesPage() {
             value={list.filters.artistId}
             onChange={(v) => list.setFilter("artistId", v)}
           />
+          ) : null}
         </FilterRow>
 
         {query.isLoading ? (

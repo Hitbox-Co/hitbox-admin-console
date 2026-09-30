@@ -22,6 +22,7 @@ import {
 } from "@/lib/api/hooks";
 import { formatCurrency, formatDate, formatDateTime, formatNumber, humanize } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
+import { IfCanOpen } from "@/components/layout/if-can-open";
 import {
   Badge,
   Mono,
@@ -93,12 +94,12 @@ export function ReviewDetailView({ approvalId }: { approvalId: string }) {
 
       {review.status === "PENDING" && lastRejection ? (
         <Callout tone="warning" icon={<RotateCcw className="h-3.5 w-3.5" />}>
-          <strong className="font-medium text-[var(--text-1)]">
+          <strong className="font-medium text-text-1">
             Previously rejected (v{lastRejection.version}):
           </strong>{" "}
           “{lastRejection.comment}”
           {review.reopenReason ? (
-            <span className="mt-1 block text-[var(--text-3)]">
+            <span className="mt-1 block text-text-3">
               Sent back because: “{review.reopenReason}”
             </span>
           ) : null}
@@ -115,7 +116,7 @@ export function ReviewDetailView({ approvalId }: { approvalId: string }) {
               <ErrorState error={productQuery.error} onRetry={() => productQuery.refetch()} />
             </Panel>
           ) : !product ? (
-            <Skeleton className="h-96 w-full rounded-[12px]" />
+            <Skeleton className="h-96 w-full rounded-xl" />
           ) : (
             <>
               <Artwork product={product} />
@@ -144,7 +145,7 @@ function BackLink() {
   return (
     <Link
       href="/release-approvals"
-      className="inline-flex items-center gap-1.5 text-[12px] text-[var(--text-3)] transition-colors hover:text-[var(--text-1)]"
+      className="inline-flex items-center gap-1.5 text-[12px] text-text-3 transition-colors hover:text-text-1"
     >
       <ArrowLeft className="h-3.5 w-3.5" />
       Review queue
@@ -166,7 +167,7 @@ function Header({
         <div className="min-w-0 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
             <Mono className="text-[11px]">{review.product.groupCode}</Mono>
-            <span className="text-[12px] text-[var(--text-3)]">Review v{review.version}</span>
+            <span className="text-[12px] text-text-3">Review v{review.version}</span>
             <Badge tone={toneForStatus(review.status)} dot>
               {humanize(review.status)}
             </Badge>
@@ -175,11 +176,11 @@ function Header({
             </Badge>
           </div>
           {product?.artistName ? (
-            <p className="text-[13px] text-[var(--text-2)]">by {product.artistName}</p>
+            <p className="text-[13px] text-text-2">by {product.artistName}</p>
           ) : null}
           {review.comment ? (
-            <p className="max-w-3xl rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 text-[12.5px] leading-relaxed text-[var(--text-2)]">
-              <span className="text-[var(--text-3)]">
+            <p className="max-w-3xl rounded-[8px] border border-hairline bg-surface-2 px-3 py-2 text-[12.5px] leading-relaxed text-text-2">
+              <span className="text-text-3">
                 {pending ? "Note from the submitter: " : "Decision note: "}
               </span>
               {review.comment}
@@ -187,19 +188,23 @@ function Header({
           ) : null}
         </div>
         <div className="shrink-0 space-y-1 text-[12px] sm:text-right">
-          <p className="text-[var(--text-3)]">
+          <p className="text-text-3">
             {pending ? "Waiting since" : "Decided"}{" "}
-            <span className="tnum text-[var(--text-1)]">
+            <span className="tnum text-text-1">
               {formatDateTime(pending ? review.createdAt : review.decidedAt)}
             </span>
           </p>
-          <Link
-            href={`/products/${review.productId}`}
-            className="inline-flex items-center gap-1 text-[var(--accent)] hover:underline"
-          >
-            Open drop page
-            <ExternalLink className="h-3 w-3" />
-          </Link>
+          {/* The drop's own page is for platform catalog operators; everyone
+              else reviews it here. */}
+          <IfCanOpen href="/products/detail">
+            <Link
+              href={`/products/${review.productId}`}
+              className="inline-flex items-center gap-1 text-accent hover:underline"
+            >
+              Open drop page
+              <ExternalLink className="h-3 w-3" />
+            </Link>
+          </IfCanOpen>
         </div>
       </div>
     </Panel>
@@ -238,7 +243,7 @@ function ComplianceFacts({ review }: { review: ReleaseApprovalDetail }) {
           icon={odds ? null : <FileWarning className="h-4 w-4" />}
           value={
             odds ? (
-              <a href={odds} target="_blank" rel="noreferrer" className="text-[var(--accent)] hover:underline">
+              <a href={odds} target="_blank" rel="noreferrer" className="text-accent hover:underline">
                 View disclosure
               </a>
             ) : (
@@ -275,8 +280,8 @@ function Fact({
     tone === "danger" ? "text-[var(--danger)]" : tone === "warning" ? "text-[var(--warning)]" : "text-[var(--text-3)]";
   return (
     <div className={`rounded-[10px] border px-3 py-3 ${ring}`}>
-      <p className="text-[11px] uppercase tracking-wide text-[var(--text-3)]">{label}</p>
-      <p className="mt-1 flex items-center gap-1.5 text-[16px] font-semibold text-[var(--text-1)]">
+      <p className="text-[11px] uppercase tracking-wide text-text-3">{label}</p>
+      <p className="mt-1 flex items-center gap-1.5 text-[16px] font-semibold text-text-1">
         {icon ? <span className={ink}>{icon}</span> : null}
         {value}
       </p>
@@ -307,9 +312,9 @@ function Artwork({ product }: { product: AdminProductDetail }) {
       />
       {urls.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 px-4 py-12 text-center">
-          <ImageOff className="h-6 w-6 text-[var(--warning)]" aria-hidden />
-          <p className="text-[13px] font-medium text-[var(--text-1)]">This drop has no artwork yet</p>
-          <p className="max-w-md text-[12px] leading-relaxed text-[var(--text-3)]">
+          <ImageOff className="h-6 w-6 text-warning" aria-hidden />
+          <p className="text-[13px] font-medium text-text-1">This drop has no artwork yet</p>
+          <p className="max-w-md text-[12px] leading-relaxed text-text-3">
             Approving it means approving a drop with no images. Reject it with a note if
             the artwork should be added first.
           </p>
@@ -375,7 +380,7 @@ function DropDetails({ product }: { product: AdminProductDetail }) {
     <Panel>
       <PanelHeader title="Drop details" />
       {product.description ? (
-        <p className="border-b border-[var(--hairline)] px-4 py-3 text-[13px] leading-relaxed text-[var(--text-2)]">
+        <p className="border-b border-hairline px-4 py-3 text-[13px] leading-relaxed text-text-2">
           {product.description}
         </p>
       ) : (

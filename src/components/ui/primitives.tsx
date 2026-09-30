@@ -82,7 +82,7 @@ export function Panel({
   return (
     <div
       className={cn(
-        "rounded-[12px] border border-[var(--hairline)] bg-[var(--surface-1)]",
+        "rounded-xl border border-hairline bg-surface-1",
         className
       )}
       {...props}
@@ -106,16 +106,16 @@ export function PanelHeader({
   return (
     <div
       className={cn(
-        "flex items-start justify-between gap-4 border-b border-[var(--hairline)] px-4 py-3",
+        "flex items-start justify-between gap-4 border-b border-hairline px-4 py-3",
         className
       )}
     >
       <div className="min-w-0">
-        <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-[var(--text-1)]">
+        <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-text-1">
           {title}
         </h3>
         {description ? (
-          <p className="mt-0.5 text-[12px] leading-relaxed text-[var(--text-3)]">
+          <p className="mt-0.5 text-[12px] leading-relaxed text-text-3">
             {description}
           </p>
         ) : null}
@@ -231,7 +231,7 @@ export function Tooltip({
         <TooltipPrimitive.Content
           side={side}
           sideOffset={6}
-          className="rx-content rx-anchored z-[70] max-w-[280px] rounded-[6px] border border-[var(--hairline-strong)] bg-[var(--surface-3)] px-2 py-1.5 text-[12px] leading-snug text-[var(--text-1)] shadow-[var(--shadow-2)]"
+          className="rx-content rx-anchored z-70 max-w-70 rounded-[6px] border border-hairline-strong bg-surface-3 px-2 py-1.5 text-[12px] leading-snug text-text-1 shadow-e2"
         >
           {content}
         </TooltipPrimitive.Content>

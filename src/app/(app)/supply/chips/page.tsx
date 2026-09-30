@@ -27,9 +27,9 @@ import type { NfcTagRow, TagQcStatus } from "@/lib/types";
 export default function ChipInventoryPage() {
   return (
     <PageGuard
-      can={(p) => p.canRead("nfc-tag-claim")}
+      can={(p) => p.canOpen("/supply/chips")}
       what="The chip inventory"
-      requires="nfc-tag-claim:read"
+      requires="nfc-tag-claim:read (platform-wide)"
     >
       <ChipInventoryView />
     </PageGuard>

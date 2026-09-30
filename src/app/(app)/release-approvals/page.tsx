@@ -158,15 +158,17 @@ function ReleaseApprovalsView() {
         ),
     },
     {
+      // `approverName` is whoever SUBMITTED the review, not who decided it —
+      // labelled for what it is.
       key: "approver",
-      header: "Approver",
+      header: "Submitted by",
       cell: (r) =>
         r.approverEmail ? (
           <span className="text-[12px] text-[var(--text-2)]">
             {r.approverName ?? r.approverEmail}
           </span>
         ) : (
-          <span className="text-[12px] text-[var(--text-3)]">Unassigned</span>
+          <span className="text-[12px] text-[var(--text-3)]">—</span>
         ),
     },
     {

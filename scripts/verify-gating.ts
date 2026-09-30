@@ -237,12 +237,16 @@ function main() {
 
   const artistNav = navFor("ARTIST");
   check("artist gets Products", artistNav.includes("/products"), true);
-  check("artist gets Media", artistNav.includes("/media"), true);
-  // `payment-royalty:read:own` is in the catalog for this role, so an artist
-  // DOES reach Finance and Payments — narrowed to their own earnings, which
-  // is the artist earnings screen the finance API is built around.
+  // admin/media carries no organization context, so the artist's
+  // organization-scoped upload grant is refused by the engine.
+  check("artist does NOT get Media (org grant, no-context route)", artistNav.includes("/media"), false);
+  // The finance guard supplies an OWNER context, so `payment-royalty:read:own`
+  // passes — an artist reaches their own earnings. Payments routes supply no
+  // context at all, so the same OWN grant is refused there.
   check("artist gets Finance (own royalties)", artistNav.includes("/finance"), true);
-  check("artist gets Payments", artistNav.includes("/payments"), true);
+  check("artist does NOT get Payments (no-context routes)", artistNav.includes("/payments"), false);
+  check("artist does NOT get Supply overview", artistNav.includes("/supply"), false);
+  check("artist does NOT get Orders", artistNav.includes("/orders"), false);
   check("artist does NOT get Team", artistNav.includes("/team"), false);
   check(
     "artist does NOT get Markets (own-scoped reports, no order grant)",
@@ -252,8 +256,13 @@ function main() {
   check("artist gets My workspace", artistNav.includes("/artist"), true);
 
   const brandAdminNav = navFor("BRAND_ADMIN");
-  check("brand admin gets Finance (org-scoped royalties)", brandAdminNav.includes("/finance"), true);
-  check("brand admin gets Team (org-scoped)", brandAdminNav.includes("/team"), true);
+  // The finance guard carries an owner context only; an ORGANIZATION grant
+  // has no organization to match and is refused (finance/src/module.ts).
+  check("brand admin does NOT get Finance (org grant refused)", brandAdminNav.includes("/finance"), false);
+  // Team and roles routes carry no organization context either.
+  check("brand admin does NOT get Team (org grant refused)", brandAdminNav.includes("/team"), false);
+  check("brand admin does NOT get Orders", brandAdminNav.includes("/orders"), false);
+  check("brand admin gets Resale (dashboard projection)", brandAdminNav.includes("/resale"), true);
   check(
     "brand admin does NOT get the audit log",
     brandAdminNav.includes("/activity"),
@@ -275,18 +284,23 @@ function main() {
     false
   );
 
-  console.log("\nMedia keys off a read grant, which `manage` subsumes\n");
+  console.log("\nMedia keys off a platform-wide read grant, which `manage` subsumes\n");
   const hrefs = (keys: string[]) =>
     visibleNav(new Permissions(keys)).map((n) => n.href);
   check(
-    "a manage grant yields Media",
-    hrefs(["assets-documents-upload:manage:own"]).includes("/media"),
+    "a global manage grant yields Media",
+    hrefs(["assets-documents-upload:manage:global"]).includes("/media"),
     true
   );
   check(
-    "a read grant yields Media",
-    hrefs(["assets-documents-upload:read:own"]).includes("/media"),
+    "a global read grant yields Media",
+    hrefs(["assets-documents-upload:read:global"]).includes("/media"),
     true
+  );
+  check(
+    "an own-scoped grant does not (the route has no owner context)",
+    hrefs(["assets-documents-upload:manage:own"]).includes("/media"),
+    false
   );
   check(
     "no media grant means no Media entry",
@@ -466,9 +480,9 @@ function main() {
     false
   );
   check(
-    "brand admin gets Payments (org-scoped)",
+    "brand admin does NOT get Payments (no-context routes refuse org grants)",
     navFor("BRAND_ADMIN").includes("/payments"),
-    true
+    false
   );
   check(
     "a technical role gets neither",
@@ -565,6 +579,40 @@ function main() {
     new Permissions(["drop:read:public"]).canSubmitRelease(),
     false
   );
+
+  /*
+   * Every console route × role, against what the backend guard admits
+   * (authorization-engine.ts: ORGANIZATION grants need an organization
+   * context, OWN grants an owner context; most admin routes supply neither).
+   */
+  console.log("\nConsole routes offered exactly where the backend admits the load\n");
+  const MATRIX: Record<string, Record<string, boolean>> = {
+    "/orders": { ARTIST: false, BRAND_ADMIN: false, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: true, HITBOX_FINANCE_ADMIN: true },
+    "/finance": { ARTIST: true, BRAND_ADMIN: false, BRAND_EMPLOYEE: false, HITBOX_FINANCE_ADMIN: true, HITBOX_ORDER_MANAGER: false },
+    "/payments": { ARTIST: false, BRAND_ADMIN: false, HITBOX_FINANCE_ADMIN: true },
+    "/resale": { ARTIST: false, BRAND_ADMIN: true, HITBOX_ORDER_MANAGER: true },
+    "/products": { ARTIST: true, BRAND_ADMIN: true, HITBOX_DROP_MANAGER: true, HITBOX_ORDER_MANAGER: false },
+    "/products/detail": { ARTIST: false, BRAND_ADMIN: false, BRAND_EMPLOYEE: false, HITBOX_DROP_MANAGER: true, HITBOX_SYSTEM_ADMIN: true },
+    "/release-approvals": { ARTIST: true, BRAND_ADMIN: true, BRAND_EMPLOYEE: true, HITBOX_DROP_MANAGER: true, HITBOX_ORDER_MANAGER: false },
+    "/supply": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true, HITBOX_FINANCE_ADMIN: true },
+    "/supply/consignments": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true },
+    "/supply/chips": { ARTIST: false, HITBOX_DROP_MANAGER: false, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: true },
+    "/supply/vendors": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true },
+    "/inventory": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true, HITBOX_SUPPORT: true },
+    "/media": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true },
+    "/provenance": { ARTIST: false, HITBOX_DROP_MANAGER: false, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: true },
+    "/demand": { ARTIST: true, BRAND_ADMIN: true, HITBOX_ORDER_MANAGER: false },
+    "/team": { BRAND_ADMIN: false, HITBOX_SYSTEM_ADMIN: true },
+    "/roles": { BRAND_ADMIN: false, HITBOX_SYSTEM_ADMIN: true },
+  };
+  for (const [route, roles] of Object.entries(MATRIX)) {
+    for (const [role, expected] of Object.entries(roles)) {
+      if (!ROLE_GRANTS[role]) continue;
+      check(`${role} ${expected ? "may" : "may NOT"} open ${route}`, permsFor(role).canOpen(route), expected);
+    }
+  }
+  check("a sub-route inherits its parent's rule", permsFor("ARTIST").canOpen("/finance/balances"), true);
+  check("ledger stays hidden at own scope", permsFor("ARTIST").canOpen("/finance/ledger"), false);
 
   console.log(
     failures === 0 ? "\nAll checks passed.\n" : `\n${failures} check(s) FAILED.\n`

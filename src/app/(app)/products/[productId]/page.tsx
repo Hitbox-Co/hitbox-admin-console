@@ -6,7 +6,7 @@ import { ProductDetailView } from "@/components/products/product-detail-view";
 
 export default function ProductDetailPage() {
   return (
-    <PageGuard can={(p) => p.canRead("drop")} what="Drop detail" requires="drop:read">
+    <PageGuard can={(p) => p.canOpen("/products/detail")} what="Drop detail" requires="drop:read (platform-wide)">
       <ProductDetailRoute />
     </PageGuard>
   );

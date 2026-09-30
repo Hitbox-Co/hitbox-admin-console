@@ -16,9 +16,9 @@ import { SubNav } from "@/components/ui/sub-nav";
 export default function TeamLayout({ children }: { children: React.ReactNode }) {
   return (
     <PageGuard
-      can={(p) => p.canRead("employee-role-mgmt")}
+      can={(p) => p.canOpen("/team")}
       what="Team membership"
-      requires="employee-role-mgmt:read"
+      requires="employee-role-mgmt:read (platform-wide)"
     >
       <div className="space-y-4">
         <SubNav

@@ -80,8 +80,10 @@ function WorkspaceView() {
   const drops = useProducts({ page: 1, limit: 5 });
   const canDecide = perms.canRead("release-approval");
   const approvals = useReleases({ status: "PENDING", latestOnly: true, page: 1, limit: 5 });
-  const canSeeMoney = perms.canReadFinance();
-  const balances = useRoyaltyBalances();
+  // The finance guard admits OWN or GLOBAL, not ORGANIZATION — a Brand
+  // Admin's org-scoped grant is refused there, so the panel is not offered.
+  const canSeeMoney = perms.canReadFinanceModule();
+  const balances = useRoyaltyBalances(undefined, canSeeMoney);
 
   return (
     <div className="space-y-4">
@@ -415,6 +417,9 @@ function NotWiredPanel({ canUpdateProfile }: { canUpdateProfile: boolean }) {
 /* ------------------------------------------------------------------ */
 
 function MoreLink({ href, label }: { href: string; label: string }) {
+  // Never a link into a section the caller cannot load.
+  const perms = usePermissions();
+  if (!perms.canOpen(href)) return null;
   return (
     <Link
       href={href}

@@ -24,7 +24,7 @@ const STATUSES = ["OPEN", "INVESTIGATING", "RESOLVED"];
 export default function ProvenancePage() {
   return (
     <PageGuard
-      can={(p) => p.canRead("nfc-tag-claim") || p.canRead("collectible-instance")}
+      can={(p) => p.canOpen("/provenance")}
       what="Provenance cases"
       requires="nfc-tag-claim:read"
     >

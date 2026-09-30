@@ -30,9 +30,9 @@ import type { SkuUnit } from "@/lib/types";
 export default function InventoryPage() {
   return (
     <PageGuard
-      can={(p) => p.can("collectible-instance", "read", "global")}
+      can={(p) => p.canOpen("/inventory")}
       what="Cross-drop inventory"
-      requires="collectible-instance:read:global"
+      requires="collectible-instance:read (platform-wide)"
     >
       <InventoryView />
     </PageGuard>

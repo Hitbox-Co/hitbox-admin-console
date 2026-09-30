@@ -171,6 +171,7 @@ export default function AdjustmentsPage() {
               options={REASON_CODES}
               allLabel="Any reason"
             />
+            {perms.reaches("order") ? (
             <OrderPicker
               size="sm"
               aria-label="All orders"
@@ -179,6 +180,7 @@ export default function AdjustmentsPage() {
               value={list.filters.orderId}
               onChange={(v) => list.setFilter("orderId", v)}
             />
+            ) : null}
           </FilterRow>
 
           {query.isLoading ? (

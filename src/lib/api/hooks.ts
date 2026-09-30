@@ -1750,10 +1750,11 @@ export function useReverseRoyaltyEntry(entryId: string) {
  * whether they have reached their payout threshold. No pagination: this is a
  * grouped aggregate, not a list.
  */
-export function useRoyaltyBalances(currency?: string) {
+export function useRoyaltyBalances(currency?: string, enabled = true) {
   return useQuery({
     ...baseOptions,
     queryKey: ["finance-balances", currency ?? "all"],
+    enabled,
     queryFn: () =>
       api
         .get<unknown>("admin/finance/balances", { currency })

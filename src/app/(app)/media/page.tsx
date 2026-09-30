@@ -54,9 +54,9 @@ const TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
 export default function MediaPage() {
   return (
     <PageGuard
-      can={(p) => p.canRead("assets-documents-upload")}
+      can={(p) => p.canOpen("/media")}
       what="The media registry"
-      requires="assets-documents-upload:read"
+      requires="assets-documents-upload:read (platform-wide)"
     >
       <MediaView />
     </PageGuard>

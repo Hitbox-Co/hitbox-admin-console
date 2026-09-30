@@ -33,9 +33,9 @@ import { SUPPLY_ITEM_TYPES, type SupplyBatch } from "@/lib/types";
 export default function ConsignmentsPage() {
   return (
     <PageGuard
-      can={(p) => p.canRead("drop")}
+      can={(p) => p.canOpen("/supply/consignments")}
       what="Consignments"
-      requires="drop:read"
+      requires="drop:read (platform-wide)"
     >
       <ConsignmentsView />
     </PageGuard>
