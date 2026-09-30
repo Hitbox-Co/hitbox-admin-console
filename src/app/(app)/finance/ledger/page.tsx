@@ -7,7 +7,8 @@ import { formatCurrency, formatDateTime, humanize, shortId } from "@/lib/format"
 import { usePageChrome } from "@/components/layout/app-shell";
 import { Badge, Mono, Panel } from "@/components/ui/primitives";
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
-import { FilterRow, FilterSelect, SearchInput, useListState } from "@/components/ui/filters";
+import { FilterRow, FilterSelect, useListState } from "@/components/ui/filters";
+import { OrderPicker } from "@/components/finance/entity-pickers";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { ScopeNotice } from "@/components/finance/scope-notice";
 import { FINANCE_CURRENCIES, type FinanceEntry } from "@/lib/types";
@@ -161,11 +162,13 @@ export default function FinanceLedgerPage() {
             options={[...FINANCE_CURRENCIES]}
             allLabel="Any"
           />
-          <SearchInput
-            value={list.filters.orderId ?? ""}
-            onChange={(v) => list.setFilter("orderId", v || undefined)}
-            placeholder="Order id"
-            className="w-[190px]"
+          <OrderPicker
+            size="sm"
+            aria-label="All orders"
+            className="w-[220px]"
+            placeholder="All orders"
+            value={list.filters.orderId}
+            onChange={(v) => list.setFilter("orderId", v)}
           />
         </FilterRow>
 

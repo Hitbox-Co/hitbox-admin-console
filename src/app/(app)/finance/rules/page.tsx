@@ -8,7 +8,8 @@ import { usePageChrome, PageActions } from "@/components/layout/app-shell";
 import { usePermissions } from "@/components/layout/authz-provider";
 import { Badge, Button, Mono, Panel } from "@/components/ui/primitives";
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
-import { FilterRow, SearchInput, useListState } from "@/components/ui/filters";
+import { FilterRow, useListState } from "@/components/ui/filters";
+import { ArtistPicker, DropPicker } from "@/components/finance/entity-pickers";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { ScopeNotice } from "@/components/finance/scope-notice";
 import { RoyaltyRuleDrawer } from "@/components/finance/royalty-rule-drawer";
@@ -155,17 +156,21 @@ export default function RoyaltyRulesPage() {
 
         <Panel className="overflow-hidden">
           <FilterRow onReset={list.reset} active={list.active}>
-            <SearchInput
-              value={list.filters.artistId ?? ""}
-              onChange={(v) => list.setFilter("artistId", v || undefined)}
-              placeholder="Artist id"
-              className="w-[190px]"
+            <ArtistPicker
+              size="sm"
+              aria-label="All artists"
+              className="w-[220px]"
+              placeholder="All artists"
+              value={list.filters.artistId}
+              onChange={(v) => list.setFilter("artistId", v)}
             />
-            <SearchInput
-              value={list.filters.productId ?? ""}
-              onChange={(v) => list.setFilter("productId", v || undefined)}
-              placeholder="Drop id"
-              className="w-[190px]"
+            <DropPicker
+              size="sm"
+              aria-label="All drops"
+              className="w-[220px]"
+              placeholder="All drops"
+              value={list.filters.productId}
+              onChange={(v) => list.setFilter("productId", v)}
             />
           </FilterRow>
 

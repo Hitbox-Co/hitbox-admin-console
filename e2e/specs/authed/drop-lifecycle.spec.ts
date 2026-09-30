@@ -243,21 +243,70 @@ test.describe("Deciding a review", () => {
 /* ------------------------------------------------------------------ */
 
 test.describe("Review screen matches the server's verdict", () => {
-  test("Approve / Reject / Reopen appear exactly when the detail allows them", async ({ page }) => {
-    const first = (await reviews(page, "latestOnly=true&limit=5"))[0];
-    test.skip(!first, "no review readable");
+  test("a pending review shows both buttons, enabled exactly as the detail allows", async ({ page }) => {
+    // Disabled-with-a-reason, never hidden: the approver must see why.
+    const first = (await reviews(page, "status=PENDING&latestOnly=true&limit=5"))[0];
+    test.skip(!first, "no pending review");
     const d = await detail(page, str(first, "id")!);
     test.skip(!d, "detail not readable");
+    const product = (d!.product ?? {}) as JsonRow;
+    const ageIncomplete = !!product.isAgeSpecific && !product.minimumAge;
 
+    await open(page, `/release-approvals/${str(first, "id")}`);
+    await expect(page.getByText(/Your decision/i)).toBeVisible({ timeout: 30_000 });
+
+    const approve = page.getByRole("button", { name: /^approve$/i });
+    const reject = page.getByRole("button", { name: /^reject$/i });
+    await expect(approve).toHaveCount(1);
+    await expect(reject).toHaveCount(1);
+    expect(await approve.isEnabled(), "Approve enabled against canApprove").toBe(!!d!.canApprove && !ageIncomplete);
+    expect(await reject.isEnabled(), "Reject enabled against canReject").toBe(!!d!.canReject);
+    if (!d!.canApprove && d!.approveBlockedReason) {
+      await expect(page.getByText(String(d!.approveBlockedReason))).toBeVisible();
+    }
+  });
+
+  test("Reopen is offered on a decided review exactly when canReopen", async ({ page }) => {
+    const decided = (await reviews(page, "status=REJECTED&latestOnly=true&limit=5"))[0];
+    test.skip(!decided, "no rejected review");
+    const d = await detail(page, str(decided, "id")!);
+    test.skip(!d, "detail not readable");
+
+    await open(page, `/release-approvals/${str(decided, "id")}`);
+    await expect(page.getByText(/Your decision/i)).toBeVisible({ timeout: 30_000 });
+    expect(await page.getByRole("button", { name: /^reopen$/i }).count() > 0).toBe(!!d!.canReopen);
+    await expect(page.getByRole("button", { name: /^approve$/i })).toHaveCount(0);
+  });
+
+  test("the review page shows the artwork, or says there is none", async ({ page }) => {
+    const first = (await reviews(page, "latestOnly=true&limit=5"))[0];
+    test.skip(!first, "no review readable");
+
+    await open(page, `/release-approvals/${str(first, "id")}`);
+    await expect(page.getByText(/What you are signing off/i)).toBeVisible({ timeout: 30_000 });
+    const hasArt = page.getByRole("img", { name: /image 1/i });
+    const noArt = page.getByText(/has no artwork yet/i);
+    await expect(hasArt.or(noArt).first()).toBeVisible({ timeout: 30_000 });
+  });
+
+  test("clicking a queue row opens the review page, not a drawer", async ({ page }) => {
+    const first = (await reviews(page, "latestOnly=true&limit=5"))[0];
+    test.skip(!first, "no review readable");
+
+    await open(page, "/release-approvals?");
+    await settled(page, "Approvals");
+    const row = page.locator("tbody tr").first();
+    test.skip((await row.count()) === 0 || (await row.getByRole("button").count()) === 0, "queue empty for this filter");
+    await row.click();
+    await expect(page).toHaveURL(/\/release-approvals\/[^/?]+$/, { timeout: 30_000 });
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  test("the drawer's old ?open= link lands on the review page", async ({ page }) => {
+    const first = (await reviews(page, "latestOnly=true&limit=5"))[0];
+    test.skip(!first, "no review readable");
     await open(page, `/release-approvals?open=${str(first, "id")}`);
-    const drawer = page.getByRole("dialog");
-    await expect(drawer).toBeVisible({ timeout: 30_000 });
-    await expect(drawer.getByText(/Entitled to decide/i)).toBeVisible({ timeout: 20_000 });
-
-    const count = (name: RegExp) => drawer.getByRole("button", { name }).count();
-    expect(await count(/^approve$/i) > 0, "Approve shown/hidden against canApprove").toBe(!!d!.canApprove);
-    expect(await count(/^reject$/i) > 0, "Reject shown/hidden against canReject").toBe(!!d!.canReject);
-    expect(await count(/^reopen$/i) > 0, "Reopen shown/hidden against canReopen").toBe(!!d!.canReopen);
+    await expect(page).toHaveURL(new RegExp(`/release-approvals/${str(first, "id")}$`), { timeout: 30_000 });
   });
 
   test("the legal statement is the server's wording and starts unticked", async ({ page }) => {
@@ -273,14 +322,12 @@ test.describe("Review screen matches the server's verdict", () => {
     }
     test.skip(!target, "no review this role may approve");
 
-    await open(page, `/release-approvals?open=${str(target!, "id")}`);
-    const drawer = page.getByRole("dialog");
-    await drawer.getByRole("button", { name: /^approve$/i }).click();
+    await open(page, `/release-approvals/${str(target!, "id")}`);
+    await page.getByRole("button", { name: /^approve$/i }).click();
 
-    await expect(drawer.getByText(String(target!.legalComplianceStatement))).toBeVisible();
-    await expect(drawer.getByRole("checkbox").last()).not.toBeChecked();
-    await expect(drawer.getByRole("button", { name: /confirm approval/i })).toBeDisabled();
-    await page.keyboard.press("Escape");
+    await expect(page.getByText(String(target!.legalComplianceStatement))).toBeVisible();
+    await expect(page.getByRole("checkbox").last()).not.toBeChecked();
+    await expect(page.getByRole("button", { name: /confirm approval/i })).toBeDisabled();
   });
 });
 

@@ -296,19 +296,19 @@ test.describe("Release approval workflow", () => {
     const row = page.locator("tbody tr").first();
     test.skip((await row.count()) === 0, "no reviews to inspect");
 
+    // Each review is its own page.
     await row.click();
-    const drawer = page.getByRole("dialog");
-    test.skip((await drawer.count()) === 0, "no review drawer");
-    await expect(drawer).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/Your decision/i)).toBeVisible({ timeout: 30_000 });
 
-    const reject = drawer.getByRole("button", { name: /reject/i });
-    test.skip((await reject.count()) === 0, "reject is not available on this review");
+    const reject = page.getByRole("button", { name: /^reject$/i });
+    test.skip(
+      (await reject.count()) === 0 || !(await reject.isEnabled()),
+      "reject is not available on this review"
+    );
 
     await reject.click();
-    const submit = drawer.getByRole("button", { name: /reject|confirm/i }).last();
+    const submit = page.getByRole("button", { name: /confirm rejection/i });
     await expect(submit, "a rejection can be submitted with no comment").toBeDisabled();
-
-    await page.keyboard.press("Escape");
   });
 
   test("an already-decided review does not offer a second decision", async ({ page }) => {
@@ -338,22 +338,20 @@ test.describe("Release approval workflow", () => {
     const res = await page.request.get("/api/hitbox/admin/releases?status=PENDING&pageSize=20");
     test.skip(!res.ok(), "release list not readable");
 
-    const gated = rows(await json(res)).find((r) => r.ageRestricted === true && !r.minimumAge);
+    const gated = rows(await json(res)).find((r) => {
+      const product = (r.product ?? {}) as Record<string, unknown>;
+      return product.isAgeSpecific === true && !product.minimumAge;
+    });
     test.skip(!gated, "no incomplete age-restricted review to inspect");
 
-    await page.reload();
-    await settled(page, "Approvals");
-    const drawerRow = page.locator("tbody tr").first();
-    await drawerRow.click();
-
-    const approve = page.getByRole("dialog").getByRole("button", { name: /approve/i });
-    if (await approve.count()) {
-      await expect(
-        approve,
-        "approve is offered on an age-restricted drop with no minimum age — it will answer RELEASES_COMPLIANCE_INCOMPLETE"
-      ).toBeDisabled();
-    }
-    await page.keyboard.press("Escape");
+    // Open THAT review, not whichever row happens to be first.
+    await open(page, `/release-approvals/${str(gated!, "id")}`);
+    const approve = page.getByRole("button", { name: /^approve$/i });
+    await expect(approve).toBeVisible({ timeout: 30_000 });
+    await expect(
+      approve,
+      "approve is offered on an age-restricted drop with no minimum age — it will answer RELEASES_COMPLIANCE_INCOMPLETE"
+    ).toBeDisabled();
   });
 });
 

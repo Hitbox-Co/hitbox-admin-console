@@ -9,7 +9,8 @@ import { usePermissions } from "@/components/layout/authz-provider";
 import { Badge, Button, Mono, Panel } from "@/components/ui/primitives";
 import { Amount } from "@/components/ui/money";
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
-import { FilterRow, FilterSelect, SearchInput, useListState } from "@/components/ui/filters";
+import { FilterRow, FilterSelect, useListState } from "@/components/ui/filters";
+import { OrderPicker } from "@/components/finance/entity-pickers";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { ScopeNotice } from "@/components/finance/scope-notice";
 import { AdjustmentDialog } from "@/components/finance/adjustment-dialog";
@@ -170,11 +171,13 @@ export default function AdjustmentsPage() {
               options={REASON_CODES}
               allLabel="Any reason"
             />
-            <SearchInput
-              value={list.filters.orderId ?? ""}
-              onChange={(v) => list.setFilter("orderId", v || undefined)}
-              placeholder="Order id"
-              className="w-[190px]"
+            <OrderPicker
+              size="sm"
+              aria-label="All orders"
+              className="w-[220px]"
+              placeholder="All orders"
+              value={list.filters.orderId}
+              onChange={(v) => list.setFilter("orderId", v)}
             />
           </FilterRow>
 

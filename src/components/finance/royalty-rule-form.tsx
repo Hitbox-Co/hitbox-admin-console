@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Plus, Trash2, TriangleAlert, X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
 import { useCreateRoyaltyRule } from "@/lib/api/hooks";
+import { ArtistPicker, DropPicker, OrganizationPicker } from "./entity-pickers";
 import { Button, Field, Input, Panel, Segmented } from "@/components/ui/primitives";
 import { totalPercentage } from "./rule-helpers";
 import type {
@@ -176,7 +177,11 @@ export function RoyaltyRuleForm({ onClose }: { onClose: () => void }) {
               </p>
               <Segmented
                 value={scopeKind}
-                onChange={(v) => setScopeKind(v)}
+                onChange={(v) => {
+                  setScopeKind(v);
+                  // An artist's id is not a drop's id — never carry it over.
+                  setScopeId("");
+                }}
                 size="sm"
                 options={(Object.keys(SCOPE_LABEL) as ScopeKind[]).map((k) => ({
                   value: k,
@@ -184,17 +189,29 @@ export function RoyaltyRuleForm({ onClose }: { onClose: () => void }) {
                 }))}
               />
               <Field
-                label={`${SCOPE_LABEL[scopeKind]} id`}
+                label={SCOPE_LABEL[scopeKind]}
                 htmlFor="rule-scope-id"
                 required
-                hint="A rule must be scoped to something. The API refuses one scoped to nothing at all."
+                hint={
+                  scopeKind === "collectionId"
+                    ? "There is no collection directory endpoint yet, so a collection is entered by id."
+                    : "A rule must be scoped to something. The API refuses one scoped to nothing at all."
+                }
               >
-                <Input
-                  id="rule-scope-id"
-                  value={scopeId}
-                  onChange={(e) => setScopeId(e.target.value)}
-                  placeholder="uuid"
-                />
+                {scopeKind === "artistId" ? (
+                  <ArtistPicker id="rule-scope-id" value={scopeId || undefined} onChange={(v) => setScopeId(v ?? "")} />
+                ) : scopeKind === "organizationId" ? (
+                  <OrganizationPicker id="rule-scope-id" value={scopeId || undefined} onChange={(v) => setScopeId(v ?? "")} />
+                ) : scopeKind === "productId" ? (
+                  <DropPicker id="rule-scope-id" value={scopeId || undefined} onChange={(v) => setScopeId(v ?? "")} />
+                ) : (
+                  <Input
+                    id="rule-scope-id"
+                    value={scopeId}
+                    onChange={(e) => setScopeId(e.target.value)}
+                    placeholder="Collection id"
+                  />
+                )}
               </Field>
             </section>
 
@@ -404,19 +421,21 @@ function SplitEditor({
               </select>
             </label>
 
-            <Input
-              aria-label={s.payeeType === "ARTIST" ? "Artist id" : "Organization id"}
-              value={(s.payeeType === "ARTIST" ? s.artistId : s.organizationId) ?? ""}
-              onChange={(e) =>
-                onChange(
-                  i,
-                  s.payeeType === "ARTIST"
-                    ? { artistId: e.target.value }
-                    : { organizationId: e.target.value }
-                )
-              }
-              placeholder="payee uuid"
-            />
+            {s.payeeType === "ARTIST" ? (
+              <ArtistPicker
+                aria-label="Artist payee"
+                className="min-w-0 flex-1"
+                value={s.artistId || undefined}
+                onChange={(v) => onChange(i, { artistId: v ?? "" })}
+              />
+            ) : (
+              <OrganizationPicker
+                aria-label="Organization payee"
+                className="min-w-0 flex-1"
+                value={s.organizationId || undefined}
+                onChange={(v) => onChange(i, { organizationId: v ?? "" })}
+              />
+            )}
 
             <Input
               aria-label="Percentage"

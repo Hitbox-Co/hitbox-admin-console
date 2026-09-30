@@ -7,7 +7,8 @@ import { formatCurrency, formatDateTime, humanize, shortId } from "@/lib/format"
 import { usePageChrome } from "@/components/layout/app-shell";
 import { Badge, Mono, Panel, toneForStatus } from "@/components/ui/primitives";
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
-import { FilterRow, FilterSelect, SearchInput, useListState } from "@/components/ui/filters";
+import { FilterRow, FilterSelect, useListState } from "@/components/ui/filters";
+import { ArtistPicker, OrderPicker } from "@/components/finance/entity-pickers";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { RoyaltyEntryDrawer } from "@/components/finance/royalty-entry-drawer";
 import { FINANCE_CURRENCIES, type RoyaltyEntry } from "@/lib/types";
@@ -166,17 +167,21 @@ export default function RoyaltyEntriesPage() {
             options={[...FINANCE_CURRENCIES]}
             allLabel="Any"
           />
-          <SearchInput
-            value={list.filters.orderId ?? ""}
-            onChange={(v) => list.setFilter("orderId", v || undefined)}
-            placeholder="Order id"
-            className="w-[190px]"
+          <OrderPicker
+            size="sm"
+            aria-label="All orders"
+            className="w-[220px]"
+            placeholder="All orders"
+            value={list.filters.orderId}
+            onChange={(v) => list.setFilter("orderId", v)}
           />
-          <SearchInput
-            value={list.filters.artistId ?? ""}
-            onChange={(v) => list.setFilter("artistId", v || undefined)}
-            placeholder="Artist id"
-            className="w-[190px]"
+          <ArtistPicker
+            size="sm"
+            aria-label="All artists"
+            className="w-[220px]"
+            placeholder="All artists"
+            value={list.filters.artistId}
+            onChange={(v) => list.setFilter("artistId", v)}
           />
         </FilterRow>
 

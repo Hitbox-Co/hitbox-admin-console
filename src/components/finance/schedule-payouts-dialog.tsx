@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Eye, Play, SkipForward, X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
 import { useSchedulePayouts } from "@/lib/api/hooks";
+import { ArtistPicker, OrganizationPicker, usePayeeNames } from "./entity-pickers";
 import { formatCurrency, formatNumber, humanize, shortId } from "@/lib/format";
 import {
   Badge,
@@ -117,20 +118,20 @@ export function SchedulePayoutsDialog({ onClose }: { onClose: () => void }) {
 
           <div className="flex-1 space-y-3.5 overflow-y-auto px-4 py-4">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Artist id" htmlFor="sweep-artist" hint="Optional.">
-                <Input
+              <Field label="Artist" htmlFor="sweep-artist" hint="Optional — only this artist's balance.">
+                <ArtistPicker
                   id="sweep-artist"
-                  value={artistId}
-                  onChange={(e) => setArtistId(e.target.value)}
-                  placeholder="uuid"
+                  value={artistId || undefined}
+                  onChange={(v) => setArtistId(v ?? "")}
+                  placeholder="Every artist"
                 />
               </Field>
-              <Field label="Organization id" htmlFor="sweep-org" hint="Optional.">
-                <Input
+              <Field label="Organization" htmlFor="sweep-org" hint="Optional — only this organization's balance.">
+                <OrganizationPicker
                   id="sweep-org"
-                  value={organizationId}
-                  onChange={(e) => setOrganizationId(e.target.value)}
-                  placeholder="uuid"
+                  value={organizationId || undefined}
+                  onChange={(v) => setOrganizationId(v ?? "")}
+                  placeholder="Every organization"
                 />
               </Field>
               <Field label="Currency" htmlFor="sweep-currency" hint="Optional.">
@@ -205,6 +206,7 @@ export function SchedulePayoutsDialog({ onClose }: { onClose: () => void }) {
 }
 
 function Preview({ result }: { result: SchedulePayoutsResult }) {
+  const payeeName = usePayeeNames();
   const total = result.scheduled.length + result.skipped.length;
 
   return (
@@ -256,9 +258,15 @@ function Preview({ result }: { result: SchedulePayoutsResult }) {
           <ul className="divide-y divide-[var(--hairline)]">
             {result.skipped.map((s, i) => (
               <li key={`${s.payeeId}-${i}`} className="px-3 py-2">
-                <Mono className="text-[10px]" title={s.payeeId}>
-                  {shortId(s.payeeId)}
-                </Mono>
+                {payeeName(s.payeeId) ? (
+                  <p className="text-[12.5px] text-[var(--text-1)]" title={s.payeeId}>
+                    {payeeName(s.payeeId)}
+                  </p>
+                ) : (
+                  <Mono className="text-[10px]" title={s.payeeId}>
+                    {shortId(s.payeeId)}
+                  </Mono>
+                )}
                 <p className="mt-1 text-[12px] leading-relaxed text-[var(--text-2)]">
                   {s.reason}
                 </p>

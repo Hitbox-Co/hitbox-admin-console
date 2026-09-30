@@ -145,7 +145,7 @@ export function ProductLifecyclePanel({ product }: { product: AdminProductDetail
               </span>
             </span>
             <Link
-              href={`/release-approvals?open=${latest.id}`}
+              href={`/release-approvals/${latest.id}`}
               className="text-[11.5px] font-medium text-[var(--accent)] hover:underline"
             >
               Open review

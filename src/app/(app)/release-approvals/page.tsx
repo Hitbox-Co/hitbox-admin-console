@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { BadgeCheck, FileWarning } from "lucide-react";
 import { usePrefetchRelease, useReleases } from "@/lib/api/hooks";
-import { formatDate, humanize } from "@/lib/format";
+import { formatDate, formatRelative, humanize } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
 import { PageGuard } from "@/components/layout/page-guard";
 import {
@@ -18,7 +18,6 @@ import {
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterRow, FilterSelect, useListState } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
-import { ReleaseDrawer } from "@/components/releases/release-drawer";
 import type { ReleaseApproval, ReleaseAuthority } from "@/lib/types";
 
 /**
@@ -41,7 +40,7 @@ export default function ReleaseApprovalsPage() {
       what="The release approval queue"
       requires="release-approval:read"
     >
-      {/* ?open= lets a drop's detail link straight to its latest review. */}
+      {/* Reads ?open= only to forward the old drawer links to the review page. */}
       <React.Suspense fallback={<TableSkeleton rows={10} cols={6} />}>
         <ReleaseApprovalsView />
       </React.Suspense>
@@ -61,7 +60,13 @@ function ReleaseApprovalsView() {
    * view: an append-only trail where a twice-bounced drop appears three times.
    */
   const [latestOnly, setLatestOnly] = React.useState(true);
-  const [openId, setOpenId] = React.useState<string | null>(searchParams.get("open"));
+  const router = useRouter();
+  // Each review is its own page now; the drawer's old deep link forwards.
+  const legacyOpen = searchParams.get("open");
+  React.useEffect(() => {
+    if (legacyOpen) router.replace(`/release-approvals/${legacyOpen}`);
+  }, [legacyOpen, router]);
+  const openReview = (id: string) => router.push(`/release-approvals/${id}`);
   const prefetchRelease = usePrefetchRelease();
 
   const query = useReleases({ ...list.params, latestOnly });
@@ -84,6 +89,12 @@ function ReleaseApprovalsView() {
             <Mono className="text-[10px]">{r.product.groupCode}</Mono>
             v{r.version} · {humanize(r.product.status)}
           </p>
+          {/* The submitter's note, while it is still theirs to read. */}
+          {r.status === "PENDING" && r.comment ? (
+            <p className="mt-0.5 max-w-[340px] truncate text-[11px] italic text-[var(--text-3)]">
+              “{r.comment}”
+            </p>
+          ) : null}
         </div>
       ),
     },
@@ -160,8 +171,12 @@ function ReleaseApprovalsView() {
     },
     {
       key: "created",
-      header: "Submitted",
-      cell: (r) => <span className="tnum text-[12px]">{formatDate(r.createdAt)}</span>,
+      header: "Waiting since",
+      cell: (r) => (
+        <span className="tnum text-[12px]" title={formatDate(r.createdAt)}>
+          {r.status === "PENDING" ? formatRelative(r.createdAt) : formatDate(r.createdAt)}
+        </span>
+      ),
     },
     {
       key: "decided",
@@ -181,7 +196,7 @@ function ReleaseApprovalsView() {
           size="sm"
           onClick={(e) => {
             e.stopPropagation();
-            setOpenId(r.id);
+            openReview(r.id);
           }}
         >
           Review
@@ -232,14 +247,22 @@ function ReleaseApprovalsView() {
               columns={columns}
               rows={query.data?.items ?? []}
               getRowKey={(r) => r.id}
-              onRowClick={(r) => setOpenId(r.id)}
+              onRowClick={(r) => openReview(r.id)}
               onRowIntent={(r) => prefetchRelease(r.id)}
               dimmed={query.isFetching}
               emptyState={
                 <EmptyState
                   icon={BadgeCheck}
-                  title="Nothing waiting for approval"
-                  description="Every submitted release in your scope has been decided."
+                  title={
+                    list.filters.status === "PENDING"
+                      ? "Nothing is waiting on you."
+                      : "No reviews match these filters"
+                  }
+                  description={
+                    list.filters.status === "PENDING"
+                      ? "Every drop in your scope has been decided. New submissions appear here."
+                      : "Try a different status."
+                  }
                 />
               }
             />
@@ -253,10 +276,6 @@ function ReleaseApprovalsView() {
           </>
         )}
       </Panel>
-
-      {openId ? (
-        <ReleaseDrawer approvalId={openId} onClose={() => setOpenId(null)} />
-      ) : null}
     </>
   );
 }

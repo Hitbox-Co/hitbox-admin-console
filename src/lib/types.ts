@@ -1018,7 +1018,17 @@ export interface AdminProductDetail {
   updatedAt: string;
   collectionId: string | null;
   artistId: string | null;
+  artistName?: string | null;
   organizationId: string | null;
+  /**
+   * Artwork URLs, ordered primary-first. `[]` when the drop has no artwork
+   * yet — which is itself something an approver is signing off, so say so
+   * rather than rendering a broken image. Per-image metadata (alt text,
+   * position) is on GET /admin/products/:id/images.
+   */
+  images?: string[];
+  /** Base price in the default market, or null when none is configured. */
+  price?: { amount: string | null; currency: string; isFree: boolean } | null;
   performance: ProductPerformance;
   /**
    * Size / colour / material, as `optionName`:`optionValue` pairs.

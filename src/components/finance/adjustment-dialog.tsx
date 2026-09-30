@@ -6,6 +6,13 @@ import { toast } from "sonner";
 import { X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
 import { useCreateAdjustment } from "@/lib/api/hooks";
+import {
+  LedgerEntryPicker,
+  OrderPicker,
+  PaymentPicker,
+  PayoutPicker,
+  RoyaltyEntryPicker,
+} from "./entity-pickers";
 import { humanize } from "@/lib/format";
 import {
   Button,
@@ -156,9 +163,11 @@ export function AdjustmentDialog({ onClose }: { onClose: () => void }) {
               <select
                 id="adj-target-type"
                 value={targetType}
-                onChange={(e) =>
-                  setTargetType(e.target.value as AdjustmentTargetType)
-                }
+                onChange={(e) => {
+                  setTargetType(e.target.value as AdjustmentTargetType);
+                  // A payout's id is not a payment's id — never carry it over.
+                  setTargetId("");
+                }}
                 className="h-8 w-full rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-2 text-[13px] text-[var(--text-1)] transition-colors hover:border-[var(--hairline-strong)]"
               >
                 {TARGET_TYPES.map((t) => (
@@ -169,28 +178,40 @@ export function AdjustmentDialog({ onClose }: { onClose: () => void }) {
               </select>
             </Field>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label={`${humanize(targetType)} id`} htmlFor="adj-target-id" required>
-                <Input
-                  id="adj-target-id"
-                  value={targetId}
-                  onChange={(e) => setTargetId(e.target.value)}
-                  placeholder="uuid"
-                />
-              </Field>
-              <Field
-                label="Order id"
-                htmlFor="adj-order-id"
-                hint="Optional — links the correction to the order it belongs to."
-              >
-                <Input
-                  id="adj-order-id"
-                  value={orderId}
-                  onChange={(e) => setOrderId(e.target.value)}
-                  placeholder="uuid"
-                />
-              </Field>
-            </div>
+            {/*
+              Order first: it is the thing an operator usually knows, and it
+              narrows the royalty, ledger and payment lists below to the rows
+              that belong to it.
+            */}
+            <Field
+              label="Order"
+              htmlFor="adj-order-id"
+              hint="Optional — links the correction to its order, and narrows the list below."
+            >
+              <OrderPicker
+                id="adj-order-id"
+                value={orderId || undefined}
+                onChange={(v) => {
+                  setOrderId(v ?? "");
+                  if (targetType !== "ORDER" && targetType !== "ROYALTY_PAYOUT") setTargetId("");
+                }}
+                placeholder="No order"
+              />
+            </Field>
+
+            <Field label={TARGET_TYPES.find((t) => t.value === targetType)?.label ?? humanize(targetType)} htmlFor="adj-target-id" required>
+              {targetType === "ROYALTY_LEDGER_ENTRY" ? (
+                <RoyaltyEntryPicker id="adj-target-id" orderId={orderId || undefined} value={targetId || undefined} onChange={(v) => setTargetId(v ?? "")} />
+              ) : targetType === "FINANCE_LEDGER_ENTRY" ? (
+                <LedgerEntryPicker id="adj-target-id" orderId={orderId || undefined} value={targetId || undefined} onChange={(v) => setTargetId(v ?? "")} />
+              ) : targetType === "PAYMENT_TRANSACTION" ? (
+                <PaymentPicker id="adj-target-id" orderId={orderId || undefined} value={targetId || undefined} onChange={(v) => setTargetId(v ?? "")} />
+              ) : targetType === "ROYALTY_PAYOUT" ? (
+                <PayoutPicker id="adj-target-id" value={targetId || undefined} onChange={(v) => setTargetId(v ?? "")} />
+              ) : (
+                <OrderPicker id="adj-target-id" value={targetId || undefined} onChange={(v) => setTargetId(v ?? "")} />
+              )}
+            </Field>
 
             <div className="space-y-2.5 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-3">
               <Field label="Direction">
