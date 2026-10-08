@@ -5,6 +5,7 @@ import { Wallet } from "lucide-react";
 import { useRoyaltyBalances } from "@/lib/api/hooks";
 import { formatCurrency, formatNumber, humanize, shortId } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
+import { usePayeeNames } from "@/components/finance/entity-pickers";
 import { Badge, Mono, Panel, PanelHeader, Tooltip } from "@/components/ui/primitives";
 import { DataTable, type Column } from "@/components/ui/table";
 import { FilterRow, FilterSelect } from "@/components/ui/filters";
@@ -27,6 +28,15 @@ import { FINANCE_CURRENCIES, type RoyaltyBalance } from "@/lib/types";
 export default function BalancesPage() {
   const [currency, setCurrency] = React.useState<string | undefined>(undefined);
   const query = useRoyaltyBalances(currency);
+  /*
+   * GET /admin/finance/balances returns `payeeName: null` on every row — the
+   * balance is a groupBy over ledger entries, which cannot join the artist or
+   * organization, and the service never fills the name in afterwards
+   * (finance/src/service/royalty-payout.service.ts, balances()). So names are
+   * resolved here from the same directories the finance pickers use. The
+   * server's name still wins the moment it starts sending one.
+   */
+  const payeeName = usePayeeNames();
 
   usePageChrome({
     title: "Balances",
@@ -52,7 +62,9 @@ export default function BalancesPage() {
         cell: (r) => (
           <div className="min-w-0">
             <p className="truncate text-[13px] font-medium text-[var(--text-1)]">
-              {r.payeeName ?? "Unnamed payee"}
+              {r.payeeName ??
+                (r.payeeId ? payeeName(r.payeeId) : undefined) ??
+                (r.payeeType === "ORGANIZATION" ? "Unnamed organization" : "Unnamed artist")}
             </p>
             <p className="mt-0.5 flex items-center gap-1.5">
               <Badge tone="neutral" className="px-1 py-0 text-[10px]">
@@ -140,7 +152,7 @@ export default function BalancesPage() {
         ),
       },
     ],
-    []
+    [payeeName]
   );
 
   return (

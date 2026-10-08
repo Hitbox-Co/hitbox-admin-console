@@ -16,6 +16,7 @@ import {
   Repeat,
   Rocket,
   ScrollText,
+  Shapes,
   ShieldCheck,
   ShoppingCart,
   Sparkles,
@@ -59,6 +60,7 @@ const ICONS: Record<string, LucideIcon> = {
   KeyRound,
   UserCog,
   Rocket,
+  Shapes,
 };
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
@@ -66,6 +68,17 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { perms, loading } = useAuthz();
 
   const items = React.useMemo(() => visibleNav(perms), [perms]);
+
+  // The most specific match wins, so /products/types lights "Drop types"
+  // and not "Drops" as well.
+  const activeHref = React.useMemo(() => {
+    let best: string | null = null;
+    for (const item of items) {
+      const hit = pathname === item.href || pathname.startsWith(`${item.href}/`);
+      if (hit && (!best || item.href.length > best.length)) best = item.href;
+    }
+    return best;
+  }, [items, pathname]);
 
   const grouped = React.useMemo(() => {
     const map = new Map<string, NavItem[]>();
@@ -107,9 +120,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
               <ul className="space-y-px">
                 {groupItems.map((item) => {
                   const Icon = ICONS[item.icon] ?? LayoutDashboard;
-                  const active =
-                    pathname === item.href ||
-                    pathname.startsWith(`${item.href}/`);
+                  const active = item.href === activeHref;
                   return (
                     <li key={item.href}>
                       <Link

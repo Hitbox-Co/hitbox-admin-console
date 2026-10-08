@@ -178,7 +178,7 @@ function PerformanceTab() {
       ) : (
         <div className="animate-fade-rise grid grid-cols-1 gap-4 lg:grid-cols-3">
           <Panel className="lg:col-span-2 overflow-hidden">
-            <PanelHeader title="By market" />
+            <PanelHeader title="By Market" />
             <DataTable columns={columns} rows={rows} getRowKey={(r) => r.marketId} />
           </Panel>
 

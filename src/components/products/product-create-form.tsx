@@ -25,13 +25,20 @@ import {
   type ProductDetailsDraft,
 } from "./product-details-fields";
 import { isOwnedDrop } from "@/lib/mint-gate";
-import type { ProductCreateInput } from "@/lib/types";
+import { DropTypePicker } from "./drop-type-picker";
+import { MODE_COPY } from "./variant-bits";
+import type { DropType, ProductCreateInput } from "@/lib/types";
 
 /**
- * Add drop — the catalog record, its market pricing, then its first
- * serialized units.
+ * Add drop — its type, the catalog record, its market pricing, then its
+ * first serialized units.
  *
- *   Drop information → Pricing → SKUs → Save
+ *   Type → Drop information → Pricing → SKUs → Save
+ *
+ * The type comes first (drop-types-and-variants.md §16): it decides which
+ * variants the drop can have. Variants themselves need the drop's id, so they
+ * are added on the drop's page straight after this saves — BEFORE submitting,
+ * because the owner approves the drop together with its variants.
  *
  * The steps are ONE request. `POST /admin/products` writes the product,
  * its prices and its edition in a single transaction, so the form either
@@ -41,7 +48,10 @@ import type { ProductCreateInput } from "@/lib/types";
  * (product-upload-api.md §3). Prices are written first inside the server's
  * transaction, so a failure there aborts before any unit is minted.
  *
- * The SKUs step exists ONLY for an unowned drop (no artist, no brand). A drop
+ * The SKUs step exists ONLY for an unowned drop (no artist, no brand) whose
+ * type does not REQUIRE variants. A REQUIRED type with a `skus` block is a
+ * 400 PRODUCTS_VARIANTS_REQUIRED — a new drop has no variants for those units
+ * to belong to — so it is minted per variant from the drop's page. A drop
  * with an owner may not be minted until that owner approves it
  * (drop-approval-lifecycle.md §10) — a `skus` block for one is a 400
  * PRODUCTS_NOT_APPROVED — so for those the form is two steps and saves from
@@ -57,14 +67,16 @@ import type { ProductCreateInput } from "@/lib/types";
 
 const MAX_INLINE_MINT = 1000;
 
-type Step = "details" | "pricing" | "units";
+type Step = "type" | "details" | "pricing" | "units";
 
 export function ProductCreateForm() {
   const router = useRouter();
   const create = useCreateProduct();
-  const [step, setStep] = React.useState<Step>("details");
+  const [step, setStep] = React.useState<Step>("type");
   const [errors, setErrors] = React.useState<Record<string, string>>({});
   const [details, setDetails] = React.useState<ProductDetailsDraft>(EMPTY_DETAILS);
+  const [dropType, setDropType] = React.useState<DropType | null>(null);
+  const mode = dropType?.variantMode ?? null;
 
   // Only active markets are offerable: an archived or inactive one comes back
   // as PRODUCTS_PRICE_MARKET_INVALID.
@@ -96,7 +108,9 @@ export function ProductCreateForm() {
     artistId: details.artistId || null,
     organizationId: details.organizationId || null,
   });
-  const mintAtCreate = mintNow && !owned;
+  // Units at creation: unowned only, and never for a REQUIRED type.
+  const withUnits = !owned && mode !== "REQUIRED";
+  const mintAtCreate = mintNow && withUnits;
 
   const leave = () => router.push("/products");
 
@@ -118,6 +132,15 @@ export function ProductCreateForm() {
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (create.isPending) return;
+    if (step === "type") {
+      if (!dropType) {
+        setErrors({ dropType: "Choose what kind of product this is." });
+        return;
+      }
+      setErrors({});
+      setStep("details");
+      return;
+    }
     if (step === "details") {
       const next = validateDetails(details, "create");
       setErrors(next);
@@ -128,8 +151,8 @@ export function ProductCreateForm() {
       const next = validatePriceDrafts(prices);
       setErrors(next);
       if (Object.keys(next).length > 0) return;
-      // An owned drop has no SKUs step — it saves from here.
-      if (!owned) {
+      // No SKUs step for an owned drop or a REQUIRED type — it saves from here.
+      if (withUnits) {
         setStep("units");
         return;
       }
@@ -138,6 +161,7 @@ export function ProductCreateForm() {
     }
 
     const payload: ProductCreateInput = {
+      dropType: dropType?.code,
       ...detailsToInput(details),
       groupCode: details.groupCode || undefined,
       // Amounts go as the typed STRINGS: a price that round-trips through a
@@ -151,11 +175,13 @@ export function ProductCreateForm() {
         toast.success(
           mintAtCreate && countN > 0
             ? `${product.name} created with ${formatNumber(countN)} units`
-            : owned
-              ? `${product.name} created — submit it for review next`
-              : `${product.name} created`
+            : mode === "REQUIRED" || mode === "OPTIONAL"
+              ? `${product.name} created — add its variants next`
+              : owned
+                ? `${product.name} created — submit it for review next`
+                : `${product.name} created`
         );
-        // Straight into the new drop, where the gallery and Add SKUs live.
+        // Straight into the new drop, where variants, the gallery and Add SKUs live.
         router.push(`/products/${product.id}`);
       },
       onError: (err) => {
@@ -165,9 +191,14 @@ export function ProductCreateForm() {
           // Send the operator to the step that owns the offending input.
           const keys = Object.keys(fields);
           if (keys.some((k) => k.startsWith("prices"))) setStep("pricing");
+          else if (keys.includes("dropType")) setStep("type");
           else if (keys.some((k) => !k.startsWith("skus"))) setStep("details");
           toast.error(err.validationSummary ?? err.friendly);
           return;
+        }
+        if (err instanceof ApiError && err.code === "PRODUCTS_DROP_TYPE_NOT_FOUND") {
+          setErrors({ dropType: err.friendly });
+          setStep("type");
         }
         toast.error(err instanceof ApiError ? err.friendly : "Could not create the drop.");
       },
@@ -176,11 +207,41 @@ export function ProductCreateForm() {
 
   return (
     <Panel className="mx-auto max-w-3xl overflow-hidden">
-      <Steps step={step} withUnits={!owned} />
+      <Steps step={step} withUnits={withUnits} />
 
       <form onSubmit={submit}>
         <div className="space-y-4 px-4 py-4 sm:px-6 sm:py-5">
-          {step === "details" ? (
+          {step === "type" ? (
+            <>
+              <div>
+                <p className="text-[13px] font-medium text-[var(--text-1)]">
+                  What kind of product is this?
+                </p>
+                <p className="mt-0.5 text-[12px] text-[var(--text-3)]">
+                  The type decides which variants the drop can have — size × colour for a
+                  T-shirt, format × pack size for cards, none for a keychain.
+                </p>
+              </div>
+              <DropTypePicker
+                value={dropType?.code ?? ""}
+                onChange={(_, t) => {
+                  setDropType(t);
+                  setErrors({});
+                }}
+                error={errors.dropType}
+                disabled={create.isPending}
+              />
+              {dropType ? (
+                <p className="flex items-start gap-2 text-[11px] leading-relaxed text-[var(--text-3)]">
+                  <Info className="mt-px h-3 w-3 shrink-0" aria-hidden />
+                  {MODE_COPY[dropType.variantMode].help}
+                  {dropType.variantMode !== "NONE"
+                    ? " Variants are added on the drop's page after it is created, before it is submitted for review."
+                    : ""}
+                </p>
+              ) : null}
+            </>
+          ) : step === "details" ? (
             <>
               <ProductDetailsFields
                 value={details}
@@ -267,8 +328,21 @@ export function ProductCreateForm() {
                         Units come after approval.
                       </strong>{" "}
                       This drop names an artist or a brand, so it is saved with no units.
-                      Submit it for review from its page; once the owner approves, add SKUs
-                      from Serialized units.
+                      {mode && mode !== "NONE" ? " Add its variants on its page, then submit" : " Submit"} it
+                      for review from its page; once the owner approves, add SKUs from
+                      Serialized units.
+                    </span>
+                  </p>
+                ) : mode === "REQUIRED" ? (
+                  <p className="flex items-start gap-2 rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--surface-2)] px-3 py-2.5 text-[11.5px] leading-relaxed text-[var(--text-2)]">
+                    <Boxes className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--text-3)]" aria-hidden />
+                    <span>
+                      <strong className="font-medium text-[var(--text-1)]">
+                        Units are minted per variant.
+                      </strong>{" "}
+                      Every {dropType?.name ?? "unit"} unit belongs to a variant, and a new drop has
+                      none yet — so it is saved with no units. Add variants on its page, then mint
+                      for each.
                     </span>
                   </p>
                 ) : null}
@@ -333,8 +407,10 @@ export function ProductCreateForm() {
                 <p className="flex items-start gap-2 border-t border-[var(--hairline)] pt-2 text-[11.5px] leading-relaxed text-[var(--text-3)]">
                   <ShieldAlert className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--warning)]" aria-hidden />
                   <span>
-                    Variants (size, colour, material) are a separate record with no
-                    create endpoint yet. Units minted here are unvaried.
+                    Units minted here belong to no variant — the drop has none yet.
+                    {mode === "OPTIONAL"
+                      ? " To mint per variant instead, skip this and add variants on the drop's page first."
+                      : ""}
                   </span>
                 </p>
               </div>
@@ -350,12 +426,14 @@ export function ProductCreateForm() {
         </div>
 
         <div className="flex items-center gap-2 border-t border-[var(--hairline)] px-4 py-3 sm:px-6">
-          {step !== "details" ? (
+          {step !== "type" ? (
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => setStep(step === "units" ? "pricing" : "details")}
+              onClick={() =>
+                setStep(step === "units" ? "pricing" : step === "pricing" ? "details" : "type")
+              }
             >
               <ArrowLeft className="h-3.5 w-3.5" />
               Back
@@ -374,12 +452,14 @@ export function ProductCreateForm() {
             loading={create.isPending}
             disabled={step === "pricing" && markets.length === 0}
           >
-            {step === "details"
-              ? "Next — pricing"
-              : step === "pricing" && !owned
-                ? "Next — add SKUs"
-                : "Save drop"}
-            {step === "details" || (step === "pricing" && !owned) ? (
+            {step === "type"
+              ? "Next — drop information"
+              : step === "details"
+                ? "Next — pricing"
+                : step === "pricing" && withUnits
+                  ? "Next — add SKUs"
+                  : "Save drop"}
+            {step === "type" || step === "details" || (step === "pricing" && withUnits) ? (
               <ArrowRight className="h-3.5 w-3.5" />
             ) : null}
           </Button>
@@ -391,6 +471,7 @@ export function ProductCreateForm() {
 
 function Steps({ step, withUnits }: { step: Step; withUnits: boolean }) {
   const items: { key: Step; label: string }[] = [
+    { key: "type", label: "Type" },
     { key: "details", label: "Drop information" },
     { key: "pricing", label: "Pricing" },
     ...(withUnits ? [{ key: "units" as const, label: "SKUs" }] : []),

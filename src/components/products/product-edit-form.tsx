@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { AlertTriangle, Info, Lock } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
-import { useUpdateProduct } from "@/lib/api/hooks";
+import { useProductVariants, useUpdateProduct } from "@/lib/api/hooks";
+import { DropTypePicker } from "./drop-type-picker";
 import { humanize } from "@/lib/format";
 import { Badge, Button, Mono, Panel, toneForStatus } from "@/components/ui/primitives";
 import {
@@ -55,10 +56,22 @@ export function ProductEditForm({ product }: { product: AdminProductDetail }) {
   const [draft, setDraft] = React.useState<ProductDetailsDraft>(initial);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
 
-  const changes = React.useMemo(
-    () => changedFields(detailsToInput(initial), detailsToInput(draft)),
-    [initial, draft]
-  );
+  /*
+   * The type can change only while the drop has NO variants — archived ones
+   * count (409 PRODUCTS_DROP_TYPE_LOCKED). Read with archived rows so the
+   * lock matches the server's.
+   */
+  const initialType = product.dropType?.code ?? "";
+  const [dropType, setDropType] = React.useState(initialType);
+  const variantsQuery = useProductVariants(product.id, true);
+  const variantCount = variantsQuery.data?.length ?? (product.variants ?? []).length;
+  const typeLocked = variantCount > 0;
+
+  const changes = React.useMemo(() => {
+    const out = changedFields(detailsToInput(initial), detailsToInput(draft));
+    if (dropType !== initialType) out.dropType = dropType || null;
+    return out;
+  }, [initial, draft, dropType, initialType]);
   const dirty = Object.keys(changes).length > 0;
 
   const ownershipChanged = "organizationId" in changes || "artistId" in changes;
@@ -80,6 +93,10 @@ export function ProductEditForm({ product }: { product: AdminProductDetail }) {
         back();
       },
       onError: (err) => {
+        if (err instanceof ApiError && err.code === "PRODUCTS_DROP_TYPE_LOCKED") {
+          setErrors({ dropType: err.friendly });
+          setDropType(initialType);
+        }
         if (err instanceof ApiError && err.status === 422) {
           setErrors(err.fieldErrors);
           toast.error(err.validationSummary ?? err.friendly);
@@ -117,6 +134,31 @@ export function ProductEditForm({ product }: { product: AdminProductDetail }) {
       <Panel className="overflow-hidden">
         <form onSubmit={submit}>
           <div className="space-y-4 px-4 py-4 sm:px-6 sm:py-5">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] font-medium text-[var(--text-2)]">Drop type</span>
+                {typeLocked ? (
+                  <span className="flex items-center gap-1 text-[11px] text-[var(--text-3)]">
+                    <Lock className="h-3 w-3" aria-hidden />
+                    Locked — this drop has {variantCount} variant{variantCount === 1 ? "" : "s"}
+                  </span>
+                ) : null}
+              </div>
+              <DropTypePicker
+                value={dropType}
+                onChange={(code) => setDropType(code)}
+                disabled={typeLocked || update.isPending}
+                allowUntyped={!initialType}
+                error={errors.dropType}
+              />
+              {typeLocked ? (
+                <p className="text-[11px] leading-relaxed text-[var(--text-3)]">
+                  A type can change only while the drop has no variants, archived ones
+                  included — they were checked against this type&rsquo;s rules.
+                </p>
+              ) : null}
+            </div>
+
             <ProductDetailsFields
               value={draft}
               onChange={setDraft}

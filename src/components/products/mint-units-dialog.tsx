@@ -6,12 +6,12 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { Info, ScanLine, X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
-import { useMintSkus } from "@/lib/api/hooks";
+import { useMintSkus, useProductVariants } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/format";
 import { requiredKeys } from "@/lib/required-fields";
 import { usePermissions } from "@/components/layout/authz-provider";
 import { Button, Field, Input, Textarea, Tooltip } from "@/components/ui/primitives";
-import type { ProductVariantRef } from "@/lib/types";
+import type { ProductVariantRef, VariantMode } from "@/lib/types";
 
 /** `count` is the only field POST /admin/products/:id/skus rejects a request
  *  for omitting (sku-api.md §3) — vendorId, provisioningBatchId and tagIds
@@ -32,6 +32,12 @@ const REQUIRED_MINT = requiredKeys(mintSchema);
  *    would silently leave the tail of the batch untagged, and "silently" is
  *    not a property you want in the table that proves authenticity.
  *
+ * The variant picker follows the drop's type (drop-types-and-variants.md §8):
+ * REQUIRED makes it mandatory (every T-shirt unit has a size), NONE hides it
+ * (a keychain has no variants), and OPTIONAL or an untyped drop offers it.
+ * Inactive and archived variants are not offered — minting for one is a 400
+ * PRODUCTS_VARIANT_INACTIVE — and a capped variant shows how many are left.
+ *
  * Tag binding is a separate capability (`nfc-tag-claim:manage`) from minting
  * (`collectible-instance:manage`), so the tag field is absent — not disabled —
  * for a Brand Admin or Drop Manager who can mint but may not bind.
@@ -42,19 +48,50 @@ const MAX_BATCH = 1000;
 export function MintUnitsDialog({
   productId,
   remaining,
-  variants,
+  variants: embedded,
+  variantMode = null,
   onClose,
 }: {
   productId: string;
   /** null when the drop declares no supply cap. */
   remaining: number | null;
-  /** Empty for most drops — there is no endpoint to create one. */
+  /** The product read's variants — a fallback while the variant list loads. */
   variants: ProductVariantRef[];
+  /** null on an untyped (legacy) drop. */
+  variantMode?: VariantMode | null;
   onClose: () => void;
 }) {
   const perms = usePermissions();
   const mint = useMintSkus(productId);
   const canBindTags = perms.canBindTags();
+
+  // The variants endpoint carries mintedUnits; the product read does not.
+  const variantsQuery = useProductVariants(productId, false, variantMode !== "NONE");
+  const variants = React.useMemo(
+    () =>
+      (variantsQuery.data
+        ? variantsQuery.data.map((v) => ({
+            id: v.id,
+            label: v.label,
+            variantCode: v.variantCode as string | undefined,
+            totalSupply: v.totalSupply,
+            mintedUnits: v.mintedUnits as number | null,
+            usable: v.isActive && !v.archived,
+          }))
+        : embedded.map((v) => ({
+            id: v.id,
+            label: v.label,
+            variantCode: v.variantCode,
+            totalSupply: v.totalSupply ?? null,
+            mintedUnits: null as number | null,
+            usable: v.isActive !== false,
+          }))
+      ).sort((a, b) => Number(b.usable) - Number(a.usable)),
+    [variantsQuery.data, embedded]
+  );
+  const usable = variants.filter((v) => v.usable);
+  const requiresVariant = variantMode === "REQUIRED";
+  const offerVariant = variantMode !== "NONE" && variants.length > 0;
 
   const [count, setCount] = React.useState("");
   const [tagsRaw, setTagsRaw] = React.useState("");
@@ -74,6 +111,11 @@ export function MintUnitsDialog({
   );
 
   const n = Number(count);
+  const chosen = variants.find((v) => v.id === variantId);
+  const variantLeft =
+    chosen && chosen.totalSupply != null && chosen.mintedUnits != null
+      ? Math.max(0, chosen.totalSupply - chosen.mintedUnits)
+      : null;
 
   const validate = () => {
     const next: Record<string, string> = {};
@@ -83,6 +125,11 @@ export function MintUnitsDialog({
       // The server enforces this too (409 SKUS_SUPPLY_EXCEEDED); saying it
       // here means the operator does not lose the form to find out.
       next.count = `Only ${formatNumber(remaining)} left before the declared supply is reached.`;
+    }
+    if (requiresVariant && !variantId) {
+      next.variantId = "Every unit of this drop type belongs to a variant — pick one.";
+    } else if (variantLeft !== null && n > variantLeft) {
+      next.count = `Only ${formatNumber(variantLeft)} left under ${chosen?.label}'s cap.`;
     }
     if (tagIds.length && tagIds.length !== n) {
       next.tagIds = `Exactly ${Number.isFinite(n) ? n : "count"} tags, or none at all — ${tagIds.length} given.`;
@@ -122,6 +169,19 @@ export function MintUnitsDialog({
                 : err.friendly
             );
             onClose();
+            return;
+          }
+          if (
+            err instanceof ApiError &&
+            (err.code === "PRODUCTS_VARIANTS_REQUIRED" ||
+              err.code === "PRODUCTS_VARIANT_INACTIVE" ||
+              err.code === "PRODUCTS_VARIANTS_NOT_ALLOWED")
+          ) {
+            setErrors({ variantId: err.friendly });
+            return;
+          }
+          if (err instanceof ApiError && err.code === "PRODUCTS_VARIANT_SUPPLY_EXCEEDED") {
+            setErrors({ count: err.friendly });
             return;
           }
           if (err instanceof ApiError && err.code === "SKUS_TAG_TAKEN") {
@@ -180,15 +240,27 @@ export function MintUnitsDialog({
             </Field>
 
             {/*
-              Only offered when the drop actually has variants. The server
-              checks the variant belongs to this product and answers
-              SKUS_VARIANT_MISMATCH otherwise.
+              Follows the drop type: mandatory for REQUIRED, absent for NONE.
+              The server checks the variant belongs to this drop
+              (SKUS_VARIANT_MISMATCH) and is active (PRODUCTS_VARIANT_INACTIVE).
             */}
-            {variants.length ? (
+            {requiresVariant && usable.length === 0 && !variantsQuery.isLoading ? (
+              <p className="flex items-start gap-2 rounded-[8px] border border-[rgba(204,92,92,0.35)] bg-[var(--danger-dim)] px-3 py-2.5 text-[11.5px] leading-relaxed text-[var(--text-2)]">
+                <Info className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--danger)]" aria-hidden />
+                This drop type needs a variant on every unit, and none is active. Add or
+                re-activate one under Variants first.
+              </p>
+            ) : offerVariant ? (
               <Field
                 label="Variant"
                 htmlFor="mint-variant"
-                hint="Which variation these units are. Leave unset to mint against the drop itself."
+                error={errors.variantId}
+                required={requiresVariant}
+                hint={
+                  requiresVariant
+                    ? "Every unit of this drop type belongs to a variant."
+                    : "Which variation these units are. Leave unset to mint against the drop itself."
+                }
               >
                 <select
                   id="mint-variant"
@@ -196,12 +268,22 @@ export function MintUnitsDialog({
                   onChange={(e) => setVariantId(e.target.value)}
                   className="h-8 w-full rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-2 text-[13px] text-[var(--text-1)] transition-colors hover:border-[var(--hairline-strong)]"
                 >
-                  <option value="">No variant</option>
-                  {variants.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.label} ({v.optionName}: {v.optionValue})
-                    </option>
-                  ))}
+                  <option value="">{requiresVariant ? "Choose a variant" : "No variant"}</option>
+                  {variants.map((v) => {
+                    const left =
+                      v.totalSupply != null && v.mintedUnits != null
+                        ? v.totalSupply - v.mintedUnits
+                        : null;
+                    return (
+                      <option key={v.id} value={v.id} disabled={!v.usable || left === 0}>
+                        {v.label}
+                        {v.mintedUnits != null
+                          ? ` — ${formatNumber(v.mintedUnits)}${v.totalSupply != null ? ` / ${formatNumber(v.totalSupply)}` : ""} minted`
+                          : ""}
+                        {!v.usable ? " (inactive)" : left === 0 ? " (full)" : ""}
+                      </option>
+                    );
+                  })}
                 </select>
               </Field>
             ) : null}
@@ -276,7 +358,13 @@ export function MintUnitsDialog({
             ) : null}
 
             <div className="flex items-center gap-2 pt-1">
-              <Button type="submit" variant="primary" size="sm" loading={mint.isPending}>
+              <Button
+                type="submit"
+                variant="primary"
+                size="sm"
+                loading={mint.isPending}
+                disabled={requiresVariant && usable.length === 0}
+              >
                 Add SKUs
               </Button>
               <Button type="button" variant="ghost" size="sm" onClick={onClose}>

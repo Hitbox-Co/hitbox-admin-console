@@ -12,7 +12,7 @@ import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { BindTagsDialog } from "./bind-tags-dialog";
 import { MintUnitsDialog } from "./mint-units-dialog";
 import type { MintGate } from "@/lib/mint-gate";
-import type { ProductVariantRef, SkuListParams, SkuUnit } from "@/lib/types";
+import type { ProductVariantRef, SkuListParams, SkuUnit, VariantMode } from "@/lib/types";
 
 /**
  * A drop's serialized edition.
@@ -43,6 +43,7 @@ export function SkuUnitsPanel({
   productId,
   totalSupply,
   variants,
+  variantMode = null,
   mintGate,
 }: {
   productId: string;
@@ -53,8 +54,10 @@ export function SkuUnitsPanel({
    * server's SKUS_NOT_APPROVED.
    */
   mintGate?: MintGate;
-  /** Read-only on this API — offered as a mint target, never authored here. */
+  /** Offered as mint targets; authored on the Variants panel. */
   variants: ProductVariantRef[];
+  /** The drop type's mode — REQUIRED makes the mint's variant mandatory. */
+  variantMode?: VariantMode | null;
 }) {
   const perms = usePermissions();
   const [params, setParams] = React.useState<SkuListParams>({
@@ -363,6 +366,7 @@ export function SkuUnitsPanel({
           productId={productId}
           remaining={s?.remainingSupply ?? null}
           variants={variants}
+          variantMode={variantMode}
           onClose={() => setMinting(false)}
         />
       ) : null}

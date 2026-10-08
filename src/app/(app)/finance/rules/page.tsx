@@ -9,7 +9,12 @@ import { usePermissions } from "@/components/layout/authz-provider";
 import { Badge, Button, Mono, Panel } from "@/components/ui/primitives";
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterRow, useListState } from "@/components/ui/filters";
-import { ArtistPicker, DropPicker } from "@/components/finance/entity-pickers";
+import {
+  ArtistPicker,
+  DropPicker,
+  usePayeeNames,
+  useRuleScopeNames,
+} from "@/components/finance/entity-pickers";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { ScopeNotice } from "@/components/finance/scope-notice";
 import { RoyaltyRuleDrawer } from "@/components/finance/royalty-rule-drawer";
@@ -44,23 +49,33 @@ export default function RoyaltyRulesPage() {
     description: "The terms that price every accrual. Closed and replaced, never edited.",
   });
 
+  // Rules carry only ids; names come from the artist/organization
+  // directories and the drop catalog.
+  const scopeName = useRuleScopeNames();
+  const payeeName = usePayeeNames();
+
   const columns = React.useMemo<Column<RoyaltyRule>[]>(
     () => [
       {
         key: "scope",
         header: "Applies to",
         cell: (r) => {
-          const { label, id } = ruleScopeLabel(r);
+          const s = scopeName(r.scope);
           return (
             <div className="min-w-0">
               <p className="truncate text-[13px] font-medium text-[var(--text-1)]">
-                {label}
+                {s.name ?? ruleScopeLabel(r).label}
               </p>
-              {id ? (
-                <Mono className="mt-0.5 text-[10px]" title={id}>
-                  {shortId(id)}
-                </Mono>
-              ) : null}
+              <p className="mt-0.5 flex items-center gap-1.5">
+                <Badge tone="neutral" className="px-1 py-0 text-[10px]">
+                  {s.kind}
+                </Badge>
+                {s.id ? (
+                  <Mono className="text-[10px]" title={s.id}>
+                    {shortId(s.id)}
+                  </Mono>
+                ) : null}
+              </p>
             </div>
           );
         },
@@ -73,11 +88,14 @@ export default function RoyaltyRulesPage() {
           if (splits.length) {
             return (
               <div className="flex flex-wrap items-center gap-1">
-                {splits.map((s, i) => (
-                  <Badge key={i} tone="neutral" className="px-1 py-0 text-[10px]">
-                    {humanize(s.payeeType)} {String(s.percentage)}%
-                  </Badge>
-                ))}
+                {splits.map((s, i) => {
+                  const id = s.artistId ?? s.organizationId;
+                  return (
+                    <Badge key={i} tone="neutral" className="px-1 py-0 text-[10px]">
+                      {(id && payeeName(id)) ?? humanize(s.payeeType)} {String(s.percentage)}%
+                    </Badge>
+                  );
+                })}
               </div>
             );
           }
@@ -137,7 +155,7 @@ export default function RoyaltyRulesPage() {
         ),
       },
     ],
-    []
+    [scopeName, payeeName]
   );
 
   return (

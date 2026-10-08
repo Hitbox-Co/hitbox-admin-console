@@ -194,6 +194,12 @@ function SubmitAction({ product }: { product: AdminProductDetail }) {
   const submit = useSubmitRelease();
   const [comment, setComment] = React.useState("");
   const unowned = !product.artistId && !product.organizationId;
+  // A REQUIRED type cannot be submitted without an active variant — checked
+  // before the auto-pass too (drop-types-and-variants.md §8). The owner
+  // approves the drop together with its variants.
+  const needsVariants =
+    product.dropType?.variantMode === "REQUIRED" &&
+    !(product.variants ?? []).some((v) => v.isActive !== false);
 
   const go = () =>
     submit.mutate(
@@ -224,6 +230,13 @@ function SubmitAction({ product }: { product: AdminProductDetail }) {
           placeholder="Ready for review."
         />
       </Field>
+      {needsVariants ? (
+        <Warn>
+          A {product.dropType?.name ?? "drop"} needs at least one active variant before it can
+          be submitted. Add them from the Variants panel — the owner approves the drop together
+          with its variants.
+        </Warn>
+      ) : null}
       {product.isAgeSpecific && !product.minimumAge ? (
         <Warn>
           Age-restricted with no minimum age: the owner will be refused when they try to
@@ -231,7 +244,13 @@ function SubmitAction({ product }: { product: AdminProductDetail }) {
         </Warn>
       ) : null}
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" size="sm" loading={submit.isPending} onClick={go}>
+        <Button
+          variant="primary"
+          size="sm"
+          loading={submit.isPending}
+          disabled={needsVariants}
+          onClick={go}
+        >
           <Send className="h-3.5 w-3.5" />
           {product.status === "REJECTED" ? "Resubmit for review" : "Submit for review"}
         </Button>

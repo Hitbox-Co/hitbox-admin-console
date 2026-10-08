@@ -1031,13 +1031,15 @@ export interface AdminProductDetail {
   price?: { amount: string | null; currency: string; isFree: boolean } | null;
   performance: ProductPerformance;
   /**
-   * Size / colour / material, as `optionName`:`optionValue` pairs.
-   *
-   * READ-ONLY: `ProductVariant` is a real table and comes back on every
-   * product read, but the backend exposes no endpoint to create or edit one —
-   * the product DTO says so outright ("a drop being created right now has no
-   * variants yet"). A variant can therefore only be TARGETED when minting, not
-   * authored here.
+   * The drop's type (drop-types-and-variants.md §6) — which variants it may
+   * have. `null` on a legacy drop created before types existed: no variant
+   * rules apply to it.
+   */
+  dropType?: DropTypeRef | null;
+  /**
+   * The drop's sellable options (size × color, pack size…). Authored through
+   * /admin/products/:id/variants; the variants endpoint additionally carries
+   * `mintedUnits` and archived rows.
    */
   variants: ProductVariantRef[];
   /** Paginated — a 10,000-unit edition is a legitimate drop. */
@@ -1047,13 +1049,25 @@ export interface AdminProductDetail {
 export interface ProductVariantRef {
   id: string;
   label: string;
-  /** e.g. "Size" */
+  /** Legacy pair, kept on every variant: "size/color". */
   optionName: string;
-  /** e.g. "L" */
+  /** "M/BLK". */
   optionValue: string;
+  /** `{groupCode}-{values}` — unique platform-wide. Absent on old payloads. */
+  variantCode?: string;
+  options?: VariantOption[];
+  /** Per-variant cap, or null = drawn from the drop's total. */
+  totalSupply?: number | null;
+  isActive?: boolean;
 }
 
 export interface ProductInput {
+  /**
+   * A drop-type code, case-insensitive. Omitted or null = a legacy drop with
+   * no variant rules. On PATCH it can change only while the drop has no
+   * variants (409 PRODUCTS_DROP_TYPE_LOCKED otherwise).
+   */
+  dropType?: string | null;
   name?: string;
   description?: string | null;
   vertical?: string | null;
@@ -1120,6 +1134,207 @@ export interface ProductInput {
  * operator.
  */
 export type ProductCreateInput = ProductInput & { prices: ProductPriceInput[] };
+
+/* ------------------------------------------------------------------ */
+/* Drop types & variants — /admin/drop-types,                          */
+/* /admin/products/:id/variants (drop-types-and-variants.md)           */
+/* ------------------------------------------------------------------ */
+
+/** NONE: no variants · OPTIONAL: may have them · REQUIRED: ≥ 1 to submit, every unit belongs to one. */
+export type VariantMode = "NONE" | "OPTIONAL" | "REQUIRED";
+export type DimensionDisplayType = "TEXT" | "COLOR";
+
+/** The short form every product response carries. */
+export interface DropTypeRef {
+  code: string;
+  name: string;
+  variantMode: VariantMode;
+}
+
+export interface DropTypeValue {
+  code: string;
+  label: string;
+  /** `#RRGGBB` on a COLOR dimension; null = no swatch. */
+  hexCode: string | null;
+  position: number;
+  archived: boolean;
+}
+
+export interface DropTypeDimension {
+  /** camelCase: size, packSize. */
+  code: string;
+  label: string;
+  position: number;
+  required: boolean;
+  /** The admin may type a value not in the list, for one drop. */
+  allowCustomValues: boolean;
+  displayType: DimensionDisplayType;
+  archived: boolean;
+  values: DropTypeValue[];
+}
+
+/** One value code, or a list (any of them). */
+export type RuleMatch = Record<string, string | string[]>;
+
+export type DropTypeRule =
+  | { kind: "require"; when: RuleMatch; dimensions: string[] }
+  | { kind: "forbid"; when: RuleMatch; dimensions: string[] }
+  | { kind: "exclude"; match: RuleMatch };
+
+export interface DropType extends DropTypeRef {
+  id: string;
+  publicCode?: string;
+  description: string | null;
+  /** Tokens {groupCode} and {values}; both mandatory. */
+  variantCodePattern: string;
+  /** Goes up whenever the rules change. */
+  version: number;
+  isActive: boolean;
+  rules: DropTypeRule[];
+  dimensions: DropTypeDimension[];
+  /** On GET /:code only. */
+  dropCount?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DropTypeValueInput {
+  code: string;
+  label: string;
+  hexCode?: string | null;
+  position?: number;
+}
+
+export interface DropTypeDimensionInput {
+  code: string;
+  label: string;
+  required?: boolean;
+  allowCustomValues?: boolean;
+  displayType?: DimensionDisplayType;
+  position?: number;
+  values?: DropTypeValueInput[];
+}
+
+export interface CreateDropTypeInput {
+  code: string;
+  name: string;
+  description?: string | null;
+  variantMode: VariantMode;
+  variantCodePattern?: string;
+  dimensions?: DropTypeDimensionInput[];
+  rules?: DropTypeRule[];
+}
+
+export interface UpdateDropTypeInput {
+  name?: string;
+  description?: string | null;
+  /** Only while no drop uses the type — 409 PRODUCTS_DROP_TYPE_LOCKED. */
+  variantMode?: VariantMode;
+  variantCodePattern?: string;
+  /** Replaces the whole list; bumps `version`. */
+  rules?: DropTypeRule[];
+  isActive?: boolean;
+}
+
+export interface UpdateDimensionInput {
+  label?: string;
+  required?: boolean;
+  allowCustomValues?: boolean;
+  displayType?: DimensionDisplayType;
+  position?: number;
+}
+
+export interface UpdateDimensionValueInput {
+  label?: string;
+  hexCode?: string | null;
+  position?: number;
+}
+
+/** Labels and hex are SNAPSHOTS taken at creation. */
+export interface VariantOption {
+  dimension: string;
+  dimensionLabel?: string;
+  value: string;
+  label: string;
+  hexCode: string | null;
+}
+
+export interface DropVariant {
+  id: string;
+  publicCode?: string;
+  variantCode: string;
+  label: string;
+  options: VariantOption[];
+  optionName: string;
+  optionValue: string;
+  position: number;
+  /** Per-variant cap, or null = drawn from the drop's total. */
+  totalSupply: number | null;
+  mintedUnits: number;
+  isActive: boolean;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A value code, or — on an `allowCustomValues` dimension — a one-drop value. */
+export type VariantOptionValue =
+  | string
+  | { code: string; label?: string; hexCode?: string | null };
+
+export interface VariantInput {
+  options: Record<string, VariantOptionValue>;
+  label?: string;
+  position?: number;
+  totalSupply?: number | null;
+}
+
+export interface GenerateVariantsInput {
+  select: Record<string, VariantOptionValue[]>;
+  totalSupplyEach?: number | null;
+  dryRun?: boolean;
+}
+
+export interface VariantProblem {
+  index?: number;
+  dimension?: string;
+  rule: string;
+  message: string;
+}
+
+/** A dry-run preview row — the full variant object once written. */
+export interface VariantPreview {
+  variantCode: string;
+  label: string;
+  totalSupply: number | null;
+  options: VariantOption[];
+}
+
+export interface GenerateVariantsResult {
+  dryRun: boolean;
+  created: VariantPreview[];
+  /** Archived variants restored because their combination was selected again. */
+  revived: VariantPreview[];
+  /** Combinations the drop already has; untouched. */
+  existing: VariantPreview[];
+  /** Refused by the rules, with why. */
+  skipped: { options: unknown; problems: VariantProblem[] }[];
+}
+
+export interface UpdateVariantInput {
+  label?: string;
+  position?: number;
+  /** Cannot go below `mintedUnits`. */
+  totalSupply?: number | null;
+  /** false stops new units being minted for it. */
+  isActive?: boolean;
+}
+
+export interface RemoveVariantResult {
+  /** "archived" when a unit, price, order or wishlist entry points at it. */
+  outcome: "deleted" | "archived";
+  variant: DropVariant | null;
+}
 
 /* ------------------------------------------------------------------ */
 /* Release approvals — /admin/releases (admin-write-apis.md §4)        */

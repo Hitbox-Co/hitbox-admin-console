@@ -209,6 +209,42 @@ export class ApiError extends Error {
       case "PRODUCTS_RELEASE_GATE_UNAVAILABLE":
         return "The approval check is not wired up on this deployment, so publishing is refused.";
 
+      /* Drop types and variants (drop-types-and-variants.md §11). */
+      case "PRODUCTS_DROP_TYPE_INVALID":
+        return this.message || "That drop-type definition is not valid.";
+      case "PRODUCTS_DROP_TYPE_REQUIRED":
+        return "This drop has no type. Set one under Edit details before adding variants.";
+      case "PRODUCTS_VARIANT_INVALID_OPTIONS":
+        return this.message || "One or more variants break the rules of this drop type.";
+      case "PRODUCTS_VARIANTS_NOT_ALLOWED":
+        return "This drop's type has no variants — units are minted against the drop itself.";
+      case "PRODUCTS_VARIANTS_REQUIRED":
+        // One code, three triggers: submit with none, mint without one, or
+        // a `skus` block on create.
+        return "This drop type needs variants: add at least one, and mint every unit against a variant.";
+      case "PRODUCTS_VARIANT_SUPPLY_EXCEEDED":
+        return this.message || "That goes past a variant's supply cap or the drop's total supply.";
+      case "PRODUCTS_VARIANT_INACTIVE":
+        return "That variant is inactive or archived, so no units can be minted for it.";
+      case "PRODUCTS_VARIANT_GENERATE_TOO_LARGE":
+        return "More than 200 combinations. Split the selection — for example one colour group per run.";
+      case "PRODUCTS_DROP_TYPE_NOT_FOUND":
+        return "That drop type does not exist or is inactive.";
+      case "PRODUCTS_DIMENSION_NOT_FOUND":
+        return "That dimension is not on this drop type.";
+      case "PRODUCTS_DIMENSION_VALUE_NOT_FOUND":
+        return "That value is not on this dimension.";
+      case "PRODUCTS_VARIANT_NOT_FOUND":
+        return "That variant is not on this drop — it may already have been removed.";
+      case "PRODUCTS_DROP_TYPE_CODE_TAKEN":
+        return "A drop type with that code already exists.";
+      case "PRODUCTS_DROP_TYPE_LOCKED":
+        return this.message || "Locked: the type is in use, or this drop already has variants.";
+      case "PRODUCTS_DROP_NOT_EDITABLE":
+        return "Variants can be added or removed only while the drop is Draft or Rejected.";
+      case "PRODUCTS_VARIANT_DUPLICATE":
+        return this.message || "This drop already has that combination.";
+
       /* Product upload and the image gallery. */
       case "BODY_REQUIRED":
         // Express 5 leaves req.body undefined when no parser matched. This

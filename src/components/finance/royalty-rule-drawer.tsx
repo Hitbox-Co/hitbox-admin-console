@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/primitives";
 import { ErrorState, NotPermitted } from "@/components/ui/states";
 import { ruleScopeLabel, splitsOf, totalPercentage } from "./rule-helpers";
+import { usePayeeNames, useRuleScopeNames } from "./entity-pickers";
 import type { RoyaltyRule } from "@/lib/types";
 
 /**
@@ -41,6 +42,8 @@ export function RoyaltyRuleDrawer({
   const perms = usePermissions();
   const query = useRoyaltyRule(ruleId);
   const close = useCloseRoyaltyRule(ruleId);
+  // A rule carries ids only — the title names who or what it applies to.
+  const scopeName = useRuleScopeNames();
   const rule = query.data;
 
   const [closing, setClosing] = React.useState(false);
@@ -77,7 +80,7 @@ export function RoyaltyRuleDrawer({
           <div className="flex items-start justify-between gap-3 border-b border-[var(--hairline)] px-4 py-3.5">
             <div className="min-w-0">
               <Dialog.Title className="text-[14px] font-semibold tracking-[-0.01em] text-[var(--text-1)]">
-                {rule ? ruleScopeLabel(rule).label : "Royalty rule"}
+                {rule ? (scopeName(rule.scope).name ?? ruleScopeLabel(rule).label) : "Royalty rule"}
               </Dialog.Title>
               <Dialog.Description className="mt-0.5 flex flex-wrap items-center gap-2 text-[12px] text-[var(--text-3)]">
                 <Mono className="text-[10px]">{shortId(ruleId, 12)}</Mono>
@@ -208,6 +211,7 @@ export function RoyaltyRuleDrawer({
 
 function Terms({ rule }: { rule: RoyaltyRule }) {
   const splits = splitsOf(rule);
+  const payeeName = usePayeeNames();
 
   if (!splits.length) {
     return (
@@ -239,12 +243,16 @@ function Terms({ rule }: { rule: RoyaltyRule }) {
         {splits.map((s, i) => (
           <li key={i} className="flex items-center justify-between gap-3 px-3 py-2">
             <div className="min-w-0">
-              <Badge tone="neutral" className="px-1 py-0 text-[10px]">
-                {humanize(s.payeeType)}
-              </Badge>
-              <Mono className="ml-1.5 text-[10px]">
-                {shortId(s.artistId ?? s.organizationId)}
-              </Mono>
+              <p className="truncate text-[12.5px] text-[var(--text-1)]">
+                {payeeName(s.artistId ?? s.organizationId ?? "") ??
+                  (s.payeeType === "ORGANIZATION" ? "Unnamed organization" : "Unnamed artist")}
+              </p>
+              <p className="mt-0.5 flex items-center gap-1.5">
+                <Badge tone="neutral" className="px-1 py-0 text-[10px]">
+                  {humanize(s.payeeType)}
+                </Badge>
+                <Mono className="text-[10px]">{shortId(s.artistId ?? s.organizationId)}</Mono>
+              </p>
             </div>
             <span className="tnum text-[12.5px] font-medium text-[var(--text-1)]">
               {String(s.percentage)}%

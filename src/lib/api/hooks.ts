@@ -9,6 +9,19 @@ import {
 } from "@tanstack/react-query";
 import { ApiError, api, unwrap, type QueryValue } from "./client";
 import type {
+  CreateDropTypeInput,
+  DropType,
+  DropTypeDimensionInput,
+  DropTypeValueInput,
+  DropVariant,
+  GenerateVariantsInput,
+  GenerateVariantsResult,
+  RemoveVariantResult,
+  UpdateDimensionInput,
+  UpdateDimensionValueInput,
+  UpdateDropTypeInput,
+  UpdateVariantInput,
+  VariantInput,
   ActivityEvent,
   ActivityEventRaw,
   Adjustment,
@@ -979,6 +992,194 @@ export function useArchiveProduct() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Drop types — /admin/drop-types (drop-types-and-variants.md §5)      */
+/*                                                                      */
+/* Reading takes drop:read; every write takes drop-type:manage:global   */
+/* (System Admin only) and returns the WHOLE updated type, so the cache */
+/* is set from the response rather than refetched.                      */
+/* ------------------------------------------------------------------ */
+
+export function useDropTypes(includeInactive = false, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["drop-types", { includeInactive }],
+    enabled,
+    queryFn: () =>
+      api
+        .get<unknown>("admin/drop-types", includeInactive ? { includeInactive } : {})
+        .then(unwrap<DropType[]>),
+  });
+}
+
+/** One type, archived dimensions and values included, plus `dropCount`. */
+export function useDropType(code: string | null | undefined, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["drop-type", code],
+    enabled: !!code && enabled,
+    queryFn: () =>
+      api.get<unknown>(`admin/drop-types/${code}`).then(unwrap<DropType>),
+  });
+}
+
+function useDropTypeWrite<V>(
+  request: (vars: V) => Promise<unknown>
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: V) => request(vars).then(unwrap<DropType>),
+    onSuccess: (type) => {
+      qc.setQueryData(["drop-type", type.code], (prev: DropType | undefined) =>
+        // The list form carries no dropCount; keep the one already read.
+        ({ ...type, dropCount: type.dropCount ?? prev?.dropCount })
+      );
+      qc.invalidateQueries({ queryKey: ["drop-types"] });
+    },
+  });
+}
+
+export function useCreateDropType() {
+  return useDropTypeWrite((body: CreateDropTypeInput) => api.post<unknown>("admin/drop-types", body));
+}
+
+export function useUpdateDropType(code: string) {
+  return useDropTypeWrite((body: UpdateDropTypeInput) =>
+    api.patch<unknown>(`admin/drop-types/${code}`, body)
+  );
+}
+
+export function useAddDimension(code: string) {
+  return useDropTypeWrite((body: DropTypeDimensionInput) =>
+    api.post<unknown>(`admin/drop-types/${code}/dimensions`, body)
+  );
+}
+
+export function useUpdateDimension(code: string) {
+  return useDropTypeWrite(({ dimension, body }: { dimension: string; body: UpdateDimensionInput }) =>
+    api.patch<unknown>(`admin/drop-types/${code}/dimensions/${dimension}`, body)
+  );
+}
+
+/** Archive (`archived: true`) or restore a dimension. */
+export function useSetDimensionArchived(code: string) {
+  return useDropTypeWrite(({ dimension, archived }: { dimension: string; archived: boolean }) =>
+    archived
+      ? api.delete<unknown>(`admin/drop-types/${code}/dimensions/${dimension}`)
+      : api.post<unknown>(`admin/drop-types/${code}/dimensions/${dimension}/restore`, {})
+  );
+}
+
+export function useAddDimensionValue(code: string) {
+  return useDropTypeWrite(({ dimension, body }: { dimension: string; body: DropTypeValueInput }) =>
+    api.post<unknown>(`admin/drop-types/${code}/dimensions/${dimension}/values`, body)
+  );
+}
+
+export function useUpdateDimensionValue(code: string) {
+  return useDropTypeWrite(
+    ({ dimension, value, body }: { dimension: string; value: string; body: UpdateDimensionValueInput }) =>
+      api.patch<unknown>(`admin/drop-types/${code}/dimensions/${dimension}/values/${value}`, body)
+  );
+}
+
+export function useSetDimensionValueArchived(code: string) {
+  return useDropTypeWrite(
+    ({ dimension, value, archived }: { dimension: string; value: string; archived: boolean }) =>
+      archived
+        ? api.delete<unknown>(`admin/drop-types/${code}/dimensions/${dimension}/values/${value}`)
+        : api.post<unknown>(
+            `admin/drop-types/${code}/dimensions/${dimension}/values/${value}/restore`,
+            {}
+          )
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Variants — /admin/products/:id/variants (§7)                        */
+/*                                                                      */
+/* Reading is org-scoped like the drop page; writing is a globalOnly    */
+/* catalog write. Add/remove only while the drop is DRAFT or REJECTED;  */
+/* label, supply and the active flag may change in any status.          */
+/* ------------------------------------------------------------------ */
+
+export function useProductVariants(
+  productId: string | undefined,
+  includeArchived = false,
+  enabled = true
+) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["product-variants", productId, { includeArchived }],
+    enabled: !!productId && enabled,
+    queryFn: () =>
+      api
+        .get<unknown>(
+          `admin/products/${productId}/variants`,
+          includeArchived ? { includeArchived } : {}
+        )
+        .then(unwrap<DropVariant[]>),
+  });
+}
+
+function invalidateVariants(qc: ReturnType<typeof useQueryClient>, productId: string) {
+  qc.invalidateQueries({ queryKey: ["product-variants", productId] });
+  // Product reads embed variants[] and the type.
+  qc.invalidateQueries({ queryKey: ["admin-product", productId] });
+}
+
+/** An explicit list — all or nothing; problems come back with their index. */
+export function useCreateVariants(productId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (variants: VariantInput[]) =>
+      api
+        .post<unknown>(`admin/products/${productId}/variants`, { variants })
+        .then(unwrap<DropVariant[]>),
+    onSuccess: () => invalidateVariants(qc, productId),
+  });
+}
+
+/**
+ * Every combination of the chosen values. `dryRun: true` writes nothing and
+ * answers 200 with the same shape — preview first, then confirm.
+ */
+export function useGenerateVariants(productId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: GenerateVariantsInput) =>
+      api
+        .post<unknown>(`admin/products/${productId}/variants/generate`, body)
+        .then(unwrap<GenerateVariantsResult>),
+    onSuccess: (result) => {
+      if (!result.dryRun) invalidateVariants(qc, productId);
+    },
+  });
+}
+
+export function useUpdateVariant(productId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ variantId, body }: { variantId: string; body: UpdateVariantInput }) =>
+      api
+        .patch<unknown>(`admin/products/${productId}/variants/${variantId}`, body)
+        .then(unwrap<DropVariant>),
+    onSuccess: () => invalidateVariants(qc, productId),
+  });
+}
+
+/** Deleted outright when nothing points at it; archived otherwise. */
+export function useRemoveVariant(productId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (variantId: string) =>
+      api
+        .delete<unknown>(`admin/products/${productId}/variants/${variantId}`)
+        .then(unwrap<RemoveVariantResult>),
+    onSuccess: () => invalidateVariants(qc, productId),
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Release approvals — the review workflow                             */
 /* ------------------------------------------------------------------ */
 
@@ -1205,6 +1406,8 @@ export function useMintSkus(productId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["product-skus", productId] });
       qc.invalidateQueries({ queryKey: ["product-sku-summary", productId] });
+      // Per-variant mintedUnits move with the edition.
+      qc.invalidateQueries({ queryKey: ["product-variants", productId] });
       // The drop's own performance counts move with the edition.
       qc.invalidateQueries({ queryKey: ["admin-product", productId] });
       qc.invalidateQueries({ queryKey: ["products"] });

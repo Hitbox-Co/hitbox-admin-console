@@ -13,6 +13,7 @@ import {
 } from "@/lib/api/hooks";
 import { formatCurrency, formatDate, humanize } from "@/lib/format";
 import { Combobox, type ComboOption } from "@/components/ui/combobox";
+import { usePermissions } from "@/components/layout/authz-provider";
 
 /**
  * Named pickers for every id a finance form or filter asks for.
@@ -46,13 +47,68 @@ interface PickerProps {
  * neither (or the caller cannot read them), so the caller falls back to the id.
  */
 export function usePayeeNames(): (id: string) => string | undefined {
-  const artists = useAdminArtists();
-  const orgs = useAdminOrganizations();
+  // The directories need platform-wide drop reach — Finance Admin and an
+  // artist do not hold it, so for them this resolves nothing rather than
+  // firing two requests that answer 403.
+  const canRead = usePermissions().reaches("drop");
+  const artists = useAdminArtists(undefined, canRead);
+  const orgs = useAdminOrganizations(canRead);
   return React.useCallback(
     (id: string) =>
       artists.data?.find((a) => a.id === id)?.name ??
       orgs.data?.find((o) => o.id === id)?.name,
     [artists.data, orgs.data]
+  );
+}
+
+/**
+ * What a royalty rule applies to, by NAME. A rule carries only ids — "An
+ * artist" with a uuid under it tells an operator nothing — so the scope is
+ * resolved against the same directories the pickers use, and the drop
+ * catalog for a drop-scoped rule.
+ *
+ * Collections have no directory endpoint, so a collection-scoped rule keeps
+ * its id. A name that cannot be resolved (another page of drops, or a role
+ * without directory access) falls back to the kind, never to a blank.
+ */
+export interface RuleScopeName {
+  /** "Artist", "Organization", "Drop", "Collection". */
+  kind: string;
+  /** The resolved name, or null when it could not be found. */
+  name: string | null;
+  id: string | null;
+}
+
+export function useRuleScopeNames() {
+  const payeeName = usePayeeNames();
+  const drops = useProducts({ page: 1, limit: 100 });
+  const dropName = React.useCallback(
+    (id: string) => drops.data?.items.find((p) => p.id === id)?.name,
+    [drops.data]
+  );
+  return React.useCallback(
+    (scope: {
+      productId: string | null;
+      collectionId: string | null;
+      artistId: string | null;
+      organizationId: string | null;
+    }): RuleScopeName => {
+      // Most specific first — the order the accrual service resolves rules in.
+      if (scope.productId)
+        return { kind: "Drop", name: dropName(scope.productId) ?? null, id: scope.productId };
+      if (scope.collectionId)
+        return { kind: "Collection", name: null, id: scope.collectionId };
+      if (scope.artistId)
+        return { kind: "Artist", name: payeeName(scope.artistId) ?? null, id: scope.artistId };
+      if (scope.organizationId)
+        return {
+          kind: "Organization",
+          name: payeeName(scope.organizationId) ?? null,
+          id: scope.organizationId,
+        };
+      return { kind: "Unscoped", name: null, id: null };
+    },
+    [payeeName, dropName]
   );
 }
 

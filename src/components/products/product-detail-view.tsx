@@ -36,6 +36,8 @@ import { ProductAllotmentPanel } from "./product-allotment-panel";
 import { ProductGalleryPanel } from "./product-gallery-panel";
 import { ProductLifecyclePanel } from "./product-lifecycle-panel";
 import { ProductPricingPanel } from "./product-pricing-panel";
+import { ProductVariantsPanel } from "./product-variants-panel";
+import { DropTypeBadge } from "./variant-bits";
 import { SkuUnitsPanel } from "./sku-units-panel";
 import type { AdminProductDetail, ProductSkuUnit } from "@/lib/types";
 
@@ -154,6 +156,7 @@ export function ProductDetailView({ productId }: { productId: string }) {
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <div className="min-w-0 space-y-4 xl:col-span-2">
           <ProductAllotmentPanel product={product} mintGate={gate} />
+          <ProductVariantsPanel product={product} />
 
           <ProductPricingPanel productId={productId} variants={product.variants ?? []} />
           <ProductGalleryPanel productId={productId} />
@@ -164,6 +167,7 @@ export function ProductDetailView({ productId }: { productId: string }) {
               productId={productId}
               totalSupply={product.totalSupply}
               variants={product.variants ?? []}
+              variantMode={product.dropType?.variantMode ?? null}
               mintGate={gate}
             />
           ) : (
@@ -221,6 +225,7 @@ function Header({ product }: { product: AdminProductDetail }) {
         <div className="min-w-0 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
             <Mono className="text-[11px]">{product.groupCode}</Mono>
+            <DropTypeBadge type={product.dropType} />
             <Badge tone={toneForStatus(product.status)} dot>
               {humanize(product.status)}
             </Badge>
@@ -272,6 +277,8 @@ function Header({ product }: { product: AdminProductDetail }) {
 
 function DetailsPanel({ product }: { product: AdminProductDetail }) {
   const rows: [string, React.ReactNode][] = [
+    ["Drop type", product.dropType ? product.dropType.name : "Untyped (legacy)"],
+    ["Variants", formatNumber((product.variants ?? []).length)],
     ["Supply", product.totalSupply ? formatNumber(product.totalSupply) : "Not declared"],
     ["Purchase limit", product.purchaseLimit ? String(product.purchaseLimit) : "Unlimited"],
     ["Category", product.category ?? "—"],

@@ -201,6 +201,15 @@ export class Permissions {
   }
 
   /**
+   * /admin/drop-types writes — a type's rules are shared by every drop that
+   * uses it, so drop-type:manage is granted globally to HITBOX_SYSTEM_ADMIN
+   * only (drop-types-and-variants.md §5).
+   */
+  canManageDropTypes(): boolean {
+    return this.can("drop-type", "manage", "global");
+  }
+
+  /**
    * POST /admin/releases. Gated on drop:manage at ANY scope, not on a
    * release capability: submitting is something done to your own drop, so
    * whoever may edit the drop may submit it. Drop Managers, Brand Admins,
@@ -414,6 +423,9 @@ const ROUTE_ACCESS: Record<string, (p: Permissions) => boolean> = {
   "/products": (p) => p.canRead("drop"),
   "/products/detail": (p) => p.canOpenDropPage(),
   "/products/new": (p) => p.canManageCatalog(),
+  // GET /admin/drop-types takes drop:read with no organization context, so
+  // only a platform-wide read passes. Writes are gated on the page.
+  "/products/types": (p) => p.reaches("drop"),
   "/release-approvals": (p) => p.canRead("release-approval"),
   "/supply": (p) => p.reaches("reports-dashboards"),
   "/supply/consignments": (p) => p.reaches("drop"),
@@ -546,6 +558,13 @@ export const NAV_ITEMS: NavItem[] = [
     icon: "Package",
     group: "Catalog",
     visible: (p) => p.canOpen("/products"),
+  },
+  {
+    href: "/products/types",
+    label: "Drop types",
+    icon: "Shapes",
+    group: "Catalog",
+    visible: (p) => p.canOpen("/products/types"),
   },
   {
     href: "/release-approvals",
