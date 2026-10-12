@@ -9,6 +9,11 @@ import {
 } from "@tanstack/react-query";
 import { ApiError, api, unwrap, type QueryValue } from "./client";
 import type {
+  ArtistGenre,
+  ArtistImageKind,
+  ArtistImageUploadUrl,
+  ArtistProfile,
+  ArtistProfileUpdate,
   CreateDropTypeInput,
   DropType,
   DropTypeDimensionInput,
@@ -2788,4 +2793,100 @@ export function useBatchUpdateSkus() {
       if (!result.dryRun) invalidateSkus(qc);
     },
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* Artist self-service profile — /artist/me (artist-profile-api.md)    */
+/*                                                                      */
+/* brand-artist-record:read / :update at OWN scope, matched against the */
+/* caller's own user id. Every write returns the whole profile, which   */
+/* is written straight into the cache.                                  */
+/* ------------------------------------------------------------------ */
+
+const ARTIST_ME_KEY = ["artist-me"] as const;
+
+export function useMyArtistProfile(enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ARTIST_ME_KEY,
+    enabled,
+    queryFn: () => api.get<unknown>("artist/me").then(unwrap<ArtistProfile>),
+  });
+}
+
+/** The list lives in code server-side and never changes mid-session. */
+export function useArtistGenres(enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["artist-genres"],
+    enabled,
+    staleTime: Infinity,
+    queryFn: () => api.get<unknown>("artist/genres").then(unwrap<ArtistGenre[]>),
+  });
+}
+
+function useArtistProfileWrite<V>(request: (vars: V) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: V) => request(vars).then(unwrap<ArtistProfile>),
+    onSuccess: (profile) => qc.setQueryData(ARTIST_ME_KEY, profile),
+  });
+}
+
+export function useUpdateMyArtistProfile() {
+  return useArtistProfileWrite((body: ArtistProfileUpdate) => api.patch<unknown>("artist/me", body));
+}
+
+/**
+ * Avatar or cover, all three steps as one call:
+ *   1. POST /artist/me/{kind}/upload-url  — presign, bound to type and size
+ *   2. PUT  <uploadUrl>                   — the bytes, straight to S3
+ *   3. PUT  /artist/me/{kind} { assetId } — only after S3 answered 200,
+ *      because the API cannot see inside S3 and would point the profile at a
+ *      missing image otherwise.
+ * A 403 from S3 is usually a lapsed URL (5 minutes), so step 1 is retried
+ * once with a fresh one before giving up.
+ */
+export function useUploadArtistImage(kind: ArtistImageKind) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (file: File) => {
+      const presign = () =>
+        api
+          .post<unknown>(`artist/me/${kind}/upload-url`, {
+            fileName: file.name,
+            mimeType: file.type,
+            sizeBytes: file.size,
+          })
+          .then(unwrap<ArtistImageUploadUrl>);
+      const put = (url: string) =>
+        fetch(url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+
+      let presigned = await presign();
+      let res = await put(presigned.uploadUrl);
+      if (res.status === 403) {
+        presigned = await presign();
+        res = await put(presigned.uploadUrl);
+      }
+      if (!res.ok) {
+        throw new ApiError(
+          res.status,
+          "STORAGE_UPLOAD_FAILED",
+          res.status === 403
+            ? "S3 rejected the upload signature — the file changed size or type, or the link expired."
+            : `The storage service rejected the upload (${res.status}).`,
+          null
+        );
+      }
+      return api
+        .put<unknown>(`artist/me/${kind}`, { assetId: presigned.assetId })
+        .then(unwrap<ArtistProfile>);
+    },
+    onSuccess: (profile) => qc.setQueryData(ARTIST_ME_KEY, profile),
+  });
+}
+
+/** Clears the image on the profile; the stored file is kept for history. */
+export function useRemoveArtistImage(kind: ArtistImageKind) {
+  return useArtistProfileWrite(() => api.delete<unknown>(`artist/me/${kind}`));
 }

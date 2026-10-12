@@ -284,6 +284,20 @@ function main() {
     false
   );
 
+  // /artist/me checks brand-artist-record at OWN scope against the caller's
+  // own user id — an artist's grant and nobody else's (artist-profile-api.md §8).
+  check("artist gets My profile", artistNav.includes("/artist/profile"), true);
+  check(
+    "brand admin does NOT get My profile (org scope is a 403)",
+    brandAdminNav.includes("/artist/profile"),
+    false
+  );
+  check(
+    "system admin does NOT get My profile (no profile of their own)",
+    navFor("HITBOX_SYSTEM_ADMIN").includes("/artist/profile"),
+    false
+  );
+
   console.log("\nMedia keys off a platform-wide read grant, which `manage` subsumes\n");
   const hrefs = (keys: string[]) =>
     visibleNav(new Permissions(keys)).map((n) => n.href);

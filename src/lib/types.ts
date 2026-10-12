@@ -2975,3 +2975,59 @@ export interface SkuBatchResult {
 export const SKU_BATCH_MAX = 1000;
 /** SUPPLY_MANIFEST_MAX — matched to a physical carton. */
 export const SUPPLY_MANIFEST_MAX = 1000;
+
+/* ------------------------------------------------------------------ */
+/* Artist self-service profile — /artist/me (artist-profile-api.md)    */
+/*                                                                      */
+/* Always the SIGNED-IN artist's own profile: no artist id in any URL.  */
+/* ------------------------------------------------------------------ */
+
+export interface ArtistProfile {
+  id: string;
+  publicCode: string;
+  name: string;
+  /** Public handle: 3–60, a-z 0-9 and single hyphens. */
+  slug: string;
+  bio: string | null;
+  /** Stored as the genre LABEL ("Hip-Hop"). May predate the list. */
+  genre: string | null;
+  avatarUrl: string | null;
+  coverUrl: string | null;
+  isPublic: boolean;
+  isActive: boolean;
+  archivedAt: string | null;
+  /** false when HitBox archived or deactivated the profile — read-only. */
+  editable: boolean;
+  compliance: { attested: boolean; attestedAt: string | null };
+  organization: { id: string; name: string; type: string } | null;
+  counts: { drops: number; collections: number; followers: number };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ArtistGenre {
+  code: string;
+  label: string;
+}
+
+/** Only the fields being changed; at least one. Anything else is a 422. */
+export interface ArtistProfileUpdate {
+  name?: string;
+  slug?: string;
+  bio?: string | null;
+  /** A genre code or label; null clears it. */
+  genre?: string | null;
+  isPublic?: boolean;
+}
+
+export type ArtistImageKind = "avatar" | "cover";
+
+export interface ArtistImageUploadUrl {
+  kind: ArtistImageKind;
+  assetId: string;
+  /** Presigned PUT, bound to Content-Type and size. */
+  uploadUrl: string;
+  /** Seconds — 300. */
+  expiresIn: number;
+  publicUrl: string;
+}

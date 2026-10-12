@@ -402,6 +402,10 @@ const ROUTE_ACCESS: Record<string, (p: Permissions) => boolean> = {
   "/dashboard": () => true,
   // A personal workspace only makes sense for someone with a profile of
   // their own — derived from scope, never from the role name.
+  // /artist/me checks brand-artist-record at OWN scope against the caller's
+  // own user id: only an artist's own grant reaches a profile. A Brand Admin
+  // (organization) is a 403; a global holder passes but has no profile (404).
+  "/artist/profile": (p) => p.widestScope("brand-artist-record") === "own",
   "/artist": (p) => {
     const scope = p.widestScope("brand-artist-record");
     return scope === "own" || scope === "organization";
@@ -502,6 +506,13 @@ export const NAV_ITEMS: NavItem[] = [
     icon: "Palette",
     group: "Overview",
     visible: (p) => p.canOpen("/artist"),
+  },
+  {
+    href: "/artist/profile",
+    label: "My profile",
+    icon: "UserCog",
+    group: "Overview",
+    visible: (p) => p.canOpen("/artist/profile"),
   },
   {
     href: "/markets",

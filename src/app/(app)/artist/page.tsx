@@ -11,10 +11,12 @@ import {
   Wallet,
 } from "lucide-react";
 import {
+  useMyArtistProfile,
   useProducts,
   useReleases,
   useRoyaltyBalances,
 } from "@/lib/api/hooks";
+import { ApiError } from "@/lib/api/client";
 import { formatCurrency, formatDate, formatNumber, humanize } from "@/lib/format";
 import { humanizeRoleName } from "@/lib/authz";
 import { usePageChrome } from "@/components/layout/app-shell";
@@ -96,7 +98,9 @@ function WorkspaceView() {
 
       {canSeeMoney ? <EarningsPanel query={balances} /> : null}
 
-      <NotWiredPanel canUpdateProfile={perms.can("brand-artist-record", "update")} />
+      {perms.canOpen("/artist/profile") ? <ProfileCard /> : null}
+
+      <NotWiredPanel />
     </div>
   );
 }
@@ -390,24 +394,63 @@ function Figure({ label, value }: { label: string; value: string }) {
  * capability is idle and why, the same way the console handles the missing
  * publish-drop transition.
  */
-function NotWiredPanel({ canUpdateProfile }: { canUpdateProfile: boolean }) {
+/**
+ * The artist's own profile at a glance, with the editor one click away.
+ * Offered only to an own-scope grant — /artist/me answers nobody else.
+ */
+function ProfileCard() {
+  const query = useMyArtistProfile();
+  const p = query.data;
+  return (
+    <Panel className="overflow-hidden">
+      <PanelHeader title="Your profile" />
+      {query.isLoading ? (
+        <PanelSkeleton />
+      ) : !p ? (
+        <p className="px-3 py-3 text-[12.5px] text-[var(--text-3)]">
+          {query.error instanceof ApiError ? query.error.friendly : "Your profile could not be loaded."}
+        </p>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3 px-3 py-3">
+          {p.avatarUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element -- a public S3 URL
+            <img src={p.avatarUrl} alt="" className="h-11 w-11 shrink-0 rounded-full object-cover" />
+          ) : (
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[var(--surface-3)] text-[14px] font-semibold text-[var(--text-2)]">
+              {p.name.slice(0, 1).toUpperCase()}
+            </span>
+          )}
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[13px] font-medium text-[var(--text-1)]">{p.name}</p>
+            <p className="truncate text-[11.5px] text-[var(--text-3)]">
+              <span className="font-mono">@{p.slug}</span>
+              {p.genre ? ` · ${p.genre}` : ""}
+              {` · ${formatNumber(p.counts.followers)} followers`}
+            </p>
+          </div>
+          <Badge tone={p.isPublic ? "accent" : "neutral"}>{p.isPublic ? "Public" : "Unlisted"}</Badge>
+          {!p.editable ? <Badge tone="warning">Locked</Badge> : null}
+          {!p.bio || !p.avatarUrl || !p.genre ? (
+            <p className="w-full text-[11.5px] text-[var(--text-3)]">
+              Missing: {[!p.avatarUrl && "avatar", !p.genre && "genre", !p.bio && "bio"].filter(Boolean).join(", ")}.
+            </p>
+          ) : null}
+        </div>
+      )}
+      <MoreLink href="/artist/profile" label="Edit your profile" />
+    </Panel>
+  );
+}
+
+function NotWiredPanel() {
   return (
     <Panel className="px-3 py-3">
       <p className="flex items-start gap-2 text-[11.5px] leading-relaxed text-[var(--text-3)]">
         <Info className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
         <span>
-          {canUpdateProfile ? (
-            <>
-              Your role also carries <Mono className="text-[10px]">brand-artist-record:update</Mono>{" "}
-              and <Mono className="text-[10px]">notification-config:update</Mono>, so a
-              profile editor and notification preferences belong here.{" "}
-            </>
-          ) : (
-            <>Profile editing and notification preferences belong on this screen. </>
-          )}
-          Neither is built: the artist module mounts no router, and the
-          notifications and organizations modules are schema-only — no service, no
-          controller, nothing to call. They arrive here when those endpoints do.
+          Notification preferences belong on this screen too, but aren&rsquo;t built:
+          the notifications module is schema-only — no service, no controller, nothing
+          to call. They arrive here when those endpoints do.
         </span>
       </p>
     </Panel>

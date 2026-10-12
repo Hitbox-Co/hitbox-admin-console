@@ -209,6 +209,25 @@ export class ApiError extends Error {
       case "PRODUCTS_RELEASE_GATE_UNAVAILABLE":
         return "The approval check is not wired up on this deployment, so publishing is refused.";
 
+      /* Artist self-service profile (artist-profile-api.md §9). */
+      case "ARTIST_GENRE_INVALID":
+        return "That genre isn't on the list. Pick one from the dropdown.";
+      case "ARTIST_IMAGE_INVALID":
+        // Not found, someone else's, deleted, or still being virus-scanned.
+        return this.message || "That image can't be used. Upload it again in a moment.";
+      case "ARTIST_IMAGES_UNAVAILABLE":
+        return "Image uploads aren't configured on this server. The rest of your profile still saves.";
+      case "UNSUPPORTED_MIME_TYPE":
+        return "Use a JPEG, PNG, WebP or GIF image.";
+      case "FILE_TOO_LARGE":
+        return "That image is over 15 MB.";
+      case "ARTIST_PROFILE_NOT_FOUND":
+        return "This account isn't linked to an artist profile. Profiles are created when HitBox invites you as an artist.";
+      case "ARTIST_SLUG_TAKEN":
+        return "Another artist already uses that handle.";
+      case "ARTIST_PROFILE_LOCKED":
+        return "HitBox has archived or deactivated this profile, so it can't be edited. Contact support.";
+
       /* Drop types and variants (drop-types-and-variants.md §11). */
       case "PRODUCTS_DROP_TYPE_INVALID":
         return this.message || "That drop-type definition is not valid.";
