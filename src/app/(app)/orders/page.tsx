@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { useSearchParams } from "next/navigation";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Lock, ShoppingCart } from "lucide-react";
 import { useAdminOrders, usePrefetchOrder } from "@/lib/api/hooks";
 import { formatCurrency, formatDateTime, humanize } from "@/lib/format";
@@ -12,7 +13,6 @@ import { Badge, Button, Mono, Panel, toneForStatus } from "@/components/ui/primi
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterRow, FilterSelect, SearchInput, useListState } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
-import { OrderDrawer } from "@/components/orders/order-drawer";
 import type { AdminOrderRow } from "@/lib/types";
 
 const STATUSES = [
@@ -46,9 +46,15 @@ function OrdersView() {
     productCode: undefined,
   });
   const perms = usePermissions();
-  const [openId, setOpenId] = React.useState<string | null>(null);
-  // Hovering a row warms its detail, so the drawer usually opens from cache.
+  const router = useRouter();
+  // Hovering a row warms its detail, so the order page usually paints from cache.
   const prefetchOrder = usePrefetchOrder();
+
+  // Old links opened a drawer with ?open=<id>; send them to the page instead.
+  const legacyOpen = searchParams.get("open");
+  React.useEffect(() => {
+    if (legacyOpen) router.replace(`/orders/${legacyOpen}`);
+  }, [legacyOpen, router]);
 
   const canMoney = perms.canRead("payment-royalty");
   const canBuyer = perms.canRead("buyer-profile");
@@ -79,9 +85,17 @@ function OrdersView() {
         key: "status",
         header: "Status",
         cell: (r) => (
-          <Badge tone={toneForStatus(r.status)} dot>
-            {humanize(r.status)}
-          </Badge>
+          <span className="flex flex-wrap items-center gap-1.5">
+            <Badge tone={toneForStatus(r.status)} dot>
+              {humanize(r.status)}
+            </Badge>
+            {/* Paid but no unit scanned yet: it can't ship until it's packed. */}
+            {(r.status === "PAID" || r.status === "PROCESSING") && r.unitAssignedAt === null ? (
+              <Badge tone="warning" className="px-1 py-0 text-[10px]">
+                To pack
+              </Badge>
+            ) : null}
+          </span>
         ),
       },
       { key: "qty", header: "Qty", numeric: true, cell: (r) => r.quantity },
@@ -144,15 +158,10 @@ function OrdersView() {
         key: "actions",
         header: "",
         cell: (r) => (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={(e) => {
-              e.stopPropagation();
-              setOpenId(r.id);
-            }}
-          >
-            {canManage ? "Manage" : "View"}
+          <Button asChild variant="ghost" size="sm">
+            <Link href={`/orders/${r.id}`} onClick={(e) => e.stopPropagation()}>
+              {canManage ? "Manage" : "View"}
+            </Link>
           </Button>
         ),
       }
@@ -212,7 +221,7 @@ function OrdersView() {
               columns={columns}
               rows={query.data?.items ?? []}
               getRowKey={(r) => r.id}
-              onRowClick={(r) => setOpenId(r.id)}
+              onRowClick={(r) => router.push(`/orders/${r.id}`)}
               onRowIntent={(r) => prefetchOrder(r.id)}
               dimmed={query.isFetching}
               emptyState={
@@ -238,7 +247,6 @@ function OrdersView() {
         )}
       </Panel>
 
-      {openId ? <OrderDrawer orderId={openId} onClose={() => setOpenId(null)} /> : null}
     </>
   );
 }

@@ -602,6 +602,9 @@ function main() {
   console.log("\nConsole routes offered exactly where the backend admits the load\n");
   const MATRIX: Record<string, Record<string, boolean>> = {
     "/orders": { ARTIST: false, BRAND_ADMIN: false, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: true, HITBOX_FINANCE_ADMIN: true },
+    // Packing: viewing takes order:read; the scan-first station takes order:manage.
+    "/packing": { HITBOX_SYSTEM_ADMIN: true, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: true, HITBOX_FINANCE_ADMIN: true },
+    "/packing/scan": { HITBOX_SYSTEM_ADMIN: true, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: false, HITBOX_FINANCE_ADMIN: false },
     "/finance": { ARTIST: true, BRAND_ADMIN: false, BRAND_EMPLOYEE: false, HITBOX_FINANCE_ADMIN: true, HITBOX_ORDER_MANAGER: false },
     "/payments": { ARTIST: false, BRAND_ADMIN: false, HITBOX_FINANCE_ADMIN: true },
     "/resale": { ARTIST: false, BRAND_ADMIN: true, HITBOX_ORDER_MANAGER: true },

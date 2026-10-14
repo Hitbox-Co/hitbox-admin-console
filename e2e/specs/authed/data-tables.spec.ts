@@ -100,8 +100,8 @@ for (const screen of LIST_SCREENS) {
   });
 }
 
-test.describe("Order drawer", () => {
-  test("opens from a row and can be dismissed", async ({ page }) => {
+test.describe("Order page", () => {
+  test("a row opens the order's own page, and back returns to the list", async ({ page }) => {
     await open(page, "/orders");
     const denied = await page.getByText(/does not include this capability/i).count();
     test.skip(denied > 0, "this role cannot reach /orders");
@@ -111,34 +111,29 @@ test.describe("Order drawer", () => {
     test.skip((await row.count()) === 0, "no orders to open");
 
     await row.click();
-    const drawer = page.getByRole("dialog");
-    await expect(drawer).toBeVisible({ timeout: 20_000 });
+    await expect(page).toHaveURL(/\/orders\/[0-9a-f-]{36}$/, { timeout: 20_000 });
+    // A page, not a modal.
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByText("Next step")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("list", { name: "Order progress" })).toBeVisible();
 
-    await page.keyboard.press("Escape");
-    await expect(drawer).toBeHidden();
+    await page.getByRole("link", { name: "All orders" }).click();
+    await expect(page).toHaveURL(/\/orders(\?.*)?$/);
   });
 
-  test("the drawer traps focus while it is open", async ({ page }) => {
+  test("the old ?open= link lands on the order page", async ({ page }) => {
     await open(page, "/orders");
     const denied = await page.getByText(/does not include this capability/i).count();
     test.skip(denied > 0, "this role cannot reach /orders");
     await settled(page, "Orders");
 
-    const row = page.locator("tbody tr").first();
-    test.skip((await row.count()) === 0, "no orders to open");
+    const link = page.locator('tbody a[href^="/orders/"]').first();
+    test.skip((await link.count()) === 0, "no orders to open");
+    const href = (await link.getAttribute("href")) ?? "";
+    const id = href.split("/").pop();
 
-    await row.click();
-    const drawer = page.getByRole("dialog");
-    await expect(drawer).toBeVisible({ timeout: 20_000 });
-
-    // Focus escaping a modal leaves keyboard users tabbing through a page
-    // they cannot see.
-    for (let i = 0; i < 15; i++) await page.keyboard.press("Tab");
-    const inside = await page.evaluate(() => {
-      const dialog = document.querySelector('[role="dialog"]');
-      return !!dialog && dialog.contains(document.activeElement);
-    });
-    expect(inside, "focus left the open drawer").toBe(true);
+    await page.goto(`/orders?open=${id}`);
+    await expect(page).toHaveURL(new RegExp(`/orders/${id}$`), { timeout: 20_000 });
   });
 });
 

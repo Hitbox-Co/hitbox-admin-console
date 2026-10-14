@@ -9,6 +9,10 @@ import {
 } from "@tanstack/react-query";
 import { ApiError, api, unwrap, type QueryValue } from "./client";
 import type {
+  AssignByScanInput,
+  AssignOrderUnitInput,
+  FulfilmentQueueParams,
+  OrderPackingState,
   ArtistGenre,
   ArtistImageKind,
   ArtistImageUploadUrl,
@@ -885,6 +889,9 @@ export function useUpdateOrderStatus(orderId: string) {
       qc.invalidateQueries({ queryKey: ["orders"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["activity"] });
+      // A cancel leaves the packing queue; the packing state follows the status.
+      qc.invalidateQueries({ queryKey: ["order-unit", orderId] });
+      qc.invalidateQueries({ queryKey: ["fulfilment-queue"] });
     },
   });
 }
@@ -2889,4 +2896,72 @@ export function useUploadArtistImage(kind: ArtistImageKind) {
 /** Clears the image on the profile; the stored file is kept for history. */
 export function useRemoveArtistImage(kind: ArtistImageKind) {
   return useArtistProfileWrite(() => api.delete<unknown>(`artist/me/${kind}`));
+}
+
+/* ------------------------------------------------------------------ */
+/* Packing — scan-to-assign (order-unit-assignment-api.md)             */
+/*                                                                      */
+/* Reads take order:read, scans take order:manage. Every scan answers   */
+/* with the order's packing state; the order itself (status, allowed    */
+/* transitions) and the unit lists move with it, so those are re-read.  */
+/* ------------------------------------------------------------------ */
+
+/** Live by design: re-read every 30 s and whenever the station regains focus. */
+export function useFulfilmentQueue(params: FulfilmentQueueParams, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["fulfilment-queue", params],
+    enabled,
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+    queryFn: () =>
+      api.get<Paginated<OrderPackingState>>("admin/orders/fulfilment-queue", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useOrderUnit(orderId: string | undefined, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    // Another packer may scan this order from another station.
+    refetchOnWindowFocus: true,
+    queryKey: ["order-unit", orderId],
+    enabled: !!orderId && enabled,
+    queryFn: () =>
+      api.get<unknown>(`admin/orders/${orderId}/unit`).then(unwrap<OrderPackingState>),
+  });
+}
+
+function afterScan(qc: ReturnType<typeof useQueryClient>, state: OrderPackingState) {
+  qc.setQueryData(["order-unit", state.orderId], state);
+  qc.invalidateQueries({ queryKey: ["admin-order", state.orderId] });
+  qc.invalidateQueries({ queryKey: ["admin-orders"] });
+  qc.invalidateQueries({ queryKey: ["orders"] });
+  qc.invalidateQueries({ queryKey: ["fulfilment-queue"] });
+  // The placeholder went back into stock and the scanned unit left it.
+  qc.invalidateQueries({ queryKey: ["product-skus", state.productId] });
+  qc.invalidateQueries({ queryKey: ["skus"] });
+}
+
+/** Scan a unit FOR this order. A double scan of the same unit is a 200 no-op. */
+export function useAssignOrderUnit(orderId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: AssignOrderUnitInput) =>
+      api
+        .post<unknown>(`admin/orders/${orderId}/unit`, body)
+        .then(unwrap<OrderPackingState>),
+    onSuccess: (state) => afterScan(qc, state),
+  });
+}
+
+/** Scan first: the server assigns it to the oldest order waiting for that variant. */
+export function useAssignByScan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: AssignByScanInput) =>
+      api.post<unknown>("admin/orders/assign-by-scan", body).then(unwrap<OrderPackingState>),
+    onSuccess: (state) => afterScan(qc, state),
+  });
 }

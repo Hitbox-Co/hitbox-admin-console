@@ -416,6 +416,11 @@ const ROUTE_ACCESS: Record<string, (p: Permissions) => boolean> = {
     p.canRead("reports-dashboards") && (p.canRead("order") || p.canRead("buyer-profile")),
   "/users": (p) => p.canRead("buyer-profile"),
   "/orders": (p) => p.reaches("order"),
+  // Packing (order-unit-assignment-api.md): the queue and an order's packing
+  // state take order:read at any scope — they are organization-scoped like
+  // the order list. Scanning and shipping (order:manage) are gated in-page.
+  "/packing": (p) => p.canRead("order"),
+  "/packing/scan": (p) => p.can("order", "manage"),
   "/finance": (p) => p.canReadFinanceModule(),
   "/finance/ledger": (p) => p.canReadFinanceModule() && p.financeScope() !== "own",
   "/finance/adjustments": (p) => p.canReadFinanceModule() && p.financeScope() !== "own",
@@ -536,6 +541,15 @@ export const NAV_ITEMS: NavItem[] = [
     icon: "ShoppingCart",
     group: "Commerce",
     visible: (p) => p.canOpen("/orders"),
+  },
+  {
+    // Scan-to-assign: the warehouse's view of orders — paid, waiting for a
+    // physical unit, oldest first.
+    href: "/packing",
+    label: "Packing",
+    icon: "PackageCheck",
+    group: "Commerce",
+    visible: (p) => p.canOpen("/packing"),
   },
   {
     href: "/finance",

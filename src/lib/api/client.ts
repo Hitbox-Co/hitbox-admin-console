@@ -209,6 +209,26 @@ export class ApiError extends Error {
       case "PRODUCTS_RELEASE_GATE_UNAVAILABLE":
         return "The approval check is not wired up on this deployment, so publishing is refused.";
 
+      /* Packing — scan-to-assign (order-unit-assignment-api.md §13). */
+      case "ORDERS_WRONG_ITEM":
+        return "Wrong item — that unit is a different drop or variant. Check the size and colour label.";
+      case "ORDERS_UNIT_UNAVAILABLE":
+        return this.status === 409
+          ? "That unit is already sold or held for another order. Pick another one."
+          : this.message || "That unit can't be packed — it's archived, inactive, claimed, blocked, or its tag isn't bound.";
+      case "ORDERS_NOT_ASSIGNABLE":
+        return "This order can't take a unit — it must be Paid or Processing and hold stock.";
+      case "ORDERS_UNIT_NOT_ASSIGNED":
+        return "Scan the physical unit for this order before marking it shipped.";
+      case "ORDERS_UNIT_NOT_FOUND":
+        return "Nothing matches that scan. Check the tag or code and try again.";
+      case "ORDERS_NO_WAITING_ORDER":
+        return "No order is waiting for that item — put it back on the shelf.";
+      case "ORDERS_UNIT_ALREADY_ASSIGNED":
+        return "This order already has a different unit. Use Replace item to swap it.";
+      case "ORDERS_ASSIGN_CONFLICT":
+        return "Another packer changed this order or unit at the same moment. Scan again.";
+
       /* Artist self-service profile (artist-profile-api.md §9). */
       case "ARTIST_GENRE_INVALID":
         return "That genre isn't on the list. Pick one from the dropdown.";

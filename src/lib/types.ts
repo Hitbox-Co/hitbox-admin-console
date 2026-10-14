@@ -882,6 +882,12 @@ export interface AdminOrderRow {
   amount?: string;
   unitPrice?: string;
   currency?: string;
+  /**
+   * When a packer scanned the physical unit (order-unit-assignment-api.md).
+   * Until it is set, `skuId` is only the checkout PLACEHOLDER, and SHIPPED is
+   * refused (400 ORDERS_UNIT_NOT_ASSIGNED).
+   */
+  unitAssignedAt?: string | null;
 }
 
 /**
@@ -3030,4 +3036,63 @@ export interface ArtistImageUploadUrl {
   /** Seconds — 300. */
   expiresIn: number;
   publicUrl: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* Order unit assignment — scan-to-assign at packing                   */
+/* (order-unit-assignment-api.md)                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * PROVISIONAL — paid, nothing scanned; `unit` is only the placeholder.
+ * ASSIGNED    — a packer scanned it; `unit` is the one in the parcel.
+ * NONE        — holds no stock (unpaid / cancelled): nothing to pack.
+ */
+export type OrderUnitState = "PROVISIONAL" | "ASSIGNED" | "NONE";
+
+export interface OrderPackingState {
+  orderId: string;
+  publicCode: string;
+  status: OrderStatus;
+  productId: string;
+  productCode: string;
+  productName: string;
+  variantId: string | null;
+  /** WHAT TO PICK — "S / Red". Null on a drop with no variants. */
+  variantLabel: string | null;
+  variantCode: string | null;
+  unitState: OrderUnitState;
+  unit: {
+    skuId: string;
+    skuCode: string;
+    serialNumber: number;
+    tagId: string | null;
+    variantId: string | null;
+  } | null;
+  unitAssignedAt: string | null;
+  unitAssignedById: string | null;
+  /** Assigned and PROCESSING. */
+  readyToShip: boolean;
+  placedAt: string;
+}
+
+/** Exactly ONE of tagId / skuCode / serialNumber. */
+export type UnitScan =
+  | { tagId: string; skuCode?: never; serialNumber?: never }
+  | { skuCode: string; tagId?: never; serialNumber?: never }
+  | { serialNumber: number; tagId?: never; skuCode?: never };
+
+export type AssignOrderUnitInput = UnitScan & {
+  /** Swap a unit that is already assigned. */
+  replace?: boolean;
+};
+
+/** Scan-first: serialNumber is ambiguous without an order, so it is refused. */
+export type AssignByScanInput = { tagId: string } | { skuCode: string };
+
+export interface FulfilmentQueueParams {
+  productId?: string;
+  variantId?: string;
+  page?: number;
+  limit?: number;
 }
