@@ -28,6 +28,7 @@ export function DataTable<T>({
   emptyState,
   className,
   dimmed,
+  rowClassName,
 }: {
   columns: Column<T>[];
   rows: T[];
@@ -43,6 +44,8 @@ export function DataTable<T>({
   className?: string;
   /** True while a background refetch is in flight — keeps the old rows readable. */
   dimmed?: boolean;
+  /** Extra classes for a row — e.g. to highlight one that needs attention. */
+  rowClassName?: (row: T) => string | undefined;
 }) {
   if (rows.length === 0 && emptyState) return <>{emptyState}</>;
 
@@ -80,7 +83,8 @@ export function DataTable<T>({
               onFocusCapture={onRowIntent ? () => onRowIntent(row) : undefined}
               className={cn(
                 "transition-colors duration-150",
-                onRowClick && "cursor-pointer hover:bg-[var(--surface-2)]"
+                onRowClick && "cursor-pointer hover:bg-[var(--surface-2)]",
+                rowClassName?.(row)
               )}
             >
               {columns.map((col) => (

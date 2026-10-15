@@ -3,6 +3,7 @@
 import * as React from "react";
 import {
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
   type UseQueryOptions,
@@ -52,6 +53,7 @@ import type {
   Payout,
   ProcessRefundInput,
   Refund,
+  RequestRefundInput,
   ResolveDisputeInput,
   ReverseEntryInput,
   ReviewPaymentInput,
@@ -2286,6 +2288,42 @@ export function useRefunds(params: RefundFilters) {
   return query;
 }
 
+/**
+ * Every OPEN refund — requested, awaiting return, approved — in one list,
+ * for the Returns board and for highlighting orders that have one. The API
+ * filters by one status at a time, so the three are read together. Lives
+ * under the "refunds" key, so every refund write refreshes it.
+ */
+export function useOpenRefunds(enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["refunds", "open"],
+    enabled,
+    staleTime: 15_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    queryFn: async () => {
+      const pages = await Promise.all(
+        (["REQUESTED", "AWAITING_RETURN", "APPROVED"] as const).map((status) =>
+          api.get<Paginated<Refund>>("admin/payments/refunds", { status, page: 1, limit: 100 })
+        )
+      );
+      return {
+        items: pages.flatMap((p) => p.items),
+        /** True when a status has more than the 100 read here. */
+        truncated: pages.some((p) => p.total > p.items.length),
+      };
+    },
+  });
+}
+
+/** Several orders' details at once (cached per order), e.g. for refund cards. */
+export function useOrdersByIds(orderIds: string[], enabled = true) {
+  return useQueries({
+    queries: orderIds.map((id) => ({ ...orderDetailOptions(id), enabled })),
+  });
+}
+
 export const refundOptions = (refundId: string) => ({
   ...baseOptions,
   queryKey: ["refund", refundId] as const,
@@ -2334,6 +2372,25 @@ function useRefundAction<TVars>(
       qc.invalidateQueries({ queryKey: ["admin-orders"] });
       qc.invalidateQueries({ queryKey: ["admin-order"] });
       qc.invalidateQueries({ queryKey: ["orders"] });
+    },
+  });
+}
+
+/**
+ * POST /refunds — start one. Anyone raising it FOR a buyer needs
+ * order:refund:global; the order's `money.canRequestRefund` applies the same
+ * rules, so a button shown as enabled is not refused for them.
+ */
+export function useRequestRefund() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: RequestRefundInput) =>
+      api.post<unknown>("refunds", payload).then(unwrap<Refund>),
+    onSuccess: (refund) => {
+      qc.setQueryData(["refund", refund.id], refund);
+      invalidateMoney(qc);
+      qc.invalidateQueries({ queryKey: ["admin-order", refund.orderId] });
+      qc.invalidateQueries({ queryKey: ["admin-orders"] });
     },
   });
 }

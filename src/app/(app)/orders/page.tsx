@@ -3,8 +3,9 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Lock, ShoppingCart } from "lucide-react";
-import { useAdminOrders, usePrefetchOrder } from "@/lib/api/hooks";
+import { ArrowRight, Lock, ShoppingCart, Undo2 } from "lucide-react";
+import { useAdminOrders, useOpenRefunds, usePrefetchOrder } from "@/lib/api/hooks";
+import { STAGE_COPY, refundStage } from "@/lib/refunds";
 import { formatCurrency, formatDateTime, humanize } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
 import { usePermissions } from "@/components/layout/authz-provider";
@@ -13,7 +14,7 @@ import { Badge, Button, Mono, Panel, toneForStatus } from "@/components/ui/primi
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterRow, FilterSelect, SearchInput, useListState } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
-import type { AdminOrderRow } from "@/lib/types";
+import type { AdminOrderRow, Refund } from "@/lib/types";
 
 const STATUSES = [
   "PENDING_PAYMENT",
@@ -62,6 +63,17 @@ function OrdersView() {
 
   const query = useAdminOrders(list.params);
 
+  // Orders with an open refund are highlighted — read once from the refund
+  // queue (payment-royalty:read) rather than discovered by opening each one.
+  const canSeeRefunds = perms.canOpen("/returns");
+  const openRefunds = useOpenRefunds(canSeeRefunds);
+  const refundByOrder = React.useMemo(() => {
+    const m = new Map<string, Refund>();
+    for (const r of openRefunds.data?.items ?? []) m.set(r.orderId, r);
+    return m;
+  }, [openRefunds.data]);
+  const openCount = openRefunds.data?.items.length ?? 0;
+
   usePageChrome({
     title: "Orders",
     description: "Every order your scope covers. Open one to see its units and move it on.",
@@ -89,6 +101,12 @@ function OrdersView() {
             <Badge tone={toneForStatus(r.status)} dot>
               {humanize(r.status)}
             </Badge>
+            {refundByOrder.has(r.id) ? (
+              <Badge tone={STAGE_COPY[refundStage(refundByOrder.get(r.id)!)].tone} className="px-1.5 py-0 text-[10.5px]">
+                <Undo2 className="h-3 w-3" aria-hidden />
+                {STAGE_COPY[refundStage(refundByOrder.get(r.id)!)].short}
+              </Badge>
+            ) : null}
             {/* Paid but no unit scanned yet: it can't ship until it's packed. */}
             {(r.status === "PAID" || r.status === "PROCESSING") && r.unitAssignedAt === null ? (
               <Badge tone="warning" className="px-1 py-0 text-[10px]">
@@ -168,10 +186,27 @@ function OrdersView() {
     );
 
     return cols;
-  }, [canMoney, canBuyer, canManage]);
+  }, [canMoney, canBuyer, canManage, refundByOrder]);
 
   return (
     <>
+      {openCount > 0 ? (
+        <Link
+          href="/returns"
+          className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--warning)] bg-[var(--warning-dim)] px-4 py-3 transition-colors hover:brightness-110"
+        >
+          <Undo2 className="h-4 w-4 text-[var(--warning)]" aria-hidden />
+          <span className="text-[13px] text-[var(--text-1)]">
+            <strong className="font-semibold">
+              {openCount} order{openCount === 1 ? " has" : "s have"} an open refund
+            </strong>
+            <span className="text-[var(--text-2)]"> — highlighted below.</span>
+          </span>
+          <span className="ml-auto inline-flex items-center gap-1 text-[12.5px] font-medium text-[var(--text-1)]">
+            Open returns <ArrowRight className="h-3.5 w-3.5" />
+          </span>
+        </Link>
+      ) : null}
       <Panel className="overflow-hidden">
         <FilterRow onReset={list.reset} active={list.active}>
           <FilterSelect
@@ -222,6 +257,11 @@ function OrdersView() {
               rows={query.data?.items ?? []}
               getRowKey={(r) => r.id}
               onRowClick={(r) => router.push(`/orders/${r.id}`)}
+              rowClassName={(r) =>
+                refundByOrder.has(r.id)
+                  ? "bg-[var(--warning-dim)] shadow-[inset_3px_0_0_var(--warning)] hover:bg-[var(--warning-dim)]"
+                  : undefined
+              }
               onRowIntent={(r) => prefetchOrder(r.id)}
               dimmed={query.isFetching}
               emptyState={

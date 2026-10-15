@@ -933,6 +933,64 @@ export interface OrderPayment {
   amount: string;
   currency: string;
   createdAt: string;
+  /** The Stripe charge (`pi_…`) — link to the Stripe dashboard with it. */
+  gatewayRef?: string | null;
+  needsReview?: boolean;
+  reviewedAt?: string | null;
+  reviewNote?: string | null;
+  /** Why a FAILED attempt failed. */
+  failureReason?: string | null;
+  updatedAt?: string;
+}
+
+/** A refund as embedded on the order detail (order-payments-and-refunds-api.md §2). */
+export interface OrderRefund {
+  id: string;
+  status: string;
+  reasonCode: string;
+  reason: string;
+  amount: string;
+  currency: string;
+  physicalReturnRequired: boolean;
+  physicalReturnConfirmedAt: string | null;
+  nfcTagCondition: string | null;
+  approvedAt: string | null;
+  rejectionReason: string | null;
+  /** The Stripe refund (`re_…`). */
+  gatewayRefundId: string | null;
+  processedAt: string | null;
+  claimRevokedAt: string | null;
+  createdAt: string;
+  updatedAt?: string;
+  /** Legacy shape — older payloads carried only these. */
+  gateway?: string | null;
+}
+
+export type RefundBlockedReason =
+  | "NO_PERMISSION"
+  | "ORDER_NOT_REFUNDABLE"
+  | "REFUND_IN_PROGRESS"
+  | "FULLY_REFUNDED";
+
+/**
+ * The order's money, worked out server-side (§3) — use it for the headline
+ * numbers and the Refund button, never re-derive it. Strings with two
+ * decimals, in `currency`.
+ */
+export interface OrderMoneySummary {
+  currency: string;
+  charged: string;
+  /** SUCCEEDED payments only. */
+  paid: string;
+  /** PROCESSED refunds only — money actually given back. */
+  refunded: string;
+  /** The open refund's amount, else "0.00". */
+  refundInProgress: string;
+  /** charged − refunded: the most a new refund may ask for. */
+  refundable: string;
+  canRequestRefund: boolean;
+  refundBlockedReason: RefundBlockedReason | string | null;
+  openRefundId: string | null;
 }
 
 export interface AdminOrderDetail extends AdminOrderRow {
@@ -951,7 +1009,12 @@ export interface AdminOrderDetail extends AdminOrderRow {
   allowedTransitions: SettableOrderStatus[];
   /** Both only with payment-royalty:read. */
   payments?: OrderPayment[];
-  refunds?: OrderPayment[];
+  refunds?: OrderRefund[];
+  /** Only with payment-royalty:read. */
+  money?: OrderMoneySummary;
+  /** When payment settled; null until PAID. */
+  paidAt?: string | null;
+  unitAssignedById?: string | null;
 }
 
 export interface OrderStatusInput {
@@ -2284,11 +2347,32 @@ export interface Refund {
   claimRevokedAt: string | null;
   resaleBlockedUntil: string | null;
   createdAt: string;
-  /**
-   * The server's own state machine, precomputed. Drive the buttons from this
-   * and the UI can never offer a transition the API will refuse.
-   */
+  /** Raw next statuses. Prefer `allowedActions` for buttons. */
   allowedTransitions: (RefundStatus | string)[];
+  /**
+   * Exactly which buttons to show, computed for THIS caller — it knows the
+   * return rule and the caller's permission. `[]` for terminal refunds and
+   * for callers without order:refund:global. Absent on older backends.
+   */
+  allowedActions?: RefundActionCode[];
+  updatedAt?: string;
+}
+
+export type RefundActionCode =
+  | "CONFIRM_RETURN"
+  | "APPROVE"
+  | "APPROVE_WITH_OVERRIDE"
+  | "PROCESS"
+  | "REJECT";
+
+/** POST /refunds — omit `amount` for a full refund. */
+export interface RequestRefundInput {
+  orderId: string;
+  reasonCode: RefundReasonCode;
+  reason: string;
+  amount?: string;
+  /** Default true. False where there is nothing to send back. */
+  physicalReturnRequired?: boolean;
 }
 
 export interface ConfirmReturnInput {

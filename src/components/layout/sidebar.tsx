@@ -26,6 +26,7 @@ import {
   Gauge,
   PackageCheck,
   Truck,
+  Undo2,
   UserCog,
   Users,
   type LucideIcon,
@@ -35,6 +36,7 @@ import { NAV_GROUP_ORDER, visibleNav, type NavItem } from "@/lib/authz";
 import { Skeleton } from "@/components/ui/primitives";
 import { Wordmark } from "@/components/brand";
 import { useAuthz } from "./authz-provider";
+import { useOpenRefunds } from "@/lib/api/hooks";
 
 const ICONS: Record<string, LucideIcon> = {
   LayoutDashboard,
@@ -61,6 +63,7 @@ const ICONS: Record<string, LucideIcon> = {
   UserCog,
   Rocket,
   Shapes,
+  Undo2,
 };
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
@@ -148,6 +151,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                           )}
                         />
                         <span className="truncate">{item.label}</span>
+                        {item.href === "/returns" ? <OpenRefundsCount /> : null}
                       </Link>
                     </li>
                   );
@@ -165,5 +169,24 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </p>
       </div>
     </nav>
+  );
+}
+
+/**
+ * How many refunds are waiting on someone — so an initiated refund is seen
+ * without anyone going looking for it. Rendered only on the Returns entry,
+ * which is itself only shown to callers who can read refunds.
+ */
+function OpenRefundsCount() {
+  const q = useOpenRefunds();
+  const n = q.data?.items.length ?? 0;
+  if (!n) return null;
+  return (
+    <span
+      className="ml-auto rounded-full bg-[var(--warning)] px-1.5 text-[10.5px] font-semibold leading-[18px] text-black"
+      aria-label={`${n} open refund${n === 1 ? "" : "s"}`}
+    >
+      {q.data?.truncated ? "99+" : n}
+    </span>
   );
 }

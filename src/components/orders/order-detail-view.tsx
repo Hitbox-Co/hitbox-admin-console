@@ -10,7 +10,6 @@ import {
   Check,
   CheckCircle2,
   Copy,
-  CreditCard,
   Mail,
   MapPin,
   Package,
@@ -40,10 +39,11 @@ import {
 } from "@/components/ui/primitives";
 import { ErrorState } from "@/components/ui/states";
 import { PackingPanel } from "./packing-panel";
+import { OrderMoneyPanel } from "./order-money-panel";
+import { RefundBanner } from "./refund-banner";
 import type {
   AdminOrderDetail,
   OrderAddress,
-  OrderPayment,
   OrderSkuUnit,
   SettableOrderStatus,
 } from "@/lib/types";
@@ -112,6 +112,7 @@ export function OrderDetailView({ orderId }: { orderId: string }) {
   return (
     <div className="space-y-4">
       <BackLink />
+      <RefundBanner order={order} />
       <Header order={order} />
       <Progress order={order} />
 
@@ -120,7 +121,7 @@ export function OrderDetailView({ orderId }: { orderId: string }) {
           <PackingPanel order={order} />
           <ItemsPanel order={order} />
           {order.addresses.length ? <AddressesPanel addresses={order.addresses} /> : null}
-          {order.payments || order.refunds ? <MoneyPanel order={order} /> : null}
+          <OrderMoneyPanel order={order} />
         </div>
 
         <aside className="min-w-0 space-y-4 xl:sticky xl:top-4 xl:self-start">
@@ -639,66 +640,6 @@ function AddressesPanel({ addresses }: { addresses: OrderAddress[] }) {
           </div>
         ))}
       </div>
-    </Panel>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Payments & refunds — payment-royalty:read only                      */
-/* ------------------------------------------------------------------ */
-
-function MoneyPanel({ order }: { order: AdminOrderDetail }) {
-  const rows: (OrderPayment & { kind: "Payment" | "Refund" })[] = [
-    ...(order.payments ?? []).map((p) => ({ ...p, kind: "Payment" as const })),
-    ...(order.refunds ?? []).map((p) => ({ ...p, kind: "Refund" as const })),
-  ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-
-  return (
-    <Panel className="overflow-hidden">
-      <PanelHeader
-        title="Payments & refunds"
-        description={order.gateway ? `Charged through ${humanize(order.gateway)}.` : undefined}
-      />
-      {rows.length === 0 ? (
-        <p className="px-4 py-4 text-[12px] text-[var(--text-3)]">No payment attempts recorded yet.</p>
-      ) : (
-        <ul className="divide-y divide-[var(--hairline)]">
-          {rows.map((p) => (
-            <li key={`${p.kind}-${p.id}`} className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5">
-              <div className="flex min-w-0 items-center gap-2.5">
-                <span
-                  className={cn(
-                    "flex h-7 w-7 shrink-0 items-center justify-center rounded-full",
-                    p.kind === "Refund" ? "bg-[var(--info-dim)] text-[var(--info)]" : "bg-[var(--surface-3)] text-[var(--text-2)]"
-                  )}
-                >
-                  {p.kind === "Refund" ? <Undo2 className="h-3.5 w-3.5" /> : <CreditCard className="h-3.5 w-3.5" />}
-                </span>
-                <div className="min-w-0">
-                  <p className="flex items-center gap-2 text-[12.5px] text-[var(--text-1)]">
-                    {p.kind}
-                    <Badge tone={toneForStatus(p.status)} dot>
-                      {humanize(p.status)}
-                    </Badge>
-                  </p>
-                  <p className="text-[11px] text-[var(--text-3)]">
-                    {p.gateway ? humanize(p.gateway) : "—"} · {formatDateTime(p.createdAt)}
-                  </p>
-                </div>
-              </div>
-              <span
-                className={cn(
-                  "tnum text-[13px] font-medium",
-                  p.kind === "Refund" ? "text-[var(--info)]" : "text-[var(--text-1)]"
-                )}
-              >
-                {p.kind === "Refund" ? "−" : ""}
-                {formatCurrency(p.amount, p.currency)}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
     </Panel>
   );
 }

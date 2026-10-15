@@ -425,6 +425,8 @@ const ROUTE_ACCESS: Record<string, (p: Permissions) => boolean> = {
   "/finance/ledger": (p) => p.canReadFinanceModule() && p.financeScope() !== "own",
   "/finance/adjustments": (p) => p.canReadFinanceModule() && p.financeScope() !== "own",
   "/payments": (p) => p.reaches("payment-royalty"),
+  // The returns board reads /admin/payments/refunds, like the Refunds tab.
+  "/returns": (p) => p.reaches("payment-royalty"),
   "/payments/gateways": (p) => p.canConfigureGateways(),
   "/payments/webhooks": (p) => p.canManageFinance(),
   // dashboard/resale — order:read at any scope.
@@ -550,6 +552,14 @@ export const NAV_ITEMS: NavItem[] = [
     icon: "PackageCheck",
     group: "Commerce",
     visible: (p) => p.canOpen("/packing"),
+  },
+  {
+    // Open refunds by what they're waiting on — the counterpart of Packing.
+    href: "/returns",
+    label: "Returns & refunds",
+    icon: "Undo2",
+    group: "Commerce",
+    visible: (p) => p.canOpen("/returns"),
   },
   {
     href: "/finance",

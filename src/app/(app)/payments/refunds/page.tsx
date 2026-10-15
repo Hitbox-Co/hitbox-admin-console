@@ -1,19 +1,36 @@
 "use client";
 
 import * as React from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { RotateCcw } from "lucide-react";
 import { usePrefetchRefund, useRefunds } from "@/lib/api/hooks";
 import { formatCurrency, formatDateTime, humanize, shortId } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
-import { Badge, Mono, Panel, toneForStatus } from "@/components/ui/primitives";
+import { Badge, Mono, Panel, Segmented, toneForStatus } from "@/components/ui/primitives";
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterRow, FilterSelect, SearchInput, useListState } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { RefundCapabilityNotice, ScopeNotice } from "@/components/finance/scope-notice";
-import { RefundDrawer } from "@/components/payments/refund-drawer";
-import type { Refund } from "@/lib/types";
+import type { Refund, RefundActionCode } from "@/lib/types";
 
-const STATUSES = ["REQUESTED", "AWAITING_RETURN", "APPROVED", "PROCESSED", "REJECTED"];
+/** The workflow as tabs (order-payments-and-refunds-api.md §6.2). */
+const TABS = [
+  { value: "ALL", label: "All" },
+  { value: "REQUESTED", label: "Requested" },
+  { value: "AWAITING_RETURN", label: "Awaiting return" },
+  { value: "APPROVED", label: "Approved · ready to pay" },
+  { value: "PROCESSED", label: "Processed" },
+  { value: "REJECTED", label: "Rejected" },
+];
+
+/** What the caller can do next, in a word — from the server's allowedActions. */
+const NEXT_LABEL: Record<RefundActionCode, string> = {
+  CONFIRM_RETURN: "Confirm return",
+  APPROVE: "Approve",
+  APPROVE_WITH_OVERRIDE: "Approve (override)",
+  PROCESS: "Pay back",
+  REJECT: "Reject",
+};
 
 const REASON_CODES = [
   "DEFECTIVE_ITEM",
@@ -36,17 +53,36 @@ const REASON_CODES = [
  * leverage once the money is gone.
  */
 export default function RefundsPage() {
+  return (
+    // Reads ?open= to forward old drawer links to the refund page.
+    <React.Suspense fallback={<TableSkeleton rows={10} cols={7} />}>
+      <RefundsView />
+    </React.Suspense>
+  );
+}
+
+function RefundsView() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const legacyOpen = searchParams.get("open");
+  React.useEffect(() => {
+    if (legacyOpen) router.replace(`/payments/refunds/${legacyOpen}`);
+  }, [legacyOpen, router]);
+
   const list = useListState<{
     status?: string;
     reasonCode?: string;
     orderId?: string;
+    from?: string;
+    to?: string;
   }>({
     status: undefined,
     reasonCode: undefined,
     orderId: undefined,
+    from: undefined,
+    to: undefined,
   });
 
-  const [openId, setOpenId] = React.useState<string | null>(null);
   const prefetch = usePrefetchRefund();
   const query = useRefunds(list.params);
 
@@ -115,6 +151,20 @@ export default function RefundsPage() {
           ),
       },
       {
+        key: "next",
+        header: "Next step",
+        cell: (r) => {
+          const next = (r.allowedActions ?? []).filter((a) => a !== "REJECT" && a !== "APPROVE_WITH_OVERRIDE");
+          return next.length ? (
+            <Badge tone="accent" className="text-[11px]">
+              {next.map((a) => NEXT_LABEL[a]).join(" · ")}
+            </Badge>
+          ) : (
+            <span className="text-[11px] text-[var(--text-3)]">—</span>
+          );
+        },
+      },
+      {
         key: "order",
         header: "Order",
         cell: (r) => (
@@ -150,14 +200,15 @@ export default function RefundsPage() {
         <ScopeNotice caveat="own-purchases" />
 
         <Panel className="overflow-hidden">
-          <FilterRow onReset={list.reset} active={list.active}>
-            <FilterSelect
-              label="Status"
-              value={list.filters.status}
-              onChange={(v) => list.setFilter("status", v)}
-              options={STATUSES}
-              allLabel="All statuses"
+          <div className="overflow-x-auto border-b border-[var(--hairline)] px-3 py-2">
+            <Segmented
+              size="sm"
+              value={list.filters.status ?? "ALL"}
+              onChange={(v) => list.setFilter("status", v === "ALL" ? undefined : v)}
+              options={TABS}
             />
+          </div>
+          <FilterRow onReset={list.reset} active={list.active}>
             <FilterSelect
               label="Reason"
               value={list.filters.reasonCode}
@@ -171,6 +222,29 @@ export default function RefundsPage() {
               placeholder="Order id"
               className="w-[190px]"
             />
+            <label className="flex items-center gap-1.5 text-[11.5px] text-[var(--text-3)]">
+              From
+              <input
+                type="date"
+                value={list.filters.from?.slice(0, 10) ?? ""}
+                onChange={(e) =>
+                  list.setFilter("from", e.target.value || undefined)
+                }
+                className="h-7 rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-1.5 text-[12px] text-[var(--text-1)]"
+              />
+            </label>
+            <label className="flex items-center gap-1.5 text-[11.5px] text-[var(--text-3)]">
+              To
+              <input
+                type="date"
+                value={list.filters.to?.slice(0, 10) ?? ""}
+                onChange={(e) =>
+                  // Inclusive of the chosen day.
+                  list.setFilter("to", e.target.value ? `${e.target.value}T23:59:59.999Z` : undefined)
+                }
+                className="h-7 rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-1.5 text-[12px] text-[var(--text-1)]"
+              />
+            </label>
           </FilterRow>
 
           {query.isLoading ? (
@@ -183,7 +257,7 @@ export default function RefundsPage() {
                 columns={columns}
                 rows={query.data?.items ?? []}
                 getRowKey={(r) => r.id}
-                onRowClick={(r) => setOpenId(r.id)}
+                onRowClick={(r) => router.push(`/payments/refunds/${r.id}`)}
                 onRowIntent={(r) => prefetch(r.id)}
                 dimmed={query.isFetching}
                 emptyState={
@@ -206,9 +280,6 @@ export default function RefundsPage() {
         </Panel>
       </div>
 
-      {openId ? (
-        <RefundDrawer refundId={openId} onClose={() => setOpenId(null)} />
-      ) : null}
     </>
   );
 }
