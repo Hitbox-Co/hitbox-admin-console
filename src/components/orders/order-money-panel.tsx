@@ -12,6 +12,7 @@ import { formatCurrency, formatDateTime, humanize } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { usePermissions } from "@/components/layout/authz-provider";
 import { Badge, Button, Field, Input, Panel, PanelHeader, Textarea, Tooltip, toneForStatus } from "@/components/ui/primitives";
+import { GatewayStatusChip } from "@/components/payments/gateway-status-chip";
 import type { AdminOrderDetail, OrderMoneySummary, RefundReasonCode } from "@/lib/types";
 
 /**
@@ -114,6 +115,15 @@ export function OrderMoneyPanel({ order }: { order: AdminOrderDetail }) {
               </Tooltip>
             ))}
           </dl>
+          {Number(money.refundFailed ?? 0) > 0 ? (
+            <p role="alert" className="flex flex-wrap items-center gap-2 border-b border-[var(--danger)] bg-[var(--danger-dim)] px-4 py-2.5 text-[12.5px] text-[var(--text-1)]">
+              <AlertTriangle className="h-4 w-4 text-[var(--danger)]" aria-hidden />
+              <strong className="font-semibold text-[var(--danger)]">
+                A refund of {fmt(money.refundFailed ?? "0")} failed at Stripe — the buyer has not been paid back.
+              </strong>
+              <span className="text-[var(--text-2)]">Contact the buyer and pay them another way.</span>
+            </p>
+          ) : null}
           {Number(money.refundInProgress) > 0 ? (
             <p className="flex flex-wrap items-center gap-2 border-b border-[var(--hairline)] bg-[var(--warning-dim)] px-4 py-2 text-[12px] text-[var(--text-2)]">
               <AlertTriangle className="h-3.5 w-3.5 text-[var(--warning)]" aria-hidden />
@@ -191,6 +201,11 @@ export function OrderMoneyPanel({ order }: { order: AdminOrderDetail }) {
                         {humanize(r.status)}
                       </Badge>
                       <span>{humanize(r.reasonCode ?? "")}</span>
+                      <GatewayStatusChip
+                        status={r.gatewayStatus}
+                        reason={r.gatewayFailureReason}
+                        processed={r.status === "PROCESSED"}
+                      />
                     </p>
                     <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-[var(--text-3)]">
                       Requested {formatDateTime(r.createdAt)}
@@ -324,7 +339,24 @@ export function StripeRef({ value }: { value: string }) {
 /* Request a refund — POST /refunds                                    */
 /* ------------------------------------------------------------------ */
 
-export function RequestRefundDialog({ order, onClose }: { order: AdminOrderDetail; onClose: () => void }) {
+export interface RefundPreset {
+  title?: string;
+  description?: string;
+  reasonCode?: RefundReasonCode;
+  reason?: string;
+  physicalReturnRequired?: boolean;
+}
+
+export function RequestRefundDialog({
+  order,
+  onClose,
+  preset,
+}: {
+  order: AdminOrderDetail;
+  onClose: () => void;
+  /** e.g. Cancel & refund: no return, "Cancelled before packing". */
+  preset?: RefundPreset;
+}) {
   const router = useRouter();
   const perms = usePermissions();
   const request = useRequestRefund();
@@ -332,12 +364,12 @@ export function RequestRefundDialog({ order, onClose }: { order: AdminOrderDetai
   const currency = money?.currency ?? order.currency ?? "";
   const max = money ? Number(money.refundable) : null;
 
-  const [reasonCode, setReasonCode] = React.useState<RefundReasonCode>("DEFECTIVE_ITEM");
-  const [reason, setReason] = React.useState("");
+  const [reasonCode, setReasonCode] = React.useState<RefundReasonCode>(preset?.reasonCode ?? "DEFECTIVE_ITEM");
+  const [reason, setReason] = React.useState(preset?.reason ?? "");
   const [partial, setPartial] = React.useState(false);
   const [amount, setAmount] = React.useState("");
-  const [returnRequired, setReturnRequired] = React.useState(true);
-  const [touchedReturn, setTouchedReturn] = React.useState(false);
+  const [returnRequired, setReturnRequired] = React.useState(preset?.physicalReturnRequired ?? true);
+  const [touchedReturn, setTouchedReturn] = React.useState(preset?.physicalReturnRequired !== undefined);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
 
   const pickReason = (code: RefundReasonCode) => {
@@ -400,7 +432,9 @@ export function RequestRefundDialog({ order, onClose }: { order: AdminOrderDetai
         <Dialog.Content className="rx-content rx-anchored fixed left-1/2 top-1/2 z-[60] w-[min(520px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 rounded-[12px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] shadow-[var(--shadow-3)]">
           <div className="flex items-start justify-between gap-3 border-b border-[var(--hairline)] px-4 py-3.5">
             <div>
-              <Dialog.Title className="text-[14px] font-semibold text-[var(--text-1)]">Refund this order</Dialog.Title>
+              <Dialog.Title className="text-[14px] font-semibold text-[var(--text-1)]">
+                {preset?.title ?? "Refund this order"}
+              </Dialog.Title>
               <Dialog.Description className="mt-0.5 text-[12px] text-[var(--text-3)]">
                 {order.productName}
                 {money ? ` · up to ${formatCurrency(money.refundable, currency)} refundable` : ""}
@@ -414,6 +448,11 @@ export function RequestRefundDialog({ order, onClose }: { order: AdminOrderDetai
           </div>
 
           <form onSubmit={submit} className="space-y-4 px-4 py-4">
+            {preset?.description ? (
+              <p className="rounded-[8px] bg-[var(--surface-2)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-2)]">
+                {preset.description}
+              </p>
+            ) : null}
             <Field label="Reason" htmlFor="rf-code" required>
               <select
                 id="rf-code"
@@ -460,6 +499,12 @@ export function RequestRefundDialog({ order, onClose }: { order: AdminOrderDetai
                   </button>
                 ))}
               </div>
+              {partial ? (
+                <p className="text-[11.5px] leading-relaxed text-[var(--warning)]">
+                  An order gets one refund: processing marks it Refunded even when the amount is
+                  partial. Make it the right amount.
+                </p>
+              ) : null}
               {partial ? (
                 <Field
                   label={`Amount${currency ? ` (${currency})` : ""}`}

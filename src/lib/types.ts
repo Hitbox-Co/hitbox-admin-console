@@ -964,7 +964,12 @@ export interface OrderRefund {
   updatedAt?: string;
   /** Legacy shape — older payloads carried only these. */
   gateway?: string | null;
+  gatewayStatus?: RefundGatewayStatus | null;
+  gatewayFailureReason?: string | null;
 }
+
+/** Stripe's view of the money, separate from the workflow `status`. */
+export type RefundGatewayStatus = "PENDING" | "SUCCEEDED" | "FAILED" | "CANCELED";
 
 export type RefundBlockedReason =
   | "NO_PERMISSION"
@@ -986,6 +991,11 @@ export interface OrderMoneySummary {
   refunded: string;
   /** The open refund's amount, else "0.00". */
   refundInProgress: string;
+  /**
+   * PROCESSED refunds Stripe then failed or cancelled. Non-zero = the order
+   * says refunded but the buyer has no money.
+   */
+  refundFailed?: string;
   /** charged − refunded: the most a new refund may ask for. */
   refundable: string;
   canRequestRefund: boolean;
@@ -1015,7 +1025,73 @@ export interface AdminOrderDetail extends AdminOrderRow {
   /** When payment settled; null until PAID. */
   paidAt?: string | null;
   unitAssignedById?: string | null;
+  /** Every status the order went through, oldest first (order-history-and-shipments.md §6). */
+  history?: OrderHistoryEntry[];
+  /** The live shipment, or null. */
+  shipment?: OrderShipment | null;
+  /** Every shipment, newest first, VOIDED corrections included. */
+  shipments?: OrderShipment[];
+  /** PROCESSING + unit scanned + no shipment yet → "Ship (add tracking)". */
+  canRecordShipment?: boolean;
+  /** SHIPPED with a shipment → "Correct tracking". */
+  canCorrectShipment?: boolean;
 }
+
+export type OrderHistorySource =
+  | "CHECKOUT"
+  | "PAYMENT"
+  | "PACKING"
+  | "SHIPMENT"
+  | "ADMIN"
+  | "NFC_CLAIM"
+  | "REFUND"
+  | "CHECKOUT_SWEEP"
+  | "BACKFILL";
+
+export interface OrderHistoryEntry {
+  id: string;
+  fromStatus: string | null;
+  toStatus: string;
+  source: OrderHistorySource | string;
+  actorId: string | null;
+  reason: string | null;
+  metadata: Record<string, unknown> | null;
+  occurredAt: string;
+}
+
+export interface OrderShipment {
+  id: string;
+  carrierName: string;
+  trackingNumber: string;
+  trackingUrl: string | null;
+  /** Internal — never shown to the buyer. */
+  note: string | null;
+  status: "ACTIVE" | "VOIDED" | string;
+  createdById: string | null;
+  createdAt: string;
+  deliveredAt: string | null;
+  /** "ADMIN" (staff confirmed) or "NFC_CLAIM" (buyer tapped the tag). */
+  deliveredVia: "ADMIN" | "NFC_CLAIM" | string | null;
+  voidedAt: string | null;
+  voidedById: string | null;
+  voidReason: string | null;
+}
+
+/** POST /admin/orders/:id/shipment — the only way an order becomes SHIPPED. */
+export interface RecordShipmentInput {
+  carrierName: string;
+  /** Spaces are stripped server-side; then 4–40 letters, digits or dashes. */
+  trackingNumber: string;
+  /** Must start with https:// — shown to the buyer. */
+  trackingUrl?: string;
+  /** Internal, never shown to the buyer. */
+  note?: string;
+  /** Same carrier + number already on another order, deliberately. */
+  allowDuplicate?: boolean;
+}
+
+/** PUT …/shipment — voids the current shipment and records a new one. */
+export type CorrectShipmentInput = RecordShipmentInput & { reason: string };
 
 export interface OrderStatusInput {
   status: SettableOrderStatus;
@@ -2347,6 +2423,11 @@ export interface Refund {
   claimRevokedAt: string | null;
   resaleBlockedUntil: string | null;
   createdAt: string;
+  /** null until Stripe reports; FAILED/CANCELED after PROCESSED = buyer not paid. */
+  gatewayStatus?: RefundGatewayStatus | null;
+  /** Stripe's reason, e.g. expired_or_canceled_card. */
+  gatewayFailureReason?: string | null;
+  gatewayStatusAt?: string | null;
   /** Raw next statuses. Prefer `allowedActions` for buttons. */
   allowedTransitions: (RefundStatus | string)[];
   /**

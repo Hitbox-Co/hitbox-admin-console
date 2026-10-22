@@ -5,6 +5,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 import {
   ArrowLeft,
+  CreditCard,
   ArrowUpRight,
   Ban,
   Check,
@@ -39,7 +40,8 @@ import {
 } from "@/components/ui/primitives";
 import { ErrorState } from "@/components/ui/states";
 import { PackingPanel } from "./packing-panel";
-import { OrderMoneyPanel } from "./order-money-panel";
+import { OrderMoneyPanel, RequestRefundDialog } from "./order-money-panel";
+import { OrderHistory, ShipmentCard, ShipmentForm } from "./shipment-ui";
 import { RefundBanner } from "./refund-banner";
 import type {
   AdminOrderDetail,
@@ -119,9 +121,11 @@ export function OrderDetailView({ orderId }: { orderId: string }) {
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <div className="min-w-0 space-y-4 xl:col-span-2">
           <PackingPanel order={order} />
+          <ShipmentCard order={order} />
           <ItemsPanel order={order} />
           {order.addresses.length ? <AddressesPanel addresses={order.addresses} /> : null}
           <OrderMoneyPanel order={order} />
+          <OrderHistory order={order} />
         </div>
 
         <aside className="min-w-0 space-y-4 xl:sticky xl:top-4 xl:self-start">
@@ -261,13 +265,15 @@ function Progress({ order }: { order: AdminOrderDetail }) {
       ? 4
       : order.shippedAt
         ? 3
-        : (order.payments ?? []).some((p) => /SUCCE|CAPTUR|PAID/i.test(p.status))
+        : order.paidAt || (order.payments ?? []).some((p) => /SUCCE|CAPTUR|PAID/i.test(p.status))
           ? 1
           : 0
     : reached;
 
   const when: Partial<Record<(typeof FLOW)[number], string | null>> = {
     PENDING_PAYMENT: order.placedAt,
+    // Filled in when payment settles (it used to stay null).
+    PAID: order.paidAt ?? null,
     SHIPPED: order.shippedAt,
     DELIVERED: order.deliveredAt,
   };
@@ -328,10 +334,23 @@ function Progress({ order }: { order: AdminOrderDetail }) {
           {order.status === "CANCELLED" ? <Ban className="h-3.5 w-3.5" /> : <Undo2 className="h-3.5 w-3.5" />}
           {order.status === "CANCELLED"
             ? "This order was cancelled. Any held units went back to stock."
-            : "This order was refunded through the payments pipeline."}
+            : order.shippedAt
+              ? "This order was refunded through the payments pipeline."
+              : "Refunded before it shipped — the unit went straight back on sale."}
         </p>
       ) : null}
-      {order.trackingNote ? (
+      {order.status === "PENDING_PAYMENT" ? (
+        <p className="mt-3 flex items-start gap-1.5 rounded-[8px] bg-[var(--warning-dim)] px-3 py-2 text-[12px] text-[var(--text-2)]">
+          <CreditCard className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--warning)]" aria-hidden />
+          <span>
+            Unpaid checkout. The unit is held for a short while; if payment doesn&rsquo;t arrive the
+            hold is released and the order is cancelled automatically by the checkout sweep. A late
+            card payment still settles if nobody else took the unit.
+          </span>
+        </p>
+      ) : null}
+      {/* The legacy note only when there's no shipment record to show. */}
+      {order.trackingNote && !order.shipment ? (
         <p className="mt-3 flex items-start gap-1.5 rounded-[8px] bg-[var(--surface-2)] px-3 py-2 text-[12px] text-[var(--text-2)]">
           <Truck className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--text-3)]" aria-hidden />
           <span>
@@ -345,47 +364,56 @@ function Progress({ order }: { order: AdminOrderDetail }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Actions — the next step, from allowedTransitions                    */
+/* Actions — the next step                                             */
+/*                                                                      */
+/* Ship comes from canRecordShipment (allowedTransitions never offers   */
+/* SHIPPED any more); Delivered and an unpaid cancel come from          */
+/* allowedTransitions; a PAID / PROCESSING order is cancelled by        */
+/* refunding it (ORDERS_CANCEL_REQUIRES_REFUND).                        */
 /* ------------------------------------------------------------------ */
 
 function ActionsPanel({ order, onConflict }: { order: AdminOrderDetail; onConflict: () => void }) {
   const perms = usePermissions();
   const update = useUpdateOrderStatus(order.id);
   const [pending, setPending] = React.useState<SettableOrderStatus | null>(null);
+  const [shipping, setShipping] = React.useState(false);
+  const [refunding, setRefunding] = React.useState(false);
   const [reason, setReason] = React.useState("");
-  const [trackingNote, setTrackingNote] = React.useState("");
 
-  const forward = order.allowedTransitions.filter((s) => s !== "CANCELLED");
-  // SHIPPED is withheld by the server until a packer has scanned the unit.
-  const waitingForScan =
-    (order.status === "PAID" || order.status === "PROCESSING") &&
-    !order.unitAssignedAt &&
-    !order.allowedTransitions.includes("SHIPPED");
-  const canCancel = order.allowedTransitions.includes("CANCELLED");
   const canManage = perms.can("order", "manage");
+  const forward = order.allowedTransitions.filter((s) => s !== "CANCELLED" && s !== "SHIPPED");
+  const canCancelUnpaid = order.allowedTransitions.includes("CANCELLED");
+  const paidNotShipped = order.status === "PAID" || order.status === "PROCESSING";
+  // A paid order is cancelled by refunding it. Offered to refund-capable
+  // callers; money.canRequestRefund is the server's word when present.
+  const canRefund = order.money
+    ? order.money.canRequestRefund
+    : perms.hasAction("order", "refund", "global");
+  const openRefundId = order.money?.openRefundId ?? null;
+  const waitingForScan = paidNotShipped && !order.unitAssignedAt;
 
   const commit = () => {
     if (!pending) return;
     if (pending === "CANCELLED" && !reason.trim()) return;
     update.mutate(
-      {
-        status: pending,
-        reason: pending === "CANCELLED" ? reason.trim() : undefined,
-        trackingNote: trackingNote.trim() || undefined,
-      },
+      { status: pending, reason: reason.trim() || undefined },
       {
         onSuccess: (detail) => {
           toast.success(`Order marked ${humanize(detail.status).toLowerCase()}`);
           setPending(null);
           setReason("");
-          setTrackingNote("");
         },
         onError: (err) => {
-          // 409: another operator moved it first. Retrying would fight them.
+          // 409: another operator (or a payment) moved it first.
           if (err instanceof ApiError && err.status === 409) {
-            toast.error("Someone else changed this order. Reloaded with the latest.");
+            toast.error("The order changed at that moment. Reloaded with the latest.");
             onConflict();
             setPending(null);
+            return;
+          }
+          if (err instanceof ApiError && err.code === "ORDERS_CANCEL_REQUIRES_REFUND") {
+            setPending(null);
+            setRefunding(true);
             return;
           }
           toast.error(err instanceof ApiError ? err.friendly : "Could not update the order.");
@@ -394,11 +422,22 @@ function ActionsPanel({ order, onConflict }: { order: AdminOrderDetail; onConfli
     );
   };
 
+  const nothing =
+    !order.canRecordShipment && forward.length === 0 && !canCancelUnpaid && !(paidNotShipped && (canRefund || openRefundId));
+
   return (
     <Panel className="overflow-hidden">
       <PanelHeader title="Next step" />
       <div className="space-y-3 px-4 py-3">
-        {pending ? (
+        {shipping ? (
+          <>
+            <p className="text-[12.5px] text-[var(--text-2)]">
+              <strong className="font-medium text-[var(--text-1)]">Ship this order.</strong> Enter what the
+              carrier gave you — the buyer sees the carrier, number and link.
+            </p>
+            <ShipmentForm orderId={order.id} compact onDone={() => setShipping(false)} onCancel={() => setShipping(false)} />
+          </>
+        ) : pending ? (
           <>
             <p className="text-[12.5px] text-[var(--text-2)]">
               <strong className="font-medium text-[var(--text-1)]">
@@ -406,29 +445,25 @@ function ActionsPanel({ order, onConflict }: { order: AdminOrderDetail; onConfli
               </strong>{" "}
               {TRANSITION_COPY[pending]?.help}
             </p>
-            {pending === "CANCELLED" ? (
-              <Field label="Reason for cancelling" htmlFor="cancel-reason" required hint="Recorded on the order.">
-                <Textarea
-                  id="cancel-reason"
-                  rows={3}
-                  value={reason}
-                  onChange={(e) => setReason(e.target.value)}
-                  placeholder="Customer requested"
-                  autoFocus
-                />
-              </Field>
-            ) : pending === "SHIPPED" ? (
-              <Field label="Tracking details" htmlFor="tracking-note" hint="Optional — carrier and consignment number.">
-                <Textarea
-                  id="tracking-note"
-                  rows={2}
-                  value={trackingNote}
-                  onChange={(e) => setTrackingNote(e.target.value)}
-                  placeholder="DHL 7741 2290 18"
-                  autoFocus
-                />
-              </Field>
-            ) : null}
+            <Field
+              label={pending === "CANCELLED" ? "Reason for cancelling" : "Reason"}
+              htmlFor="status-reason"
+              required={pending === "CANCELLED"}
+              hint={
+                pending === "DELIVERED"
+                  ? "What you checked — recorded on the order's history."
+                  : "Recorded on the order's history."
+              }
+            >
+              <Textarea
+                id="status-reason"
+                rows={2}
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder={pending === "DELIVERED" ? "Carrier shows delivered on 21 Oct" : "Customer requested"}
+                autoFocus
+              />
+            </Field>
             <div className="flex items-center gap-2">
               <Button
                 variant={pending === "CANCELLED" ? "danger" : "primary"}
@@ -448,20 +483,39 @@ function ActionsPanel({ order, onConflict }: { order: AdminOrderDetail; onConfli
           <p className="text-[12px] text-[var(--text-3)]">
             You can view this order. Moving it on needs order:manage.
           </p>
-        ) : order.allowedTransitions.length === 0 ? (
+        ) : nothing ? (
           <p className="flex items-start gap-1.5 text-[12px] leading-relaxed text-[var(--text-3)]">
             <CheckCircle2 className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
             {order.status === "DELIVERED"
               ? "Delivered — nothing left to do."
               : order.status === "PENDING_PAYMENT"
                 ? "Waiting for payment. The payments pipeline moves it to Paid."
-                : `No status change is available from ${humanize(order.status).toLowerCase()}.`}
+                : waitingForScan
+                  ? "Waiting for the physical unit to be scanned at packing."
+                  : `No step is available from ${humanize(order.status).toLowerCase()}.`}
           </p>
         ) : (
           <>
+            {order.canRecordShipment ? (
+              <button
+                type="button"
+                onClick={() => setShipping(true)}
+                className="pressable flex w-full items-start gap-3 rounded-[8px] border border-[var(--accent)] bg-[var(--accent-dim)] px-3 py-2.5 text-left"
+              >
+                <Truck className="mt-[1px] h-4 w-4 shrink-0 text-[var(--text-2)]" />
+                <span>
+                  <span className="block text-[13px] font-medium text-[var(--text-1)]">Ship (add tracking)</span>
+                  <span className="block text-[11.5px] text-[var(--text-3)]">
+                    Record the carrier and tracking number — that&rsquo;s what marks it shipped.
+                  </span>
+                </span>
+              </button>
+            ) : null}
+
             {forward.map((s, i) => {
               const c = TRANSITION_COPY[s];
               const Icon = c?.icon ?? PackageCheck;
+              const first = i === 0 && !order.canRecordShipment;
               return (
                 <button
                   key={s}
@@ -469,7 +523,7 @@ function ActionsPanel({ order, onConflict }: { order: AdminOrderDetail; onConfli
                   onClick={() => setPending(s)}
                   className={cn(
                     "pressable flex w-full items-start gap-3 rounded-[8px] border px-3 py-2.5 text-left transition-colors",
-                    i === 0
+                    first
                       ? "border-[var(--accent)] bg-[var(--accent-dim)] hover:bg-[var(--accent-dim)]"
                       : "border-[var(--hairline)] bg-[var(--surface-2)] hover:border-[var(--hairline-strong)]"
                   )}
@@ -484,21 +538,50 @@ function ActionsPanel({ order, onConflict }: { order: AdminOrderDetail; onConfli
                 </button>
               );
             })}
+
             {waitingForScan ? (
               <p className="flex items-start gap-1.5 rounded-[8px] bg-[var(--warning-dim)] px-3 py-2 text-[11.5px] leading-relaxed text-[var(--text-2)]">
                 <Truck className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--warning)]" aria-hidden />
-                Shipping unlocks once the physical unit is scanned in the Packing panel.
+                Shipping unlocks once the physical unit is scanned at packing.
               </p>
             ) : null}
-            {canCancel ? (
+
+            {canCancelUnpaid ? (
               <Button variant="ghost" size="sm" className="text-[var(--danger)]" onClick={() => setPending("CANCELLED")}>
                 <Ban className="h-3.5 w-3.5" />
                 Cancel order
+              </Button>
+            ) : paidNotShipped && openRefundId && perms.canOpen("/payments/refunds") ? (
+              <Button asChild variant="ghost" size="sm">
+                <Link href={`/payments/refunds/${openRefundId}`}>
+                  <Undo2 className="h-3.5 w-3.5" />
+                  Refund in progress
+                </Link>
+              </Button>
+            ) : paidNotShipped && canRefund ? (
+              <Button variant="ghost" size="sm" className="text-[var(--danger)]" onClick={() => setRefunding(true)}>
+                <Ban className="h-3.5 w-3.5" />
+                Cancel &amp; refund
               </Button>
             ) : null}
           </>
         )}
       </div>
+
+      {refunding ? (
+        <RequestRefundDialog
+          order={order}
+          onClose={() => setRefunding(false)}
+          preset={{
+            title: "Cancel & refund",
+            description:
+              "The buyer has paid, so cancelling means paying them back. When the refund is processed the order becomes Refunded and — because it never shipped — the unit goes straight back on sale.",
+            reasonCode: "BUYER_CHANGED_MIND",
+            reason: "Cancelled before packing",
+            physicalReturnRequired: false,
+          }}
+        />
+      ) : null}
     </Panel>
   );
 }

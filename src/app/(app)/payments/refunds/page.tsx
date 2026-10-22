@@ -11,6 +11,7 @@ import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterRow, FilterSelect, SearchInput, useListState } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
 import { RefundCapabilityNotice, ScopeNotice } from "@/components/finance/scope-notice";
+import { GatewayStatusChip } from "@/components/payments/gateway-status-chip";
 import type { Refund, RefundActionCode } from "@/lib/types";
 
 /** The workflow as tabs (order-payments-and-refunds-api.md §6.2). */
@@ -21,6 +22,8 @@ const TABS = [
   { value: "APPROVED", label: "Approved · ready to pay" },
   { value: "PROCESSED", label: "Processed" },
   { value: "REJECTED", label: "Rejected" },
+  // Not a workflow status — Stripe's: processed, but the money never arrived.
+  { value: "STRIPE_FAILED", label: "Failed at Stripe" },
 ];
 
 /** What the caller can do next, in a word — from the server's allowedActions. */
@@ -71,12 +74,14 @@ function RefundsView() {
 
   const list = useListState<{
     status?: string;
+    gatewayStatus?: string;
     reasonCode?: string;
     orderId?: string;
     from?: string;
     to?: string;
   }>({
     status: undefined,
+    gatewayStatus: undefined,
     reasonCode: undefined,
     orderId: undefined,
     from: undefined,
@@ -184,9 +189,16 @@ function RefundsView() {
         key: "processed",
         header: "Processed",
         cell: (r) => (
-          <span className="tnum text-[12px] text-[var(--text-3)]">
-            {formatDateTime(r.processedAt)}
-          </span>
+          <div className="space-y-0.5">
+            <span className="tnum block text-[12px] text-[var(--text-3)]">
+              {formatDateTime(r.processedAt)}
+            </span>
+            <GatewayStatusChip
+              status={r.gatewayStatus}
+              reason={r.gatewayFailureReason}
+              processed={r.status === "PROCESSED"}
+            />
+          </div>
         ),
       },
     ],
@@ -203,8 +215,16 @@ function RefundsView() {
           <div className="overflow-x-auto border-b border-[var(--hairline)] px-3 py-2">
             <Segmented
               size="sm"
-              value={list.filters.status ?? "ALL"}
-              onChange={(v) => list.setFilter("status", v === "ALL" ? undefined : v)}
+              value={list.filters.gatewayStatus === "FAILED" ? "STRIPE_FAILED" : list.filters.status ?? "ALL"}
+              onChange={(v) => {
+                if (v === "STRIPE_FAILED") {
+                  list.setFilter("status", undefined);
+                  list.setFilter("gatewayStatus", "FAILED");
+                } else {
+                  list.setFilter("gatewayStatus", undefined);
+                  list.setFilter("status", v === "ALL" ? undefined : v);
+                }
+              }}
               options={TABS}
             />
           </div>

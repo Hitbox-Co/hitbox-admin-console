@@ -18,7 +18,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
-import { useAdminOrder, useProductSkus, useProductVariants, useUpdateOrderStatus } from "@/lib/api/hooks";
+import { useAdminOrder, useProductSkus, useProductVariants } from "@/lib/api/hooks";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import {
@@ -33,8 +33,9 @@ import {
   type PackerError,
 } from "@/lib/packing";
 import { COMPANY } from "@/lib/company";
+import { ShipmentForm } from "@/components/orders/shipment-ui";
 import { usePermissions } from "@/components/layout/authz-provider";
-import { Badge, Button, Field, Mono, Skeleton, Textarea, Tooltip } from "@/components/ui/primitives";
+import { Badge, Button, Mono, Skeleton, Tooltip } from "@/components/ui/primitives";
 import type { AdminOrderDetail, OrderAddress, OrderPackingState, SkuUnit, UnitScan } from "@/lib/types";
 
 /* ------------------------------------------------------------------ */
@@ -421,9 +422,7 @@ export function ShipAction({
   compact?: boolean;
 }) {
   const perms = usePermissions();
-  const ship = useUpdateOrderStatus(orderId);
   const [open, setOpen] = React.useState(false);
-  const [note, setNote] = React.useState("");
   // The caller's packing state may be a snapshot (scan-first result card),
   // so a ship made here is remembered rather than offered again.
   const [justShipped, setJustShipped] = React.useState(false);
@@ -437,26 +436,6 @@ export function ShipAction({
     );
   }
 
-  const go = () =>
-    ship.mutate(
-      { status: "SHIPPED", trackingNote: note.trim() || undefined },
-      {
-        onSuccess: () => {
-          playSuccess();
-          toast.success("Shipped");
-          setOpen(false);
-          setNote("");
-          setJustShipped(true);
-          onShipped?.();
-        },
-        onError: (err) => {
-          playError();
-          const e = packerError(err);
-          toast.error(e.detail ? `${e.title} ${e.detail}` : e.title);
-        },
-      }
-    );
-
   if (!open) {
     return (
       <Tooltip content={readyToShip ? null : "Scan the item before shipping."}>
@@ -468,34 +447,28 @@ export function ShipAction({
             onClick={() => setOpen(true)}
           >
             <Truck className="h-3.5 w-3.5" />
-            Ship
+            Ship (add tracking)
           </Button>
         </span>
       </Tooltip>
     );
   }
 
+  // Shipping = recording the carrier and tracking number
+  // (POST /admin/orders/:id/shipment); a bare status change is refused.
   return (
-    <div className="w-full space-y-2 rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-3">
-      <Field label="Tracking note" htmlFor={`ship-${orderId}`} hint="Optional — carrier and consignment number.">
-        <Textarea
-          id={`ship-${orderId}`}
-          rows={2}
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="DHL 7741 2290 18"
-          autoFocus
-        />
-      </Field>
-      <div className="flex gap-2">
-        <Button variant="primary" size="sm" loading={ship.isPending} onClick={go}>
-          <Truck className="h-3.5 w-3.5" />
-          Confirm shipped
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
-          Cancel
-        </Button>
-      </div>
+    <div className="w-full rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-3">
+      <ShipmentForm
+        orderId={orderId}
+        compact
+        onDone={() => {
+          playSuccess();
+          setOpen(false);
+          setJustShipped(true);
+          onShipped?.();
+        }}
+        onCancel={() => setOpen(false)}
+      />
     </div>
   );
 }
@@ -780,7 +753,11 @@ export function printPackingSlip(state: OrderPackingState, order?: AdminOrderDet
     ["Packed on", formatDateTime(state.unitAssignedAt)],
     ["Printed on", formatDateTime(new Date().toISOString())],
     ...(order?.market ? ([["Market", `${order.market.name} (${order.market.code})`]] as [string, string][]) : []),
-    ...(order?.trackingNote ? ([["Tracking", order.trackingNote]] as [string, string][]) : []),
+    ...(order?.shipment
+      ? ([["Tracking", `${order.shipment.carrierName} ${order.shipment.trackingNumber}`]] as [string, string][])
+      : order?.trackingNote
+        ? ([["Tracking", order.trackingNote]] as [string, string][])
+        : []),
   ];
 
   const qtyOrdered = order?.quantity ?? 1;

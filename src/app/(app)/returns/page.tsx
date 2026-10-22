@@ -12,7 +12,7 @@ import {
   Send,
   Undo2,
 } from "lucide-react";
-import { useOpenRefunds, useOrdersByIds } from "@/lib/api/hooks";
+import { useOpenRefunds, useOrdersByIds, useRefunds } from "@/lib/api/hooks";
 import { formatCurrency, formatDateTime, humanize } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import {
@@ -125,6 +125,8 @@ function ReturnsView() {
           </Link>
         </Button>
       </PageActions>
+
+      <FailedAtStripe />
 
       {/* Stage tiles — click to focus one lane */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -306,5 +308,45 @@ function RefundCard({
         ) : null}
       </div>
     </article>
+  );
+}
+
+/**
+ * Refunds the workflow finished but Stripe then failed or cancelled
+ * (gatewayStatus FAILED) — the buyer has NOT been paid back, and nothing
+ * undoes itself. The most urgent thing on this page when it exists.
+ */
+function FailedAtStripe() {
+  const q = useRefunds({ gatewayStatus: "FAILED", page: 1, limit: 10 });
+  const items = q.data?.items ?? [];
+  if (!items.length) return null;
+  return (
+    <div role="alert" className="rounded-xl border-2 border-[var(--danger)] bg-[var(--danger-dim)] px-4 py-3">
+      <p className="text-[14px] font-semibold text-[var(--danger)]">
+        {q.data!.total} refund{q.data!.total === 1 ? "" : "s"} failed at Stripe — the buyer has not been paid back
+      </p>
+      <p className="mt-0.5 text-[12.5px] text-[var(--text-2)]">
+        These were processed, but Stripe failed or cancelled the money. Contact each buyer and pay them another way.
+      </p>
+      <ul className="mt-2 divide-y divide-[rgba(204,92,92,0.25)]">
+        {items.map((r) => (
+          <li key={r.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-[12.5px]">
+            <span className="tnum font-semibold text-[var(--text-1)]">{formatCurrency(r.amount, r.currency)}</span>
+            <span className="text-[var(--text-2)]">{humanize(r.reasonCode)}</span>
+            {r.gatewayFailureReason ? (
+              <span className="text-[var(--danger)]">{humanize(r.gatewayFailureReason).toLowerCase()}</span>
+            ) : null}
+            <Link href={`/payments/refunds/${r.id}`} className="ml-auto inline-flex items-center gap-1 text-[var(--text-1)] hover:underline">
+              Open <ArrowRight className="h-3 w-3" />
+            </Link>
+          </li>
+        ))}
+      </ul>
+      {q.data!.total > items.length ? (
+        <Link href="/payments/refunds" className="mt-1 inline-block text-[12px] text-[var(--text-1)] hover:underline">
+          See all in Refunds → Failed at Stripe
+        </Link>
+      ) : null}
+    </div>
   );
 }

@@ -209,6 +209,24 @@ export class ApiError extends Error {
       case "PRODUCTS_RELEASE_GATE_UNAVAILABLE":
         return "The approval check is not wired up on this deployment, so publishing is refused.";
 
+      /* Shipments and cancelling (order-history-and-shipments.md §8, checkout-sweep.md §5). */
+      case "ORDERS_SHIPMENT_REQUIRED":
+        return "Orders are shipped by recording the carrier and tracking number.";
+      case "ORDERS_NOT_SHIPPABLE":
+        return "This order can't be shipped (or its tracking corrected) in its current state.";
+      case "ORDERS_SHIPMENT_EXISTS":
+        return "A shipment is already recorded. Use Correct tracking instead.";
+      case "ORDERS_TRACKING_IN_USE":
+        return "That carrier and tracking number are already on another order.";
+      case "ORDERS_CANCEL_REQUIRES_REFUND":
+        return "The buyer has paid — cancelling means refunding. Use Cancel & refund.";
+
+      /* Stripe refund failures (order-payments-and-refunds-api.md §11). */
+      case "PAYMENTS_GATEWAY_REJECTED":
+        return this.message || "Stripe refused the refund. Nothing changed — it may already have been refunded in the dashboard.";
+      case "PAYMENTS_GATEWAY_UNREACHABLE":
+        return "Stripe didn't respond. Nothing changed — try again.";
+
       /* Packing — scan-to-assign (order-unit-assignment-api.md §13). */
       case "ORDERS_WRONG_ITEM":
         return "Wrong item — that unit is a different drop or variant. Check the size and colour label.";

@@ -11,6 +11,8 @@ import {
 import { ApiError, api, unwrap, type QueryValue } from "./client";
 import type {
   AssignByScanInput,
+  CorrectShipmentInput,
+  RecordShipmentInput,
   AssignOrderUnitInput,
   FulfilmentQueueParams,
   OrderPackingState,
@@ -2265,6 +2267,8 @@ export function useReviewPayment(paymentId: string) {
 export interface RefundFilters {
   orderId?: string;
   status?: string;
+  /** FAILED is the "buyer not paid back" queue. */
+  gatewayStatus?: string;
   reasonCode?: string;
   from?: string;
   to?: string;
@@ -3020,5 +3024,41 @@ export function useAssignByScan() {
     mutationFn: (body: AssignByScanInput) =>
       api.post<unknown>("admin/orders/assign-by-scan", body).then(unwrap<OrderPackingState>),
     onSuccess: (state) => afterScan(qc, state),
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Shipments — order-history-and-shipments.md                          */
+/*                                                                      */
+/* Recording a shipment is the ONLY way an order becomes SHIPPED        */
+/* (PATCH status SHIPPED is ORDERS_SHIPMENT_REQUIRED). Both writes      */
+/* answer with the refreshed order detail, written into the cache.      */
+/* ------------------------------------------------------------------ */
+
+function afterShipment(qc: ReturnType<typeof useQueryClient>, orderId: string, detail: AdminOrderDetail) {
+  qc.setQueryData(["admin-order", orderId], detail);
+  qc.invalidateQueries({ queryKey: ["admin-orders"] });
+  qc.invalidateQueries({ queryKey: ["orders"] });
+  qc.invalidateQueries({ queryKey: ["order-unit", orderId] });
+  qc.invalidateQueries({ queryKey: ["fulfilment-queue"] });
+  qc.invalidateQueries({ queryKey: ["dashboard"] });
+}
+
+export function useRecordShipment(orderId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: RecordShipmentInput) =>
+      api.post<unknown>(`admin/orders/${orderId}/shipment`, body).then(unwrap<AdminOrderDetail>),
+    onSuccess: (detail) => afterShipment(qc, orderId, detail),
+  });
+}
+
+/** Voids the current shipment and records a new one; needs a reason. */
+export function useCorrectShipment(orderId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CorrectShipmentInput) =>
+      api.put<unknown>(`admin/orders/${orderId}/shipment`, body).then(unwrap<AdminOrderDetail>),
+    onSuccess: (detail) => afterShipment(qc, orderId, detail),
   });
 }

@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/primitives";
 import { ErrorState, NotPermitted } from "@/components/ui/states";
 import { StripeRef } from "@/components/orders/order-money-panel";
+import { GatewayStatusChip, refundFailedAtStripe } from "./gateway-status-chip";
 import type { NfcTagCondition, Refund, RefundActionCode } from "@/lib/types";
 
 /**
@@ -110,6 +111,19 @@ export function RefundDetailView({ refundId }: { refundId: string }) {
   return (
     <div className="space-y-4">
       <BackLink />
+      {refundFailedAtStripe(refund) ? (
+        <div role="alert" className="rounded-xl border-2 border-[var(--danger)] bg-[var(--danger-dim)] px-4 py-3">
+          <p className="text-[14px] font-semibold text-[var(--danger)]">
+            The refund failed at Stripe — the buyer has not been paid back
+          </p>
+          <p className="mt-0.5 text-[12.5px] text-[var(--text-2)]">
+            The workflow finished, but Stripe reported the money as {String(refund.gatewayStatus).toLowerCase()}
+            {refund.gatewayFailureReason ? ` (${humanize(refund.gatewayFailureReason).toLowerCase()})` : ""}
+            {refund.gatewayStatusAt ? ` on ${formatDateTime(refund.gatewayStatusAt)}` : ""}. Nothing is undone
+            automatically — contact the buyer and pay them another way.
+          </p>
+        </div>
+      ) : null}
       <Header refund={refund} />
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -151,6 +165,11 @@ function Header({ refund }: { refund: Refund }) {
             {humanize(refund.status)}
           </Badge>
           <Badge tone="neutral">{humanize(refund.reasonCode)}</Badge>
+          <GatewayStatusChip
+            status={refund.gatewayStatus}
+            reason={refund.gatewayFailureReason}
+            processed={refund.status === "PROCESSED"}
+          />
           {refund.physicalReturnRequired ? (
             <Badge tone={refund.physicalReturnConfirmedAt ? "positive" : "warning"}>
               {refund.physicalReturnConfirmedAt ? "Item returned" : "Return required"}
@@ -279,6 +298,15 @@ function Facts({ refund: r }: { refund: Refund }) {
     ["Approved", formatDateTime(r.approvedAt)],
     ["Processed", formatDateTime(r.processedAt)],
     ["Stripe refund", r.gatewayRefundId ? <StripeRef key="g" value={r.gatewayRefundId} /> : "—"],
+    [
+      "Stripe status",
+      r.status === "PROCESSED" || r.gatewayStatus ? (
+        <GatewayStatusChip key="gs" status={r.gatewayStatus} reason={r.gatewayFailureReason} processed />
+      ) : (
+        "—"
+      ),
+    ],
+    ...(r.gatewayStatusAt ? ([["Stripe last reported", formatDateTime(r.gatewayStatusAt)]] as [string, React.ReactNode][]) : []),
     ...(r.rejectionReason ? ([["Rejected because", r.rejectionReason]] as [string, React.ReactNode][]) : []),
   ];
   return (
@@ -364,6 +392,7 @@ function ActionPanel({ refund, onConflict }: { refund: Refund; onConflict: () =>
   const [overrideReason, setOverrideReason] = React.useState("");
   const [rejectionReason, setRejectionReason] = React.useState("");
   const [needsGatewayId, setNeedsGatewayId] = React.useState(false);
+  const [gatewayRejected, setGatewayRejected] = React.useState<string | null>(null);
   const [gatewayRefundId, setGatewayRefundId] = React.useState("");
 
   const actions = actionsOf(refund);
@@ -375,6 +404,7 @@ function ActionPanel({ refund, onConflict }: { refund: Refund; onConflict: () =>
     setOverrideReason("");
     setRejectionReason("");
     setNeedsGatewayId(false);
+    setGatewayRejected(null);
     setGatewayRefundId("");
   };
 
@@ -382,6 +412,19 @@ function ActionPanel({ refund, onConflict }: { refund: Refund; onConflict: () =>
     if (err instanceof ApiError && err.code === "PAYMENTS_GATEWAY_UNAVAILABLE") {
       // No provider wired: refund in the Stripe dashboard, then record its id.
       setNeedsGatewayId(true);
+      return;
+    }
+    if (err instanceof ApiError && err.code === "PAYMENTS_GATEWAY_REJECTED") {
+      // Stripe refused — usually it was already refunded in the dashboard.
+      // Nothing changed; offer to record that refund's id instead.
+      const d = (err.details ?? {}) as { providerCode?: string };
+      toast.error(`Stripe refused: ${err.message}${d.providerCode ? ` (${d.providerCode})` : ""}`);
+      setGatewayRejected(err.message);
+      setNeedsGatewayId(true);
+      return;
+    }
+    if (err instanceof ApiError && err.code === "PAYMENTS_GATEWAY_UNREACHABLE") {
+      toast.error("Stripe didn't respond — nothing changed. Try again.");
       return;
     }
     if (err instanceof ApiError && err.status === 409) {
@@ -567,7 +610,11 @@ function ActionPanel({ refund, onConflict }: { refund: Refund; onConflict: () =>
                 label="Stripe refund id"
                 htmlFor="rd-gateway"
                 required
-                hint="No payment provider is wired on this server. Issue the refund in the Stripe dashboard first, then paste its id here."
+                hint={
+                  gatewayRejected
+                    ? `Stripe refused (${gatewayRejected}). If it was already refunded in the Stripe dashboard, paste that refund's id to record it.`
+                    : "No payment provider is wired on this server. Issue the refund in the Stripe dashboard first, then paste its id here."
+                }
               >
                 <Input id="rd-gateway" value={gatewayRefundId} onChange={(e) => setGatewayRefundId(e.target.value.trim())} placeholder="re_3Q…" autoFocus />
               </Field>
