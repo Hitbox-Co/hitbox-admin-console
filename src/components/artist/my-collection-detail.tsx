@@ -12,14 +12,17 @@ import {
   Info,
   Loader2,
   MoreHorizontal,
-  Package,
   Pencil,
+  Plus,
+  Sparkles,
+  X,
   Trash2,
 } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
 import {
   useArchiveCollection,
   useMyCollection,
+  useRemoveCollectionDrop,
   useRemoveCollectionHero,
   useUpdateCollection,
   useUploadCollectionHero,
@@ -27,12 +30,14 @@ import {
 import { ARTIST_IMAGE_MAX_BYTES, ARTIST_IMAGE_TYPES, prepareImage } from "@/lib/image-prep";
 import { formatDate, formatNumber } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
-import { Badge, Button, Mono, Panel, PanelHeader, Skeleton, Tooltip } from "@/components/ui/primitives";
-import { EmptyState, ErrorState } from "@/components/ui/states";
+import { Badge, Button, Mono, Panel, Skeleton, Tooltip } from "@/components/ui/primitives";
+import { ErrorState } from "@/components/ui/states";
 import { ConfirmDialog } from "@/components/packing/packing-ui";
 import { CollectionFormDialog, useRestoreFlow } from "./collection-dialogs";
+import { AddDropsDialog } from "./add-drops-dialog";
+import { DropMonogram } from "./drop-tile";
 import { BackToCollections, blockedDeleteCopy, useCollectionsLocked } from "./my-collections";
-import type { ArtistCollectionDetail } from "@/lib/types";
+import type { ArtistCollectionDetail, ArtistCollectionDrop } from "@/lib/types";
 
 const HERO_TARGET = { width: 1920, height: 840 };
 
@@ -75,7 +80,6 @@ export function MyCollectionDetailView({ collectionId }: { collectionId: string 
   const archived = c.status === "ARCHIVED";
   const canEdit = !profileLocked && (c.actions?.canEdit ?? !archived);
   const blocked = blockedDeleteCopy(c);
-  const preparing = c.counts.liveDrops - c.counts.activeDrops;
 
   const togglePublic = () =>
     update.mutate(
@@ -147,41 +151,7 @@ export function MyCollectionDetailView({ collectionId }: { collectionId: string 
         </div>
       </Panel>
 
-      <Panel className="overflow-hidden">
-        <PanelHeader
-          title="Drops"
-          description={`${formatNumber(c.counts.activeDrops)} on sale`}
-        />
-        {preparing > 0 ? (
-          <p className="flex items-start gap-2 border-b border-[var(--hairline)] bg-[var(--surface-2)] px-4 py-2.5 text-[12px] text-[var(--text-2)]">
-            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--text-3)]" />
-            {preparing} more drop{preparing === 1 ? " is" : "s are"} being prepared — drafts or in review. They appear here once on sale
-            {c.actions?.archiveBlockedReason === "HAS_DROPS" ? ", and they're why this collection can't be deleted yet" : ""}.
-          </p>
-        ) : null}
-        {c.drops.length === 0 ? (
-          <EmptyState
-            icon={Package}
-            title="Nothing on sale here yet"
-            description="Your brand team or HitBox files drops into collections. They show up once they're on sale."
-          />
-        ) : (
-          <ul className="grid grid-cols-1 gap-px bg-[var(--hairline)] sm:grid-cols-2 xl:grid-cols-3">
-            {c.drops.map((d) => (
-              <li key={d.id} className="bg-[var(--surface-1)] px-4 py-3">
-                <p className="truncate text-[13px] font-medium text-[var(--text-1)]">{d.name}</p>
-                <p className="mt-0.5 text-[11.5px] text-[var(--text-3)]">
-                  <Mono className="text-[10.5px]">{d.groupCode}</Mono> · {formatNumber(d.totalSupply)} made
-                </p>
-                <p className="mt-1 text-[11.5px] text-[var(--text-3)]">
-                  On sale {formatDate(d.releaseStart ?? d.publishedAt)}
-                  {d.releaseEnd ? ` – ${formatDate(d.releaseEnd)}` : ""}
-                </p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Panel>
+      <DropsSection c={c} editable={canEdit} />
 
       {editing ? <CollectionFormDialog collection={c} onClose={() => setEditing(false)} /> : null}
       <ConfirmDialog
@@ -317,5 +287,145 @@ function Hero({ c, editable }: { c: ArtistCollectionDetail; editable: boolean })
         }}
       />
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Drops in this collection — routes 3, 10–12                          */
+/* ------------------------------------------------------------------ */
+
+function DropsSection({ c, editable }: { c: ArtistCollectionDetail; editable: boolean }) {
+  const [adding, setAdding] = React.useState(false);
+  const [removing, setRemoving] = React.useState<ArtistCollectionDrop | null>(null);
+  const remove = useRemoveCollectionDrop(c.id);
+  const preparing = c.counts.liveDrops - c.counts.activeDrops;
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h3 className="text-[15px] font-semibold tracking-[-0.01em] text-[var(--text-1)]">Drops</h3>
+          <p className="mt-0.5 text-[12.5px] text-[var(--text-3)]">
+            <span className="tnum font-medium text-[var(--text-2)]">{formatNumber(c.counts.activeDrops)}</span> on sale
+            {preparing > 0 ? (
+              <>
+                {" · "}
+                <span className="tnum">{formatNumber(preparing)}</span> being prepared
+              </>
+            ) : null}
+          </p>
+        </div>
+        {editable ? (
+          <Button variant="primary" size="sm" onClick={() => setAdding(true)}>
+            <Plus className="h-3.5 w-3.5" /> Add drops
+          </Button>
+        ) : null}
+      </div>
+
+      {preparing > 0 ? (
+        <p className="flex items-start gap-2 rounded-[12px] border border-[var(--hairline)] bg-[var(--surface-2)] px-3.5 py-2.5 text-[12px] text-[var(--text-2)]">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--text-3)]" />
+          <span>
+            {preparing} more drop{preparing === 1 ? " is" : "s are"} being prepared (drafts or in review). They show here
+            once on sale
+            {c.actions?.archiveBlockedReason === "HAS_DROPS"
+              ? " — your brand team or HitBox can move them if you want to delete this collection"
+              : ""}
+            .
+          </span>
+        </p>
+      ) : null}
+
+      {c.drops.length === 0 ? (
+        <div className="flex flex-col items-center justify-center rounded-[16px] border border-dashed border-[var(--hairline-strong)] px-6 py-12 text-center">
+          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--accent-dim)] text-[var(--accent-text)]">
+            <Sparkles className="h-5 w-5" />
+          </span>
+          <p className="mt-3 text-[14px] font-medium text-[var(--text-1)]">No drops in this collection yet</p>
+          <p className="mt-1 max-w-[42ch] text-[12.5px] text-[var(--text-3)]">
+            Pick from your drops that are on sale. You can move one here from another collection too.
+          </p>
+          {editable ? (
+            <Button variant="primary" size="sm" className="mt-4" onClick={() => setAdding(true)}>
+              <Plus className="h-3.5 w-3.5" /> Add drops
+            </Button>
+          ) : null}
+        </div>
+      ) : (
+        <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {c.drops.map((d) => (
+            <DropCard key={d.id} d={d} onRemove={editable ? () => setRemoving(d) : undefined} />
+          ))}
+          {editable ? (
+            <li>
+              <button
+                type="button"
+                onClick={() => setAdding(true)}
+                className="flex h-full min-h-[160px] w-full flex-col items-center justify-center gap-1.5 rounded-[16px] border border-dashed border-[var(--hairline-strong)] text-[12.5px] text-[var(--text-3)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent-text)]"
+              >
+                <Plus className="h-5 w-5" />
+                Add more
+              </button>
+            </li>
+          ) : null}
+        </ul>
+      )}
+
+      {adding ? <AddDropsDialog collectionId={c.id} collectionName={c.name} onClose={() => setAdding(false)} /> : null}
+      <ConfirmDialog
+        open={Boolean(removing)}
+        title={`Remove ${removing?.name ?? "drop"}?`}
+        body="It stays on sale — it just leaves this collection. You can add it back any time."
+        confirmLabel="Remove"
+        busy={remove.isPending}
+        onCancel={() => setRemoving(null)}
+        onConfirm={() => {
+          if (!removing) return;
+          remove.mutate(removing.id, {
+            onSuccess: () => {
+              toast.success(`${removing.name} removed from ${c.name}`);
+              setRemoving(null);
+            },
+            onError: (err) => {
+              toast.error(err instanceof ApiError ? err.friendly : "Could not remove the drop.");
+              setRemoving(null);
+            },
+          });
+        }}
+      />
+    </section>
+  );
+}
+
+function DropCard({ d, onRemove }: { d: ArtistCollectionDrop; onRemove?: () => void }) {
+  const start = d.releaseStart ?? d.publishedAt;
+  return (
+    <li className="group relative overflow-hidden rounded-[16px] border border-[var(--hairline)] bg-[var(--surface-1)] transition-all hover:-translate-y-0.5 hover:border-[var(--hairline-strong)] hover:shadow-[var(--shadow-2)]">
+      <DropMonogram id={d.id} name={d.name} className="h-20 w-full text-[22px]" />
+      <div className="px-3.5 pb-3.5 pt-3">
+        <p className="truncate text-[13.5px] font-medium text-[var(--text-1)]" title={d.name}>
+          {d.name}
+        </p>
+        <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] text-[var(--text-3)]">
+          <Mono className="text-[10.5px]">{d.groupCode}</Mono>
+          <span className="tnum">{formatNumber(d.totalSupply)} made</span>
+        </p>
+        <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-[var(--positive-dim)] px-2 py-0.5 text-[11px] text-[var(--positive)]">
+          <span className="h-1.5 w-1.5 rounded-full bg-current" />
+          On sale{start ? ` since ${formatDate(start)}` : ""}
+          {d.releaseEnd ? ` · ends ${formatDate(d.releaseEnd)}` : ""}
+        </p>
+      </div>
+      {onRemove ? (
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove ${d.name} from this collection`}
+          className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-[rgba(0,0,0,0.45)] px-2 py-1 text-[11px] text-white opacity-0 backdrop-blur transition-opacity hover:bg-[rgba(0,0,0,0.7)] focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+        >
+          <X className="h-3 w-3" /> Remove
+        </button>
+      ) : null}
+    </li>
   );
 }
