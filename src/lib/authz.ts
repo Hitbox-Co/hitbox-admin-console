@@ -406,6 +406,8 @@ const ROUTE_ACCESS: Record<string, (p: Permissions) => boolean> = {
   // own user id: only an artist's own grant reaches a profile. A Brand Admin
   // (organization) is a 403; a global holder passes but has no profile (404).
   "/artist/profile": (p) => p.widestScope("brand-artist-record") === "own",
+  // /artist/collections takes the same OWN grant as /artist/me.
+  "/artist/collections": (p) => p.widestScope("brand-artist-record") === "own",
   "/artist": (p) => {
     const scope = p.widestScope("brand-artist-record");
     return scope === "own" || scope === "organization";
@@ -437,6 +439,9 @@ const ROUTE_ACCESS: Record<string, (p: Permissions) => boolean> = {
   // GET /admin/drop-types takes drop:read with no organization context, so
   // only a platform-wide read passes. Writes are gated on the page.
   "/products/types": (p) => p.reaches("drop"),
+  // Monitoring of every artist's collections — globalOnly server-side, so an
+  // organization-scoped Brand Admin is refused.
+  "/artist-collections": (p) => p.can("brand-artist-record", "read", "global"),
   "/release-approvals": (p) => p.canRead("release-approval"),
   "/supply": (p) => p.reaches("reports-dashboards"),
   "/supply/consignments": (p) => p.reaches("drop"),
@@ -522,6 +527,13 @@ export const NAV_ITEMS: NavItem[] = [
     visible: (p) => p.canOpen("/artist/profile"),
   },
   {
+    href: "/artist/collections",
+    label: "My collections",
+    icon: "LibraryBig",
+    group: "Overview",
+    visible: (p) => p.canOpen("/artist/collections"),
+  },
+  {
     href: "/markets",
     label: "Markets",
     icon: "Globe",
@@ -593,6 +605,13 @@ export const NAV_ITEMS: NavItem[] = [
     icon: "Package",
     group: "Catalog",
     visible: (p) => p.canOpen("/products"),
+  },
+  {
+    href: "/artist-collections",
+    label: "Artist collections",
+    icon: "LibraryBig",
+    group: "Catalog",
+    visible: (p) => p.canOpen("/artist-collections"),
   },
   {
     href: "/products/types",

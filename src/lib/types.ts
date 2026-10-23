@@ -3261,3 +3261,264 @@ export interface FulfilmentQueueParams {
   page?: number;
   limit?: number;
 }
+
+/* ------------------------------------------------------------------ */
+/* Artist collections (artist-collection-api.md, admin-monitoring-api) */
+/* ------------------------------------------------------------------ */
+
+export type ArtistCollectionStatus = "LIVE" | "ARCHIVED";
+
+export interface ArtistCollectionCounts {
+  /** Every drop ever filed under it, retired ones included. */
+  drops: number;
+  /** Not archived, any status — while above 0 the collection can't be deleted. */
+  liveDrops: number;
+  /** What the artist is shown: ACTIVE, switched on, not archived, theirs. */
+  activeDrops: number;
+}
+
+export interface ArtistCollectionActions {
+  canEdit: boolean;
+  canArchive: boolean;
+  archiveBlockedReason: "HAS_DROPS" | "ARCHIVED" | null;
+  canRestore: boolean;
+}
+
+export interface ArtistCollection {
+  id: string;
+  publicCode: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  heroImageUrl: string | null;
+  /** 0-based order among live collections. */
+  position: number;
+  isPublic: boolean;
+  isActive: boolean;
+  archivedAt: string | null;
+  status: ArtistCollectionStatus;
+  counts: ArtistCollectionCounts;
+  createdAt: string;
+  updatedAt: string;
+  /** Artist routes only. */
+  actions?: ArtistCollectionActions;
+}
+
+/** GET /artist/collections/:id — only the drops on sale and the artist's own. */
+export interface ArtistCollectionDrop {
+  id: string;
+  publicCode: string;
+  name: string;
+  groupCode: string;
+  totalSupply: number;
+  publishedAt: string | null;
+  releaseStart: string | null;
+  releaseEnd: string | null;
+}
+
+export interface ArtistCollectionDetail extends ArtistCollection {
+  drops: ArtistCollectionDrop[];
+}
+
+/** GET /artist/collections/:id/available-drops — the Add drops picker. */
+export interface AvailableCollectionDrop {
+  id: string;
+  publicCode: string;
+  name: string;
+  groupCode: string;
+  totalSupply: number;
+  publishedAt: string | null;
+  /** Only ever set with includeFiled=true — adding it moves it here. */
+  currentCollection: { id: string; name: string } | null;
+}
+
+export interface AvailableDropsParams {
+  includeFiled?: boolean;
+  q?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface AddCollectionDropsInput {
+  /** 1–50, no duplicates. */
+  dropIds: string[];
+  /** Lets drops already in another of my collections move here. */
+  move?: boolean;
+}
+
+/** POST …/drops and DELETE …/drops/:dropId. */
+export interface CollectionDropsResult {
+  collection: ArtistCollectionDetail;
+  dropIds: string[];
+  /** dropId → the collection it left. */
+  movedFrom: Record<string, string>;
+}
+
+export type CollectionDropProblemCode =
+  | "NOT_FOUND"
+  | "NOT_ACTIVE"
+  | "ALREADY_IN_COLLECTION"
+  | "IN_ANOTHER_COLLECTION";
+
+/** details.problems[] of ARTIST_COLLECTION_DROPS_INVALID. */
+export interface CollectionDropProblem {
+  dropId: string;
+  problem: CollectionDropProblemCode;
+  collection?: { id: string; name: string };
+}
+
+export interface CreateArtistCollectionInput {
+  name: string;
+  slug?: string;
+  description?: string | null;
+  isPublic?: boolean;
+}
+
+export type UpdateArtistCollectionInput = Partial<CreateArtistCollectionInput>;
+
+export interface ArtistCollectionHeroUploadUrl {
+  assetId: string;
+  uploadUrl: string;
+  expiresIn: number;
+  publicUrl: string;
+}
+
+/** GET /admin/artist-collections — the monitoring list item. */
+export interface AdminArtistCollection extends ArtistCollection {
+  artist: {
+    id: string;
+    /** Null for an artist not yet linked to an account. */
+    userId: string | null;
+    name: string;
+    slug: string;
+    isActive: boolean;
+    archived: boolean;
+  };
+  organization: { id: string; name: string } | null;
+}
+
+export interface AdminArtistCollectionDrop {
+  id: string;
+  name: string;
+  status: string;
+  archivedAt: string | null;
+  createdAt: string;
+  /** ACTIVE, switched on, not archived, and sameArtist. */
+  shownToArtist: boolean;
+  /** false is legacy data — the drop belongs to a different artist. */
+  sameArtist: boolean;
+}
+
+export interface AdminArtistCollectionDetail extends AdminArtistCollection {
+  drops: AdminArtistCollectionDrop[];
+}
+
+export interface AdminArtistCollectionSummary {
+  total: number;
+  live: number;
+  archived: number;
+  public: number;
+  private: number;
+  empty: number;
+  createdLast30Days: number;
+  artistsWithCollections: number;
+  topArtists: { artistId: string; name: string; liveCollections: number }[];
+}
+
+export interface AdminArtistCollectionFilters {
+  status?: "all" | "live" | "archived";
+  artistId?: string;
+  organizationId?: string;
+  isPublic?: "true" | "false";
+  empty?: "true" | "false";
+  q?: string;
+  createdFrom?: string;
+  createdTo?: string;
+  sort?: "newest" | "oldest" | "updated" | "name";
+  page?: number;
+  limit?: number;
+}
+
+/** A row from GET /admin/audit/events — the full event, states included. */
+export interface AuditTrailEvent {
+  eventId: string;
+  occurredAt: string;
+  eventType: string;
+  actorType: string;
+  actorId: string | null;
+  actorRoleSnapshot: string | null;
+  organizationId: string | null;
+  resourceType: string;
+  resourceId: string | null;
+  actionResult: "SUCCESS" | "FAILURE" | "DENIED" | string;
+  severity: "INFO" | "WARNING" | "CRITICAL" | string;
+  beforeState?: Record<string, unknown> | null;
+  afterState?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
+  correlationId: string;
+  /** `aud…` — human-readable, never a key. */
+  publicCode?: string | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  deviceId?: string | null;
+  /** Provenance actions: the BlockchainLedger row produced. */
+  ledgerReferenceId?: string | null;
+  /** Write time — the gap from occurredAt shows clock skew and late writes. */
+  insertedAt?: string;
+}
+
+export type AuditSeverity = "INFO" | "WARNING" | "CRITICAL";
+export type AuditActionResult = "SUCCESS" | "FAILURE" | "DENIED";
+
+/** GET /admin/audit/event-types — one catalog row. */
+export interface AuditEventTypeRow {
+  eventType: string;
+  publicCode?: string | null;
+  personaGroup: string;
+  description: string;
+  defaultSeverity: AuditSeverity;
+  /** The requirement that justified recording it. */
+  sourceStories: string[];
+  isActive: boolean;
+  createdAt: string;
+}
+
+/** GET /admin/audit/retention — one row per severity. */
+export interface AuditRetentionPolicy {
+  severity: AuditSeverity;
+  retentionDays: number;
+  notes: string;
+  /** Events older than this, at this severity, are out of policy. */
+  cutoff: string;
+  /** Only with ?withCounts=true or the prune plan. */
+  pendingDeletion?: number;
+}
+
+export interface UpdateRetentionInput {
+  /** 1 – 36,500. */
+  retentionDays: number;
+  /** 10 – 1,000 characters, required. */
+  notes: string;
+}
+
+export interface AuditTrailPage {
+  data: AuditTrailEvent[];
+  meta: { limit: number; returned: number; nextCursor: string | null; hasMore: boolean };
+}
+
+export interface AuditTrailQuery {
+  eventType?: string;
+  actorId?: string;
+  organizationId?: string;
+  resourceType?: string;
+  resourceId?: string;
+  actionResult?: string;
+  severity?: string;
+  correlationId?: string;
+  /** Inclusive. */
+  from?: string;
+  /** Exclusive. */
+  to?: string;
+  /** ≤ 200. */
+  limit?: number;
+}

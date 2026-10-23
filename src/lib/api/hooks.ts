@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import {
+  useInfiniteQuery,
   useMutation,
   useQueries,
   useQuery,
@@ -10,6 +11,26 @@ import {
 } from "@tanstack/react-query";
 import { ApiError, api, unwrap, type QueryValue } from "./client";
 import type {
+  AdminArtistCollection,
+  AdminArtistCollectionDetail,
+  AdminArtistCollectionFilters,
+  AdminArtistCollectionSummary,
+  ArtistCollection,
+  ArtistCollectionDetail,
+  ArtistCollectionHeroUploadUrl,
+  AddCollectionDropsInput,
+  AvailableCollectionDrop,
+  AvailableDropsParams,
+  CollectionDropsResult,
+  AuditEventTypeRow,
+  AuditRetentionPolicy,
+  AuditTrailEvent,
+  AuditTrailPage,
+  AuditTrailQuery,
+  AuditSeverity,
+  UpdateRetentionInput,
+  CreateArtistCollectionInput,
+  UpdateArtistCollectionInput,
   AssignByScanInput,
   CorrectShipmentInput,
   RecordShipmentInput,
@@ -3060,5 +3081,305 @@ export function useCorrectShipment(orderId: string) {
     mutationFn: (body: CorrectShipmentInput) =>
       api.put<unknown>(`admin/orders/${orderId}/shipment`, body).then(unwrap<AdminOrderDetail>),
     onSuccess: (detail) => afterShipment(qc, orderId, detail),
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Artist collections — the artist's own (artist-collection-api.md)    */
+/*                                                                      */
+/* /artist/collections is always the signed-in artist — no artist id   */
+/* in any path. Every write returns the collection; the detail cache    */
+/* keeps its drops (only route 3 lists them) and the lists are re-read. */
+/* ------------------------------------------------------------------ */
+
+export type CollectionListStatus = "live" | "archived" | "all";
+
+export function useMyCollections(status: CollectionListStatus = "live", enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["artist-collections", status],
+    enabled,
+    queryFn: () =>
+      api.get<unknown>("artist/collections", { status }).then(unwrap<ArtistCollection[]>),
+  });
+}
+
+export function useMyCollection(collectionId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["artist-collection", collectionId],
+    enabled: Boolean(collectionId),
+    queryFn: () =>
+      api
+        .get<unknown>(`artist/collections/${collectionId}`)
+        .then(unwrap<ArtistCollectionDetail>),
+  });
+}
+
+function useCollectionWrite<V>(request: (vars: V) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: V) => request(vars).then(unwrap<ArtistCollection>),
+    onSuccess: (c) => {
+      qc.setQueryData<ArtistCollectionDetail>(["artist-collection", c.id], (prev) =>
+        prev ? { ...prev, ...c } : prev
+      );
+      qc.invalidateQueries({ queryKey: ["artist-collections"] });
+    },
+  });
+}
+
+export function useCreateCollection() {
+  return useCollectionWrite((body: CreateArtistCollectionInput) =>
+    api.post<unknown>("artist/collections", body)
+  );
+}
+
+export function useUpdateCollection(collectionId: string) {
+  return useCollectionWrite((body: UpdateArtistCollectionInput) =>
+    api.patch<unknown>(`artist/collections/${collectionId}`, body)
+  );
+}
+
+export function useArchiveCollection() {
+  return useCollectionWrite((collectionId: string) =>
+    api.delete<unknown>(`artist/collections/${collectionId}`)
+  );
+}
+
+/** `name` only when the old one was taken since (ARTIST_COLLECTION_NAME_TAKEN). */
+export function useRestoreCollection() {
+  return useCollectionWrite(({ collectionId, name }: { collectionId: string; name?: string }) =>
+    api.post<unknown>(`artist/collections/${collectionId}/restore`, name ? { name } : {})
+  );
+}
+
+/** The whole live list in its new order; the response replaces the list. */
+export function useReorderCollections() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (collectionIds: string[]) =>
+      api
+        .put<unknown>("artist/collections/order", { collectionIds })
+        .then(unwrap<ArtistCollection[]>),
+    onSuccess: (list) => qc.setQueryData(["artist-collections", "live"], list),
+  });
+}
+
+/** Presign → S3 PUT (retried once on a lapsed URL) → attach. Same as the profile images. */
+export function useUploadCollectionHero(collectionId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (file: File) => {
+      const presign = () =>
+        api
+          .post<unknown>(`artist/collections/${collectionId}/hero/upload-url`, {
+            fileName: file.name,
+            mimeType: file.type,
+            sizeBytes: file.size,
+          })
+          .then(unwrap<ArtistCollectionHeroUploadUrl>);
+      const put = (url: string) =>
+        fetch(url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+
+      let presigned = await presign();
+      let res = await put(presigned.uploadUrl);
+      if (res.status === 403) {
+        presigned = await presign();
+        res = await put(presigned.uploadUrl);
+      }
+      if (!res.ok) {
+        throw new ApiError(
+          res.status,
+          "STORAGE_UPLOAD_FAILED",
+          res.status === 403
+            ? "S3 rejected the upload signature — the file changed size or type, or the link expired."
+            : `The storage service rejected the upload (${res.status}).`,
+          null
+        );
+      }
+      return api
+        .put<unknown>(`artist/collections/${collectionId}/hero`, { assetId: presigned.assetId })
+        .then(unwrap<ArtistCollection>);
+    },
+    onSuccess: (c) => {
+      qc.setQueryData<ArtistCollectionDetail>(["artist-collection", c.id], (prev) =>
+        prev ? { ...prev, ...c } : prev
+      );
+      qc.invalidateQueries({ queryKey: ["artist-collections"] });
+    },
+  });
+}
+
+export function useRemoveCollectionHero(collectionId: string) {
+  return useCollectionWrite(() => api.delete<unknown>(`artist/collections/${collectionId}/hero`));
+}
+
+/**
+ * Route 10: my on-sale drops not already in this collection. With
+ * `includeFiled`, also drops in my other collections (`currentCollection`).
+ */
+export function useAvailableCollectionDrops(
+  collectionId: string,
+  params: AvailableDropsParams,
+  enabled = true
+) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["artist-collection-available", collectionId, params],
+    enabled,
+    placeholderData: (prev) => prev,
+    queryFn: () =>
+      api.get<Paginated<AvailableCollectionDrop>>(
+        `artist/collections/${collectionId}/available-drops`,
+        { ...params, includeFiled: params.includeFiled ? "true" : undefined }
+      ),
+  });
+}
+
+/**
+ * Routes 11 and 12 answer with the whole collection detail; it replaces the
+ * cache. Any collection a drop moved out of is re-read, and so are the lists
+ * (their counts moved) and the picker.
+ */
+function useCollectionDropsWrite<V>(collectionId: string, request: (vars: V) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: V) => request(vars).then(unwrap<CollectionDropsResult>),
+    onSuccess: (r) => {
+      qc.setQueryData(["artist-collection", collectionId], r.collection);
+      new Set(Object.values(r.movedFrom ?? {})).forEach((id) =>
+        qc.invalidateQueries({ queryKey: ["artist-collection", id] })
+      );
+      qc.invalidateQueries({ queryKey: ["artist-collections"] });
+      qc.invalidateQueries({ queryKey: ["artist-collection-available"] });
+    },
+  });
+}
+
+export function useAddCollectionDrops(collectionId: string) {
+  return useCollectionDropsWrite(collectionId, (body: AddCollectionDropsInput) =>
+    api.post<unknown>(`artist/collections/${collectionId}/drops`, body)
+  );
+}
+
+/** The drop stays on sale; it just leaves this collection. */
+export function useRemoveCollectionDrop(collectionId: string) {
+  return useCollectionDropsWrite(collectionId, (dropId: string) =>
+    api.delete<unknown>(`artist/collections/${collectionId}/drops/${dropId}`)
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Artist collections — monitoring (admin-monitoring-api.md)           */
+/*                                                                      */
+/* brand-artist-record:read at GLOBAL scope only. Read-only.            */
+/* ------------------------------------------------------------------ */
+
+export function useAdminCollections(params: AdminArtistCollectionFilters) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-artist-collections", params],
+    queryFn: () =>
+      api.get<Paginated<AdminArtistCollection>>("admin/artist-collections", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useAdminCollectionSummary() {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-artist-collections-summary"],
+    queryFn: () =>
+      api
+        .get<unknown>("admin/artist-collections/summary")
+        .then(unwrap<AdminArtistCollectionSummary>),
+  });
+}
+
+export function useAdminCollection(collectionId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-artist-collection", collectionId],
+    enabled: Boolean(collectionId),
+    queryFn: () =>
+      api
+        .get<unknown>(`admin/artist-collections/${collectionId}`)
+        .then(unwrap<AdminArtistCollectionDetail>),
+  });
+}
+
+/**
+ * GET /admin/audit/events — the raw trail, cursor-paged (no total by design).
+ * Needs audit-log:read; callers gate `enabled` on it.
+ */
+export function useAuditTrail(query: AuditTrailQuery, enabled = true) {
+  return useInfiniteQuery({
+    queryKey: ["audit-trail", query],
+    enabled,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      api.get<AuditTrailPage>("admin/audit/events", { limit: 50, ...query, cursor: pageParam }),
+    getNextPageParam: (last) => (last.meta?.hasMore ? last.meta.nextCursor ?? undefined : undefined),
+  });
+}
+
+/** One request's events, in the order they happened. */
+export function useAuditCorrelation(correlationId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["audit-correlation", correlationId],
+    enabled: Boolean(correlationId),
+    queryFn: () =>
+      api
+        .get<unknown>(`admin/audit/events/correlation/${correlationId}`)
+        .then(unwrap<AuditTrailEvent[]>),
+  });
+}
+
+/** The event catalog as the table holds it. Changes only on a seed run. */
+export function useAuditEventTypes(includeInactive = false, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["audit-event-types", includeInactive],
+    enabled,
+    staleTime: 10 * 60_000,
+    queryFn: () =>
+      api
+        .get<unknown>("admin/audit/event-types", { includeInactive: includeInactive ? "true" : undefined })
+        .then(unwrap<AuditEventTypeRow[]>),
+  });
+}
+
+/**
+ * Retention per severity. `withCounts` adds what the next sweep would remove
+ * — a COUNT over the largest table, so only on request.
+ */
+export function useAuditRetention(withCounts = false, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["audit-retention", withCounts],
+    enabled,
+    queryFn: () =>
+      api
+        .get<unknown>("admin/audit/retention", { withCounts: withCounts ? "true" : undefined })
+        .then(unwrap<AuditRetentionPolicy[]>),
+  });
+}
+
+/** audit-log:manage. Recorded CRITICAL server-side, with both snapshots. */
+export function useUpdateRetention() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ severity, ...body }: UpdateRetentionInput & { severity: AuditSeverity }) =>
+      api
+        .patch<unknown>(`admin/audit/retention/${severity}`, body)
+        .then(unwrap<AuditRetentionPolicy>),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["audit-retention"] });
+      qc.invalidateQueries({ queryKey: ["audit-trail"] });
+    },
   });
 }

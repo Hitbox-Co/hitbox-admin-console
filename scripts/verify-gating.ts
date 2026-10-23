@@ -298,6 +298,22 @@ function main() {
     false
   );
 
+  // Collections: the artist's own (OWN scope), and the platform-wide monitor
+  // (brand-artist-record:read at GLOBAL — globalOnly server-side).
+  check("artist gets My collections", artistNav.includes("/artist/collections"), true);
+  check("brand admin does NOT get My collections", brandAdminNav.includes("/artist/collections"), false);
+  check(
+    "system admin gets the Artist collections monitor",
+    navFor("HITBOX_SYSTEM_ADMIN").includes("/artist-collections"),
+    true
+  );
+  check(
+    "brand admin does NOT get the monitor (organization scope is a 403)",
+    brandAdminNav.includes("/artist-collections"),
+    false
+  );
+  check("artist does NOT get the monitor", artistNav.includes("/artist-collections"), false);
+
   console.log("\nMedia keys off a platform-wide read grant, which `manage` subsumes\n");
   const hrefs = (keys: string[]) =>
     visibleNav(new Permissions(keys)).map((n) => n.href);

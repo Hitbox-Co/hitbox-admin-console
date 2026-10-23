@@ -266,6 +266,42 @@ export class ApiError extends Error {
       case "ARTIST_PROFILE_LOCKED":
         return "HitBox has archived or deactivated this profile, so it can't be edited. Contact support.";
 
+      /* Audit trail (audit-logging.md). */
+      case "AUDIT_CROSS_TENANT_READ":
+        return "You can only read your own organization's audit trail.";
+      case "AUDIT_INVALID_CURSOR":
+        return "That page of the audit log is no longer valid. Reload to start again.";
+      case "AUDIT_RETENTION_POLICY_MISSING":
+        return "A retention policy is missing — the audit seed hasn't been run on this server.";
+      case "AUDIT_WRITE_FAILED":
+        return "The change was refused because its audit record couldn't be written. Nothing was changed — try again.";
+
+      /* Artist collections (artist-collection-api.md). */
+      case "ARTIST_COLLECTION_NOT_FOUND":
+        return "That collection doesn't exist, or it isn't yours.";
+      case "ARTIST_COLLECTION_NAME_TAKEN":
+        return "You already have a collection with that name.";
+      case "ARTIST_COLLECTION_SLUG_TAKEN":
+        return "That web address is already used by another collection.";
+      case "ARTIST_COLLECTION_ARCHIVED":
+        return "This collection is deleted. Restore it before changing it.";
+      case "ARTIST_COLLECTION_NOT_ARCHIVED":
+        return "This collection isn't deleted — it may have just been restored.";
+      case "ARTIST_COLLECTION_HAS_DROPS":
+        return this.message || "This collection still has drops. Remove your on-sale drops first; drafts and drops in review are moved by your brand team or HitBox.";
+      case "ARTIST_COLLECTION_LIMIT_REACHED":
+        return "You already have 50 collections. Delete one before adding another.";
+      case "ARTIST_COLLECTION_DROPS_INVALID":
+        return "Some of those drops can't be added. They're marked in the list.";
+      case "ARTIST_COLLECTION_DROPS_UNAVAILABLE":
+        return "Adding drops isn't available on this server yet.";
+      case "ARTIST_COLLECTION_DROP_NOT_IN_COLLECTION":
+        return "That drop isn't in this collection any more.";
+      case "ARTIST_COLLECTION_DROPS_CHANGED":
+        return "One of those drops changed a moment ago, so nothing was added. The list was refreshed — try again.";
+      case "ARTIST_COLLECTION_ORDER_MISMATCH":
+        return "Your collections changed in another tab. The list was reloaded — try the move again.";
+
       /* Drop types and variants (drop-types-and-variants.md §11). */
       case "PRODUCTS_DROP_TYPE_INVALID":
         return this.message || "That drop-type definition is not valid.";
