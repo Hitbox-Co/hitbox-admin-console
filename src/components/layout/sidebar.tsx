@@ -11,6 +11,7 @@ import {
   Image as ImageIcon,
   KeyRound,
   LayoutDashboard,
+  LibraryBig,
   Package,
   Palette,
   Repeat,
@@ -64,6 +65,7 @@ const ICONS: Record<string, LucideIcon> = {
   Rocket,
   Shapes,
   Undo2,
+  LibraryBig,
 };
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
