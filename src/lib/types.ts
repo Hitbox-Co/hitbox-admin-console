@@ -487,6 +487,9 @@ export interface ProductRow {
   artistId: string | null;
   publishedAt: string | null;
   createdAt: string;
+  publicCode?: string;
+  collectionId?: string | null;
+  isActive?: boolean;
 }
 
 /**
@@ -1899,34 +1902,180 @@ export interface AdminArtist {
   archivedAt: string | null;
   organizationId: string | null;
   organizationName: string | null;
-  counts: { products: number; collections: number };
+  counts: { products: number; collections: number; followers?: number };
 }
 
-/**
- * GET /admin/artists query. The booleans are only ever sent as `true`: the
- * server coerces any non-empty string to true, so `false` can't be asked for.
- */
+export type ArtistDirectorySort = "name" | "newest" | "oldest" | "drops" | "collections" | "followers";
+
+/** GET /admin/artists query (artist-admin-api.md §3). Booleans are strict true/false. */
 export interface AdminArtistFilters {
   search?: string;
   organizationId?: string;
-  isActive?: "true";
-  isPublic?: "true";
-  includeArchived?: "true";
+  isActive?: "true" | "false";
+  isPublic?: "true" | "false";
+  includeArchived?: "true" | "false";
+  sort?: ArtistDirectorySort;
   page?: number;
   limit?: number;
 }
 
-/** One row of the public catalog list (GET /products), as the artist page uses it. */
-export interface CatalogDrop {
-  id: string;
-  name: string;
-  groupCode: string;
-  status: string;
-  totalSupply: number;
-  isActive?: boolean;
-  publishedAt?: string | null;
-  createdAt?: string;
+/** Money as the API sends it: one string amount per currency, never summed. */
+export type CurrencyMap = Record<string, string>;
+
+/** GET /admin/artists/summary. Counts are of live artists except `archived`. */
+export interface ArtistDirectorySummary {
+  total: number;
+  active: number;
+  inactive: number;
+  public: number;
+  unlisted: number;
+  archived: number;
+  newThisMonth: number;
+  withoutAvatar: number;
+  withoutBio: number;
+  withoutAccount: number;
+  withoutCompliance: number;
+  moneyVisible: boolean;
+  /** Ranked by units sold, all time. null when reporting isn't wired. */
+  topBySales:
+    | {
+        artistId: string;
+        name: string;
+        slug: string;
+        avatarUrl: string | null;
+        orders: number;
+        unitsSold: number;
+        revenue?: CurrencyMap;
+      }[]
+    | null;
 }
+
+/** GET /admin/artists/:id/profile — the staff view of an artist. */
+export interface ArtistStaffProfile {
+  id: string;
+  publicCode: string;
+  name: string;
+  slug: string;
+  bio: string | null;
+  genre: string | null;
+  avatarUrl: string | null;
+  coverUrl: string | null;
+  isPublic: boolean;
+  isActive: boolean;
+  archivedAt: string | null;
+  /** Whether the artist can edit their own profile. */
+  editable: boolean;
+  /** null while the invitation is unaccepted. userId is the audit actor id. */
+  account: {
+    userId: string;
+    email: string | null;
+    fullName: string | null;
+    isActive: boolean;
+    joinedAt: string;
+  } | null;
+  invitationId: string | null;
+  organization: { id: string; name: string; type: string } | null;
+  brandLinks: {
+    id: string;
+    organizationId: string;
+    organizationName: string;
+    linkType: string;
+    startDate: string | null;
+    endDate: string | null;
+    isActive: boolean;
+  }[];
+  compliance: { attested: boolean; attestedAt: string | null; attestedById: string | null };
+  payouts: {
+    lastPayout: {
+      id: string;
+      publicCode: string;
+      status: string;
+      currency: string;
+      amount?: string;
+      scheduledAt: string | null;
+      paidAt: string | null;
+      failureReason: string | null;
+    } | null;
+    openBatches: number;
+    failedBatches: number;
+    outstanding?: CurrencyMap;
+    totalPaid?: CurrencyMap;
+  } | null;
+  tax: {
+    documents: {
+      id: string;
+      documentType: string;
+      countryCode: string;
+      status: string;
+      expiresAt: string | null;
+      verifiedAt: string | null;
+      backupWithholdingApplied: boolean;
+    }[];
+    hasApprovedDocument: boolean;
+    backupWithholding: boolean;
+  } | null;
+  counts: { drops: number; collections: number; followers: number; claims: number };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ArtistStatsPeriod = "week" | "month" | "year" | "custom";
+
+export interface ArtistSalesFigures {
+  orders: number;
+  unitsSold: number;
+  revenue?: CurrencyMap;
+}
+
+/** GET /admin/artists/:id/stats. Money keys are absent when moneyVisible is false. */
+export interface ArtistStats {
+  artistId: string;
+  moneyVisible: boolean;
+  period: { type: ArtistStatsPeriod; from: string; to: string };
+  sales: {
+    lifetime: ArtistSalesFigures;
+    period: ArtistSalesFigures;
+    /** Units sold per bucket. */
+    trend: { date: string; value: number }[];
+  };
+  royalties?: {
+    earned: CurrencyMap;
+    paid: CurrencyMap;
+    outstanding: CurrencyMap;
+    periodEarned: CurrencyMap;
+  };
+  claims: { lifetime: number; period: number; revoked: number };
+  followers: {
+    total: number;
+    period: number;
+    trend: { date: string; new: number; total: number }[];
+  };
+  topDrops: {
+    id: string;
+    publicCode: string;
+    name: string;
+    status: string;
+    orders: number;
+    unitsSold: number;
+    revenue?: CurrencyMap;
+  }[];
+}
+
+/** PATCH /admin/artists/:id — strict body, send only what changes. */
+export interface ArtistStaffUpdate {
+  name?: string;
+  slug?: string;
+  bio?: string | null;
+  genre?: string | null;
+  /** Only null: staff can take an image down, not put one up. */
+  avatarUrl?: null;
+  coverUrl?: null;
+  complianceAttested?: boolean;
+  reason?: string;
+}
+
+export type ArtistStateAction = "activate" | "deactivate" | "archive" | "restore" | "publish" | "unlist";
+
 
 /* ------------------------------------------------------------------ */
 /* Market pricing — /admin/products/:id/prices                         */

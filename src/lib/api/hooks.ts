@@ -19,7 +19,12 @@ import type {
   ArtistCollectionDetail,
   ArtistCollectionHeroUploadUrl,
   AdminArtistFilters,
-  CatalogDrop,
+  ArtistDirectorySummary,
+  ArtistStaffProfile,
+  ArtistStaffUpdate,
+  ArtistStateAction,
+  ArtistStats,
+  ArtistStatsPeriod,
   AddCollectionDropsInput,
   AvailableCollectionDrop,
   AvailableDropsParams,
@@ -3431,23 +3436,94 @@ export function useAdminArtist(artistId: string | undefined) {
 }
 
 /**
- * One artist's drops, from the catalog list (GET /products?artistId=) —
- * the only list that filters by artist today.
+ * One artist's drops, every status (drafts and drops in review included) —
+ * the admin drop list filtered by artist (artist-admin-api.md §9).
  */
 export function useArtistDrops(
   artistId: string | undefined,
-  opts: { page?: number; limit?: number; status?: string } = {},
+  opts: { page?: number; limit?: number; status?: string; q?: string } = {},
   enabled = true
 ) {
-  const { page = 1, limit = 20, status } = opts;
+  const { page = 1, limit = 20, status, q } = opts;
   return useQuery({
     ...baseOptions,
-    queryKey: ["artist-drops", artistId, page, limit, status],
+    queryKey: ["artist-drops", artistId, page, limit, status, q],
     enabled: enabled && Boolean(artistId),
     placeholderData: (prev) => prev,
-    queryFn: async (): Promise<Paginated<CatalogDrop>> => {
-      const r = await api.get<DataMeta<CatalogDrop>>("products", { artistId, page, limit, status });
-      return { page: r.meta.page, limit: r.meta.limit, total: r.meta.total, items: r.data };
+    queryFn: () =>
+      api.get<Paginated<ProductRow>>("admin/dashboard/products", { artistId, page, limit, status, q }),
+  });
+}
+
+/* Staff side — brand-artist-record at GLOBAL scope (artist-admin-api.md). */
+
+const artistProfileKey = (id: string | undefined) => ["admin-artist-profile", id] as const;
+
+export function useArtistDirectorySummary(enabled = true, top = 5) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["artist-directory-summary", top],
+    enabled,
+    queryFn: () =>
+      api.get<unknown>("admin/artists/summary", { top }).then(unwrap<ArtistDirectorySummary>),
+  });
+}
+
+export function useArtistStaffProfile(artistId: string | undefined, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: artistProfileKey(artistId),
+    enabled: enabled && Boolean(artistId),
+    queryFn: () =>
+      api.get<unknown>(`admin/artists/${artistId}/profile`).then(unwrap<ArtistStaffProfile>),
+  });
+}
+
+export function useArtistStats(
+  artistId: string | undefined,
+  params: { period: ArtistStatsPeriod; from?: string; to?: string; topDrops?: number },
+  enabled = true
+) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-artist-stats", artistId, params],
+    enabled: enabled && Boolean(artistId) && (params.period !== "custom" || Boolean(params.from && params.to)),
+    placeholderData: (prev) => prev,
+    queryFn: () =>
+      api.get<unknown>(`admin/artists/${artistId}/stats`, { ...params }).then(unwrap<ArtistStats>),
+  });
+}
+
+/** Every staff write answers with the full profile — it replaces the cache. */
+function useArtistStaffWrite<V>(artistId: string, request: (vars: V) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: V) => request(vars).then(unwrap<ArtistStaffProfile>),
+    onSuccess: (profile) => {
+      qc.setQueryData(artistProfileKey(artistId), profile);
+      qc.invalidateQueries({ queryKey: ["admin-artist", artistId] });
+      qc.invalidateQueries({ queryKey: ["artist-directory"] });
+      qc.invalidateQueries({ queryKey: ["artist-directory-summary"] });
+      qc.invalidateQueries({ queryKey: ["admin-artists"] });
+      qc.invalidateQueries({ queryKey: ["audit-trail"] });
+    },
+    onError: (err) => {
+      // Someone else changed it — show the current record.
+      if (err instanceof ApiError && err.code === "ARTIST_CHANGED") {
+        qc.invalidateQueries({ queryKey: artistProfileKey(artistId) });
+      }
     },
   });
+}
+
+export function useUpdateArtistStaff(artistId: string) {
+  return useArtistStaffWrite(artistId, (body: ArtistStaffUpdate) =>
+    api.patch<unknown>(`admin/artists/${artistId}`, body)
+  );
+}
+
+export function useArtistStateAction(artistId: string) {
+  return useArtistStaffWrite(artistId, ({ action, reason }: { action: ArtistStateAction; reason?: string }) =>
+    api.post<unknown>(`admin/artists/${artistId}/${action}`, reason ? { reason } : {})
+  );
 }

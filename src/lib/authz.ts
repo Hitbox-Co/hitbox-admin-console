@@ -368,6 +368,16 @@ export class Permissions {
    * platform-wide drop reach. Organization-scoped callers (Artist, Brand)
    * review a drop from its approval page instead.
    */
+  /** The staff artist reads — summary, full profile, stats (artist-admin-api.md §1). */
+  canReadArtistRecords(): boolean {
+    return this.can("brand-artist-record", "read", "global");
+  }
+
+  /** Staff edits and state actions on an artist. */
+  canManageArtists(): boolean {
+    return this.can("brand-artist-record", "update", "global");
+  }
+
   canOpenDropPage(): boolean {
     return this.reaches("drop");
   }
@@ -494,6 +504,7 @@ export interface NavItem {
     | "Overview"
     | "Commerce"
     | "Catalog"
+    | "Artists"
     | "Inventory"
     | "Trust"
     | "Administration";
@@ -613,14 +624,14 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/artists",
     label: "Artists",
     icon: "MicVocal",
-    group: "Catalog",
+    group: "Artists",
     visible: (p) => p.canOpen("/artists"),
   },
   {
     href: "/artist-collections",
     label: "Artist collections",
     icon: "LibraryBig",
-    group: "Catalog",
+    group: "Artists",
     visible: (p) => p.canOpen("/artist-collections"),
   },
   {
@@ -749,6 +760,8 @@ export const NAV_GROUP_ORDER = [
   "Overview",
   "Commerce",
   "Catalog",
+  // The people behind the catalog, and how they group their drops.
+  "Artists",
   // Upstream of the catalog: the carton, the chip, the unit, the vendor.
   "Inventory",
   "Trust",

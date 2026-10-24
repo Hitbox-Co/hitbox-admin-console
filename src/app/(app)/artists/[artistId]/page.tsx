@@ -3,22 +3,49 @@
 import * as React from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, Building2, LibraryBig, Package, ScrollText, ShoppingBag, Sparkles } from "lucide-react";
-import { useAdminArtist, useAdminCollections, useArtistDrops } from "@/lib/api/hooks";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
+  Building2,
+  Heart,
+  LibraryBig,
+  Package,
+  Pencil,
+  ScrollText,
+  ShieldCheck,
+  ShieldX,
+  Sparkles,
+} from "lucide-react";
+import {
+  useAdminArtist,
+  useAdminCollections,
+  useArtistDrops,
+  useArtistStaffProfile,
+} from "@/lib/api/hooks";
 import { formatDate, formatNumber, humanize } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { usePageChrome } from "@/components/layout/app-shell";
 import { usePermissions } from "@/components/layout/authz-provider";
 import { PageGuard } from "@/components/layout/page-guard";
-import { Badge, Mono, Panel, Segmented, Skeleton, toneForStatus } from "@/components/ui/primitives";
+import { Badge, Button, Mono, Panel, Segmented, Skeleton, Tooltip, toneForStatus } from "@/components/ui/primitives";
 import { Pagination } from "@/components/ui/table";
+import { SearchInput } from "@/components/ui/filters";
 import { EmptyState, ErrorState } from "@/components/ui/states";
 import { ArtistAvatar, ArtistStatusChips } from "@/components/artist/artist-bits";
 import { HeroThumb, StatusChips } from "@/components/artist/collection-bits";
 import { DropMonogram } from "@/components/artist/drop-tile";
-import type { AdminArtist } from "@/lib/types";
+import { ArtistStatsTab } from "@/components/artist/artist-stats";
+import { ArtistAboutTab } from "@/components/artist/artist-about";
+import { ArtistActionMenu, EditArtistDialog } from "@/components/artist/artist-admin-actions";
+import { ResourceHistory } from "@/components/artist/collection-history";
 
-/** One artist: who they are, their numbers, their drops and collections. Read-only. */
+/**
+ * One artist (artist-admin-api.md). Staff with the platform-wide
+ * brand-artist-record grant get the full profile, stats, edit and state
+ * actions; a directory reader (drop:read) gets the directory row, drops and
+ * collections.
+ */
 export default function ArtistPage() {
   return (
     <PageGuard can={(p) => p.canOpen("/artists")} what="The artist directory" requires="drop:read (platform-wide)">
@@ -35,24 +62,56 @@ function BackLink() {
   );
 }
 
-type Tab = "drops" | "collections";
+type Tab = "overview" | "drops" | "collections" | "about" | "activity";
+
+/** What the header needs — from the staff profile, or the directory row. */
+type HeaderArtist = {
+  id: string;
+  name: string;
+  slug: string;
+  genre: string | null;
+  avatarUrl: string | null;
+  coverUrl: string | null;
+  isActive: boolean;
+  isPublic: boolean;
+  archivedAt: string | null;
+  organizationName: string | null;
+  counts: { drops: number; collections: number; followers?: number };
+};
 
 function ArtistView() {
   const { artistId } = useParams<{ artistId: string }>();
   const perms = usePermissions();
-  const query = useAdminArtist(artistId);
-  const a = query.data;
+  const staff = perms.canReadArtistRecords();
+  const canManage = perms.canManageArtists();
   const canCollections = perms.canOpen("/artist-collections");
-  const [tab, setTab] = React.useState<Tab>("drops");
+  const canAudit = perms.canOpen("/activity");
 
-  // Numbers the directory row doesn't carry — each a one-row read of a total.
-  const onSale = useArtistDrops(artistId, { status: "ACTIVE", limit: 1 });
-  // brand-artist-record:read (global) — not every directory reader has it.
-  const liveCollections = useAdminCollections({ artistId, status: "live", limit: 1 }, canCollections);
-  const publicCollections = useAdminCollections(
-    { artistId, status: "live", isPublic: "true", limit: 1 },
-    canCollections
-  );
+  const profile = useArtistStaffProfile(artistId, staff);
+  const row = useAdminArtist(staff ? undefined : artistId);
+  const query = staff ? profile : row;
+  const p = profile.data;
+
+  const [tab, setTab] = React.useState<Tab>(staff ? "overview" : "drops");
+  const [editing, setEditing] = React.useState(false);
+
+  const a: HeaderArtist | undefined = p
+    ? {
+        ...p,
+        organizationName: p.organization?.name ?? null,
+        counts: p.counts,
+      }
+    : row.data
+      ? {
+          ...row.data,
+          coverUrl: null,
+          counts: {
+            drops: row.data.counts.products,
+            collections: row.data.counts.collections,
+            followers: row.data.counts.followers,
+          },
+        }
+      : undefined;
 
   usePageChrome({ title: a?.name ?? "Artist", description: a ? `@${a.slug}` : undefined });
 
@@ -60,7 +119,8 @@ function ArtistView() {
     return (
       <div className="space-y-4">
         <BackLink />
-        <Skeleton className="h-48 w-full rounded-2xl" />
+        <Skeleton className="h-56 w-full rounded-2xl" />
+        <Skeleton className="h-9 w-80 rounded-[8px]" />
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-24 rounded-xl" />
@@ -80,86 +140,141 @@ function ArtistView() {
     );
   }
 
-  // The artist's account id rides on their collections — the only way to
-  // reach "everything they did" in the audit log today.
-  const userId = liveCollections.data?.items[0]?.artist.userId ?? null;
+  const tabs: { value: Tab; label: string }[] = [
+    ...(staff ? [{ value: "overview" as const, label: "Overview" }] : []),
+    { value: "drops", label: `Drops · ${formatNumber(a.counts.drops)}` },
+    ...(canCollections ? [{ value: "collections" as const, label: `Collections · ${formatNumber(a.counts.collections)}` }] : []),
+    ...(staff ? [{ value: "about" as const, label: "About" }] : []),
+    ...(canAudit ? [{ value: "activity" as const, label: "Activity" }] : []),
+  ];
 
   return (
     <div className="space-y-5">
       <BackLink />
-      <Hero a={a} userId={userId} />
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat icon={Package} label="Drops" value={a.counts.products} hint="Every drop credited to them" />
-        <Stat icon={ShoppingBag} label="On sale" value={onSale.data?.total} hint="Active in the catalog" />
-        <Stat
-          icon={LibraryBig}
-          label="Collections"
-          value={canCollections ? liveCollections.data?.total : a.counts.collections}
-          hint={canCollections ? `${formatNumber(a.counts.collections)} ever created` : "Ever created"}
-        />
-        {canCollections ? (
-          <Stat icon={Sparkles} label="Public collections" value={publicCollections.data?.total} hint="On their page" />
-        ) : null}
-      </div>
+      <Hero
+        a={a}
+        attested={p?.compliance.attested}
+        actions={
+          p && canManage ? (
+            <>
+              {!p.archivedAt ? (
+                <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
+                  <Pencil className="h-3.5 w-3.5" /> Edit
+                </Button>
+              ) : null}
+              <ArtistActionMenu profile={p} />
+            </>
+          ) : null
+        }
+        links={
+          <>
+            {canCollections ? (
+              <QuickLink href={`/artist-collections?artistId=${a.id}`} icon={LibraryBig}>
+                Collections
+              </QuickLink>
+            ) : null}
+            {p?.account && canAudit ? (
+              <QuickLink href={`/activity?actorId=${p.account.userId}`} icon={ScrollText}>
+                What they did
+              </QuickLink>
+            ) : null}
+          </>
+        }
+      />
 
-      <div className="space-y-3">
-        {canCollections ? (
-          <Segmented
-            value={tab}
-            onChange={setTab}
-            options={[
-              { value: "drops", label: `Drops (${formatNumber(a.counts.products)})` },
-              { value: "collections", label: `Collections (${formatNumber(a.counts.collections)})` },
-            ]}
-          />
-        ) : null}
-        {tab === "collections" && canCollections ? <CollectionsTab artistId={a.id} /> : <DropsTab artistId={a.id} />}
-      </div>
+      {p && <Alerts p={p} />}
+
+      <Segmented value={tab} onChange={setTab} options={tabs} />
+
+      {tab === "overview" && staff ? (
+        <ArtistStatsTab artistId={a.id} />
+      ) : tab === "collections" && canCollections ? (
+        <CollectionsTab artistId={a.id} />
+      ) : tab === "about" && p ? (
+        <ArtistAboutTab p={p} />
+      ) : tab === "activity" && canAudit ? (
+        <Panel className="overflow-hidden">
+          <ResourceHistory resourceType="Artist" resourceId={a.id} />
+        </Panel>
+      ) : (
+        <DropsTab artistId={a.id} />
+      )}
+
+      {editing && p ? <EditArtistDialog key={p.updatedAt} profile={p} onClose={() => setEditing(false)} /> : null}
     </div>
   );
 }
 
-function Hero({ a, userId }: { a: AdminArtist; userId: string | null }) {
-  const perms = usePermissions();
+/* ------------------------------------------------------------------ */
+/* Header                                                              */
+/* ------------------------------------------------------------------ */
+
+function Hero({
+  a,
+  attested,
+  actions,
+  links,
+}: {
+  a: HeaderArtist;
+  attested?: boolean;
+  actions: React.ReactNode;
+  links: React.ReactNode;
+}) {
   return (
     <div className="overflow-hidden rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)]">
-      <div className="relative h-28 bg-gradient-to-br from-[var(--accent)] via-[#8b5cf6] to-[#ec4899] sm:h-32">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_120%,rgba(255,255,255,0.25),transparent_55%)]" />
+      <div className="relative h-32 sm:h-40">
+        {a.coverUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- a public S3 URL
+          <img src={a.coverUrl} alt="" className="h-full w-full object-cover" />
+        ) : (
+          <div className="h-full w-full bg-gradient-to-br from-[var(--accent)] via-[#8b5cf6] to-[#ec4899]">
+            <div className="h-full w-full bg-[radial-gradient(circle_at_20%_120%,rgba(255,255,255,0.25),transparent_55%)]" />
+          </div>
+        )}
+        <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-[rgba(0,0,0,0.35)] to-transparent" />
       </div>
       <div className="relative px-5 pb-5">
-        <div className="-mt-10 flex flex-wrap items-end gap-4">
-          <div className="relative z-10 rounded-full ring-4 ring-[var(--surface-1)]">
-            <ArtistAvatar artist={a} size={84} />
+        {/* Only the avatar overlaps the cover; the name and chips sit below it. */}
+        <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
+          <div className="relative z-10 -mt-12 shrink-0 rounded-full ring-4 ring-[var(--surface-1)]">
+            <ArtistAvatar artist={a} size={92} />
           </div>
-          <div className="min-w-0 flex-1 pb-1">
+          <div className="min-w-0 flex-1 pt-3">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-[20px] font-semibold tracking-[-0.02em] text-[var(--text-1)]">{a.name}</h2>
+              <h2 className="text-[21px] font-semibold tracking-[-0.02em] text-[var(--text-1)]">{a.name}</h2>
               <ArtistStatusChips artist={a} />
+              {attested === undefined ? null : attested ? (
+                <Tooltip content="HitBox has attested this artist's compliance.">
+                  <span>
+                    <Badge tone="positive">
+                      <ShieldCheck className="h-3 w-3" /> Verified
+                    </Badge>
+                  </span>
+                </Tooltip>
+              ) : null}
             </div>
             <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-[var(--text-3)]">
               <Mono className="text-[11.5px]">@{a.slug}</Mono>
-              {a.genre ? <span>{a.genre}</span> : null}
+              {a.genre ? <span>{humanize(a.genre)}</span> : null}
               {a.organizationName ? (
                 <span className="inline-flex items-center gap-1">
                   <Building2 className="h-3.5 w-3.5" />
                   {a.organizationName}
                 </span>
               ) : null}
+              {a.counts.followers !== undefined ? (
+                <span className="inline-flex items-center gap-1">
+                  <Heart className="h-3.5 w-3.5" />
+                  {formatNumber(a.counts.followers)} follower{a.counts.followers === 1 ? "" : "s"}
+                </span>
+              ) : null}
               {a.archivedAt ? <span>Archived {formatDate(a.archivedAt)}</span> : null}
             </p>
           </div>
-          <div className="flex flex-wrap gap-2 pb-1">
-            {perms.canOpen("/artist-collections") ? (
-              <QuickLink href={`/artist-collections?artistId=${a.id}`} icon={LibraryBig}>
-                Collections
-              </QuickLink>
-            ) : null}
-            {userId && perms.canOpen("/activity") ? (
-              <QuickLink href={`/activity?actorId=${userId}`} icon={ScrollText}>
-                Activity
-              </QuickLink>
-            ) : null}
+          <div className="flex flex-wrap items-center gap-2 pt-3">
+            {links}
+            {actions}
           </div>
         </div>
       </div>
@@ -171,7 +286,7 @@ function QuickLink({ href, icon: Icon, children }: { href: string; icon: typeof 
   return (
     <Link
       href={href}
-      className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] px-3 text-[12px] text-[var(--text-2)] transition-colors hover:border-[var(--hairline-strong)] hover:text-[var(--text-1)]"
+      className="inline-flex h-7 items-center gap-1.5 rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] px-3 text-[12px] text-[var(--text-2)] transition-colors hover:border-[var(--hairline-strong)] hover:text-[var(--text-1)]"
     >
       <Icon className="h-3.5 w-3.5" />
       {children}
@@ -179,88 +294,147 @@ function QuickLink({ href, icon: Icon, children }: { href: string; icon: typeof 
   );
 }
 
-function Stat({
-  icon: Icon,
-  label,
-  value,
-  hint,
-}: {
-  icon: typeof Package;
-  label: string;
-  value: number | undefined;
-  hint: string;
-}) {
+/** The few things on a profile that need someone to act. */
+function Alerts({ p }: { p: NonNullable<ReturnType<typeof useArtistStaffProfile>["data"]> }) {
+  const items: { tone: "warning" | "danger"; icon: typeof AlertTriangle; text: string }[] = [];
+  if (p.archivedAt) items.push({ tone: "warning", icon: AlertTriangle, text: "Archived — restore from Actions to edit or change anything." });
+  else if (!p.isActive) items.push({ tone: "warning", icon: AlertTriangle, text: "Inactive — selling is off and the artist can't edit their profile." });
+  if (!p.compliance.attested && !p.archivedAt) items.push({ tone: "warning", icon: ShieldX, text: "Compliance hasn't been attested." });
+  if (!p.account) items.push({ tone: "warning", icon: AlertTriangle, text: "The artist hasn't accepted their invitation yet." });
+  if ((p.payouts?.failedBatches ?? 0) > 0) items.push({ tone: "danger", icon: AlertTriangle, text: `${p.payouts!.failedBatches} payout batch(es) failed — see About.` });
+  if (items.length === 0) return null;
   return (
-    <div className="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] px-4 py-3.5">
-      <p className="flex items-center gap-1.5 text-[12px] text-[var(--text-3)]">
-        <Icon className="h-3.5 w-3.5" aria-hidden />
-        {label}
-      </p>
-      {value === undefined ? (
-        <Skeleton className="mt-1.5 h-7 w-12" />
-      ) : (
-        <p className="tnum mt-1 text-[26px] font-semibold leading-none text-[var(--text-1)]">{formatNumber(value)}</p>
-      )}
-      <p className="mt-1.5 truncate text-[11px] text-[var(--text-3)]">{hint}</p>
+    <div className="flex flex-wrap gap-2">
+      {items.map((i) => (
+        <span
+          key={i.text}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px]",
+            i.tone === "danger" ? "bg-[var(--danger-dim)] text-[var(--danger)]" : "bg-[var(--warning-dim)] text-[var(--warning)]"
+          )}
+        >
+          <i.icon className="h-3.5 w-3.5" />
+          {i.text}
+        </span>
+      ))}
     </div>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* Drops — every status (admin/dashboard/products?artistId=)           */
+/* ------------------------------------------------------------------ */
+
+const DROP_STATUSES = ["DRAFT", "SUBMITTED", "IN_REVIEW", "APPROVED", "ACTIVE", "ENDED", "REJECTED"];
 
 function DropsTab({ artistId }: { artistId: string }) {
   const perms = usePermissions();
   const router = useRouter();
   const [page, setPage] = React.useState(1);
-  const q = useArtistDrops(artistId, { page, limit: 12 });
+  const [status, setStatus] = React.useState<string | undefined>();
+  const [search, setSearch] = React.useState("");
+  const [q, setQ] = React.useState("");
+  React.useEffect(() => {
+    const t = setTimeout(() => {
+      setQ(search.trim());
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+  const drops = useArtistDrops(artistId, { page, limit: 12, status, q: q || undefined });
   const canOpen = perms.canOpenDropPage();
+  const items = drops.data?.items ?? [];
 
-  if (q.isLoading) {
-    return (
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {Array.from({ length: 6 }).map((_, i) => (
-          <Skeleton key={i} className="h-[76px] rounded-xl" />
-        ))}
-      </div>
-    );
-  }
-  if (q.isError) return <Panel><ErrorState error={q.error} onRetry={() => q.refetch()} /></Panel>;
-  const items = q.data?.items ?? [];
-  if (items.length === 0) {
-    return <Panel><EmptyState icon={Package} title="No drops yet" description="Drops credited to this artist appear here." /></Panel>;
-  }
   return (
     <div className="space-y-3">
-      <ul className={cn("grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3", q.isFetching && "opacity-60")}>
-        {items.map((d) => (
-          <li key={d.id}>
+      <div className="flex flex-wrap items-center gap-2">
+        <SearchInput value={search} onChange={setSearch} placeholder="Name or group code" className="w-[220px]" />
+        <div className="flex flex-wrap gap-1">
+          {[undefined, ...DROP_STATUSES].map((s) => (
             <button
+              key={s ?? "all"}
               type="button"
-              disabled={!canOpen}
-              onClick={() => router.push(`/products/${d.id}`)}
-              className="flex w-full items-center gap-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-3 text-left transition-all enabled:hover:-translate-y-0.5 enabled:hover:border-[var(--hairline-strong)] enabled:hover:shadow-[var(--shadow-2)]"
+              aria-pressed={status === s}
+              onClick={() => {
+                setStatus(s);
+                setPage(1);
+              }}
+              className={cn(
+                "h-7 rounded-full border px-2.5 text-[11.5px] transition-colors",
+                status === s
+                  ? "border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent-text)]"
+                  : "border-[var(--hairline)] text-[var(--text-2)] hover:border-[var(--hairline-strong)]"
+              )}
             >
-              <DropMonogram id={d.id} name={d.name} className="h-12 w-12 rounded-[10px] text-[14px]" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] font-medium text-[var(--text-1)]">{d.name}</span>
-                <span className="mt-0.5 flex items-center gap-2 text-[11.5px] text-[var(--text-3)]">
-                  <Mono className="text-[10.5px]">{d.groupCode}</Mono>
-                  <span className="tnum">{formatNumber(d.totalSupply)} made</span>
-                </span>
-              </span>
-              <Badge tone={toneForStatus(d.status)} dot>
-                {humanize(d.status)}
-              </Badge>
+              {s ? humanize(s) : "All"}
             </button>
-          </li>
-        ))}
-      </ul>
-      {(q.data?.total ?? 0) > 12 ? (
-        <Panel className="overflow-hidden">
-          <Pagination page={page} limit={12} total={q.data?.total ?? 0} onPageChange={setPage} />
+          ))}
+        </div>
+      </div>
+
+      {drops.isLoading ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="h-[76px] rounded-xl" />
+          ))}
+        </div>
+      ) : drops.isError ? (
+        <Panel>
+          <ErrorState error={drops.error} onRetry={() => drops.refetch()} />
         </Panel>
-      ) : null}
+      ) : items.length === 0 ? (
+        <Panel>
+          <EmptyState
+            icon={Package}
+            title={status || q ? "No drops match" : "No drops yet"}
+            description={status || q ? "Try another status or search." : "Drops credited to this artist appear here, drafts included."}
+          />
+        </Panel>
+      ) : (
+        <>
+          <ul className={cn("grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3", drops.isFetching && "opacity-60")}>
+            {items.map((d) => (
+              <li key={d.id}>
+                <button
+                  type="button"
+                  disabled={!canOpen}
+                  onClick={() => router.push(`/products/${d.id}`)}
+                  className="flex w-full items-center gap-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-3 text-left transition-all enabled:hover:-translate-y-0.5 enabled:hover:border-[var(--hairline-strong)] enabled:hover:shadow-[var(--shadow-2)]"
+                >
+                  <DropMonogram id={d.id} name={d.name} className="h-12 w-12 rounded-[10px] text-[14px]" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] font-medium text-[var(--text-1)]">{d.name}</span>
+                    <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11.5px] text-[var(--text-3)]">
+                      <Mono className="text-[10.5px]">{d.groupCode}</Mono>
+                      <span className="tnum">{formatNumber(d.totalSupply)} made</span>
+                      {d.collectionId ? (
+                        <span className="inline-flex items-center gap-0.5">
+                          <LibraryBig className="h-3 w-3" /> in a collection
+                        </span>
+                      ) : null}
+                    </span>
+                  </span>
+                  <Badge tone={toneForStatus(d.status)} dot>
+                    {humanize(d.status)}
+                  </Badge>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {(drops.data?.total ?? 0) > 12 ? (
+            <Panel className="overflow-hidden">
+              <Pagination page={page} limit={12} total={drops.data?.total ?? 0} onPageChange={setPage} />
+            </Panel>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* Collections                                                         */
+/* ------------------------------------------------------------------ */
 
 function CollectionsTab({ artistId }: { artistId: string }) {
   const router = useRouter();
@@ -274,10 +448,20 @@ function CollectionsTab({ artistId }: { artistId: string }) {
       </div>
     );
   }
-  if (q.isError) return <Panel><ErrorState error={q.error} onRetry={() => q.refetch()} /></Panel>;
+  if (q.isError) {
+    return (
+      <Panel>
+        <ErrorState error={q.error} onRetry={() => q.refetch()} />
+      </Panel>
+    );
+  }
   const items = q.data?.items ?? [];
   if (items.length === 0) {
-    return <Panel><EmptyState icon={LibraryBig} title="No collections" description="This artist hasn't created a collection yet." /></Panel>;
+    return (
+      <Panel>
+        <EmptyState icon={Sparkles} title="No collections" description="This artist hasn't created a collection yet." />
+      </Panel>
+    );
   }
   return (
     <div className="space-y-3">

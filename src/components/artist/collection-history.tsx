@@ -24,19 +24,42 @@ const EVENT_LABEL: Record<string, string> = {
   "artist.collection.archive": "Deleted",
   "artist.collection.restore": "Restored",
   "artist.collection.reorder": "Reordered",
+  "artist.collection.drops.add": "Drops added",
+  "artist.collection.drops.remove": "Drop removed",
+  "artist.profile.update": "Profile edited",
+  "artist.profile.compliance.attest": "Compliance attested",
+  "artist.profile.compliance.revoke": "Attestation withdrawn",
+  "artist.profile.activate": "Activated",
+  "artist.profile.deactivate": "Deactivated",
+  "artist.profile.archive": "Archived",
+  "artist.profile.restore": "Restored",
+  "artist.profile.publish": "Published",
+  "artist.profile.unlist": "Unlisted",
 };
 
 const EVENT_TONE: Record<string, "positive" | "danger" | "accent" | "neutral"> = {
   "artist.collection.create": "positive",
   "artist.collection.archive": "danger",
   "artist.collection.restore": "accent",
+  "artist.profile.compliance.attest": "positive",
+  "artist.profile.activate": "positive",
+  "artist.profile.deactivate": "danger",
+  "artist.profile.archive": "danger",
+  "artist.profile.compliance.revoke": "danger",
+  "artist.profile.restore": "accent",
+  "artist.profile.publish": "accent",
 };
 
 /** Bookkeeping fields every snapshot carries — noise in a diff. */
 const IGNORED = new Set(["updatedAt", "createdAt", "id", "artistId", "organizationId", "publicCode"]);
 
 export function CollectionHistory({ collectionId }: { collectionId: string }) {
-  const trail = useAuditTrail({ resourceType: "ArtistCollection", resourceId: collectionId });
+  return <ResourceHistory resourceType="ArtistCollection" resourceId={collectionId} />;
+}
+
+/** Any record's audit history — the same list, keyed by resource. */
+export function ResourceHistory({ resourceType, resourceId }: { resourceType: string; resourceId: string }) {
+  const trail = useAuditTrail({ resourceType, resourceId });
   const events = trail.data?.pages.flatMap((p) => p.data ?? []) ?? [];
 
   if (trail.isLoading) {
@@ -68,7 +91,7 @@ export function CollectionHistory({ collectionId }: { collectionId: string }) {
       </ol>
       <div className="flex items-center justify-between gap-2 border-t border-[var(--hairline)] px-4 py-2">
         <Link
-          href={`/activity?resourceType=ArtistCollection&resourceId=${collectionId}`}
+          href={`/activity?resourceType=${resourceType}&resourceId=${resourceId}`}
           className="text-[11.5px] text-[var(--text-3)] hover:text-[var(--text-1)]"
         >
           Open in the audit log →
@@ -89,6 +112,7 @@ function HistoryRow({ event: e }: { event: AuditTrailEvent }) {
   const [open, setOpen] = React.useState(false);
   const changes = diffStates(e.beforeState, e.afterState, IGNORED);
   const label = EVENT_LABEL[e.eventType] ?? humanize(e.eventType.split(".").pop() ?? e.eventType);
+  const reason = typeof e.metadata?.reason === "string" ? e.metadata.reason : null;
 
   return (
     <li className="px-4 py-2.5">
@@ -111,6 +135,7 @@ function HistoryRow({ event: e }: { event: AuditTrailEvent }) {
         <span className="tnum ml-auto text-[11.5px] text-[var(--text-3)]">{formatDateTime(e.occurredAt)}</span>
       </div>
 
+      {reason ? <p className="mt-1 text-[12px] italic text-[var(--text-2)]">&ldquo;{reason}&rdquo;</p> : null}
       {changes.length ? (
         <>
           <button

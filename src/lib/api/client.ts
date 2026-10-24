@@ -266,6 +266,22 @@ export class ApiError extends Error {
       case "ARTIST_PROFILE_LOCKED":
         return "HitBox has archived or deactivated this profile, so it can't be edited. Contact support.";
 
+      /* Artist administration (artist-admin-api.md §11). */
+      case "ARTIST_NOT_FOUND":
+        return "That artist doesn't exist.";
+      case "ARTIST_ARCHIVED":
+        return "This artist is archived. Restore them first.";
+      case "ARTIST_NOT_ARCHIVED":
+        return "This artist isn't archived.";
+      case "ARTIST_INACTIVE":
+        return "This artist is inactive. Activate them before publishing.";
+      case "ARTIST_STATE_UNCHANGED":
+        return this.message || "Nothing to change — the artist is already in that state.";
+      case "ARTIST_CHANGED":
+        return "Someone else changed this artist a moment ago. The page was refreshed — try again.";
+      case "ARTIST_STATS_UNAVAILABLE":
+        return "Artist statistics aren't available on this server yet.";
+
       /* Audit trail (audit-logging.md). */
       case "AUDIT_CROSS_TENANT_READ":
         return "You can only read your own organization's audit trail.";
