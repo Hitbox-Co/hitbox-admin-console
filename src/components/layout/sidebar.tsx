@@ -12,6 +12,7 @@ import {
   KeyRound,
   LayoutDashboard,
   LibraryBig,
+  MicVocal,
   Package,
   Palette,
   Repeat,
@@ -66,6 +67,7 @@ const ICONS: Record<string, LucideIcon> = {
   Shapes,
   Undo2,
   LibraryBig,
+  MicVocal,
 };
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {

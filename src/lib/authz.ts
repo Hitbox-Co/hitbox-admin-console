@@ -439,6 +439,9 @@ const ROUTE_ACCESS: Record<string, (p: Permissions) => boolean> = {
   // GET /admin/drop-types takes drop:read with no organization context, so
   // only a platform-wide read passes. Writes are gated on the page.
   "/products/types": (p) => p.reaches("drop"),
+  // The artist directory (/admin/artists) takes drop:read; it carries no
+  // organization context, so only a platform-wide read passes.
+  "/artists": (p) => p.reaches("drop"),
   // Monitoring of every artist's collections — globalOnly server-side, so an
   // organization-scoped Brand Admin is refused.
   "/artist-collections": (p) => p.can("brand-artist-record", "read", "global"),
@@ -605,6 +608,13 @@ export const NAV_ITEMS: NavItem[] = [
     icon: "Package",
     group: "Catalog",
     visible: (p) => p.canOpen("/products"),
+  },
+  {
+    href: "/artists",
+    label: "Artists",
+    icon: "MicVocal",
+    group: "Catalog",
+    visible: (p) => p.canOpen("/artists"),
   },
   {
     href: "/artist-collections",

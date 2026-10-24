@@ -313,6 +313,10 @@ function main() {
     false
   );
   check("artist does NOT get the monitor", artistNav.includes("/artist-collections"), false);
+  // The artist directory (/admin/artists) takes drop:read with no organization context.
+  check("system admin gets Artists", navFor("HITBOX_SYSTEM_ADMIN").includes("/artists"), true);
+  check("brand admin does NOT get Artists (organization scope)", brandAdminNav.includes("/artists"), false);
+  check("artist does NOT get Artists", artistNav.includes("/artists"), false);
 
   console.log("\nMedia keys off a platform-wide read grant, which `manage` subsumes\n");
   const hrefs = (keys: string[]) =>

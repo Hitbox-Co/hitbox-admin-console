@@ -18,6 +18,8 @@ import type {
   ArtistCollection,
   ArtistCollectionDetail,
   ArtistCollectionHeroUploadUrl,
+  AdminArtistFilters,
+  CatalogDrop,
   AddCollectionDropsInput,
   AvailableCollectionDrop,
   AvailableDropsParams,
@@ -3276,10 +3278,11 @@ export function useRemoveCollectionDrop(collectionId: string) {
 /* brand-artist-record:read at GLOBAL scope only. Read-only.            */
 /* ------------------------------------------------------------------ */
 
-export function useAdminCollections(params: AdminArtistCollectionFilters) {
+export function useAdminCollections(params: AdminArtistCollectionFilters, enabled = true) {
   return useQuery({
     ...baseOptions,
     queryKey: ["admin-artist-collections", params],
+    enabled,
     queryFn: () =>
       api.get<Paginated<AdminArtistCollection>>("admin/artist-collections", { ...params }),
     placeholderData: (prev) => prev,
@@ -3380,6 +3383,71 @@ export function useUpdateRetention() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["audit-retention"] });
       qc.invalidateQueries({ queryKey: ["audit-trail"] });
+    },
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Artists directory — /admin/artists (drop:read)                      */
+/*                                                                      */
+/* `{ data, meta }` on the wire; reshaped to Paginated for the table.   */
+/* ------------------------------------------------------------------ */
+
+type DataMeta<T> = { data: T[]; meta: { page: number; limit: number; total: number } };
+
+export function useArtistDirectory(params: AdminArtistFilters, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["artist-directory", params],
+    enabled,
+    placeholderData: (prev) => prev,
+    queryFn: async (): Promise<Paginated<AdminArtist>> => {
+      const r = await api.get<DataMeta<AdminArtist>>("admin/artists", { ...params });
+      return { page: r.meta.page, limit: r.meta.limit, total: r.meta.total, items: r.data };
+    },
+  });
+}
+
+/** Just the total for a filter — one row fetched, `meta.total` read. */
+export function useArtistCount(params: AdminArtistFilters, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["artist-directory-count", params],
+    enabled,
+    queryFn: () =>
+      api
+        .get<DataMeta<AdminArtist>>("admin/artists", { ...params, limit: 1 })
+        .then((r) => r.meta.total),
+  });
+}
+
+export function useAdminArtist(artistId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-artist", artistId],
+    enabled: Boolean(artistId),
+    queryFn: () => api.get<unknown>(`admin/artists/${artistId}`).then(unwrap<AdminArtist>),
+  });
+}
+
+/**
+ * One artist's drops, from the catalog list (GET /products?artistId=) —
+ * the only list that filters by artist today.
+ */
+export function useArtistDrops(
+  artistId: string | undefined,
+  opts: { page?: number; limit?: number; status?: string } = {},
+  enabled = true
+) {
+  const { page = 1, limit = 20, status } = opts;
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["artist-drops", artistId, page, limit, status],
+    enabled: enabled && Boolean(artistId),
+    placeholderData: (prev) => prev,
+    queryFn: async (): Promise<Paginated<CatalogDrop>> => {
+      const r = await api.get<DataMeta<CatalogDrop>>("products", { artistId, page, limit, status });
+      return { page: r.meta.page, limit: r.meta.limit, total: r.meta.total, items: r.data };
     },
   });
 }

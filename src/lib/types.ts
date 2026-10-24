@@ -1902,6 +1902,32 @@ export interface AdminArtist {
   counts: { products: number; collections: number };
 }
 
+/**
+ * GET /admin/artists query. The booleans are only ever sent as `true`: the
+ * server coerces any non-empty string to true, so `false` can't be asked for.
+ */
+export interface AdminArtistFilters {
+  search?: string;
+  organizationId?: string;
+  isActive?: "true";
+  isPublic?: "true";
+  includeArchived?: "true";
+  page?: number;
+  limit?: number;
+}
+
+/** One row of the public catalog list (GET /products), as the artist page uses it. */
+export interface CatalogDrop {
+  id: string;
+  name: string;
+  groupCode: string;
+  status: string;
+  totalSupply: number;
+  isActive?: boolean;
+  publishedAt?: string | null;
+  createdAt?: string;
+}
+
 /* ------------------------------------------------------------------ */
 /* Market pricing — /admin/products/:id/prices                         */
 /* (product-upload-api.md §3)                                           */
