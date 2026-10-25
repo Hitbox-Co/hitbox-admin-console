@@ -3,22 +3,27 @@
 import * as React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { toast } from "sonner";
-import {
-  AlertTriangle,
-  Check,
-  Cpu,
-  Info,
-  Lock,
-  ScanLine,
-  X,
-} from "lucide-react";
+import { AlertTriangle, Check, Lock, ScanLine, TrendingUp, X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
 import {
+  usePatchVendorAllotment,
   useRegisterTagManifest,
+  useSupplyBatch,
   useSupplyBatchDecision,
 } from "@/lib/api/hooks";
+import {
+  AllotmentCoverageBanner,
+  isAllotmentBlock,
+} from "@/components/supply/allotment-coverage";
+import { variantName } from "@/components/supply/allotment-summary";
 import { formatDate, formatDateTime, formatNumber, humanize } from "@/lib/format";
 import { usePermissions } from "@/components/layout/authz-provider";
+import { Figure, ManifestForm, lineName } from "@/components/supply/manifest-form";
+import { AcceptRefusal, AcceptedStock } from "@/components/supply/accept-outcome";
+import {
+  ConsignmentStepper,
+  manifestComplete,
+} from "@/components/supply/consignment-lifecycle";
 import {
   Badge,
   Button,
@@ -30,44 +35,66 @@ import {
 } from "@/components/ui/primitives";
 import {
   CHIP_BEARING_ITEM_TYPES,
-  SUPPLY_MANIFEST_MAX,
+  type BatchAllotment,
+  type SupplyAcceptStock,
   type SupplyBatch,
   type SupplyBatchStatus,
-  type TagManifestResult,
 } from "@/lib/types";
 
 /**
- *   UPLOADED ──▶ VALIDATED ──▶ ACCEPTED
+ *   UPLOADED ──▶ VALIDATED ──▶ (every unit chipped) ──▶ ACCEPTED
  *      │              │
  *      └──────────────┴──────▶ REJECTED
  *
- * ACCEPTED and REJECTED are terminal. A consignment accepted in error is not
- * walked backwards — the stock is physically in the building by then, and
- * pretending otherwise loses the record that it ever arrived. The correction
- * is a second consignment with a note, which keeps both facts.
+ * HitBox validates the paperwork, the vendor uploads one chip per product,
+ * and ACCEPT then mints one unit per chip that did not fail QC into the drop,
+ * in one transaction. ACCEPTED and REJECTED are terminal. A consignment
+ * accepted in error is not walked backwards — the correction is a second
+ * consignment with a note, which keeps both facts.
  *
- * VALIDATED may be skipped: a small consignment keyed in by hand is checked by
- * the person keying it.
+ * Accept is refused (409, nothing changed) unless the manifest is complete,
+ * the vendor's allotment covers it, the drop is release-approved, and the
+ * variant and drop caps have room. Rejecting is never blocked.
  */
 const NEXT_STATES: Record<SupplyBatchStatus, SupplyBatchStatus[]> = {
-  UPLOADED: ["VALIDATED", "ACCEPTED", "REJECTED"],
+  UPLOADED: ["VALIDATED", "REJECTED"],
   VALIDATED: ["ACCEPTED", "REJECTED"],
   ACCEPTED: [],
   REJECTED: [],
+};
+
+const ACTION_LABEL: Partial<Record<SupplyBatchStatus, string>> = {
+  VALIDATED: "Validate",
+  ACCEPTED: "Accept",
+  REJECTED: "Reject",
 };
 
 /** Chips may only be registered while the consignment still accepts rows. */
 const ACCEPTS_ROWS: SupplyBatchStatus[] = ["UPLOADED", "VALIDATED"];
 
 export function ConsignmentDrawer({
-  batch,
+  batch: initial,
   onClose,
 }: {
   batch: SupplyBatch;
   onClose: () => void;
 }) {
   const perms = usePermissions();
+  // The list row is a snapshot without `allotment`; the single read has it,
+  // and refetches after an allotment increase or a decision.
+  const live = useSupplyBatch(initial.id);
+  const batch = live.data ?? initial;
   const decide = useSupplyBatchDecision(batch.id);
+  const register = useRegisterTagManifest(batch.id);
+  const raise = usePatchVendorAllotment(batch.vendorId);
+  /** The 409 SUPPLY_ALLOTMENT_INSUFFICIENT block, when an accept was refused. */
+  const [blocked, setBlocked] = React.useState<BatchAllotment | null>(null);
+  /** Any other refused accept — shown with its own explanation and fix. */
+  const [refusal, setRefusal] = React.useState<ApiError | null>(null);
+  /** What the accept minted, kept on screen after the status moves on. */
+  const [stock, setStock] = React.useState<SupplyAcceptStock | null>(null);
+  // isPending lags a render behind a fast double-click; this does not.
+  const inFlight = React.useRef(false);
 
   const canWrite = perms.can("nfc-tag-claim", "manage", "global");
   const canReadChips = perms.canRead("nfc-tag-claim");
@@ -79,52 +106,157 @@ export function ConsignmentDrawer({
   const transitions = NEXT_STATES[batch.status] ?? [];
   const acceptsRows = ACCEPTS_ROWS.includes(batch.status);
 
-  const submitDecision = () => {
-    if (!target) return;
+  // Only an undecided consignment can still be accepted, so only it can be short.
+  const undecided = batch.status === "UPLOADED" || batch.status === "VALIDATED";
+  const coverage = undecided
+    ? (blocked ?? (batch.allotment && !batch.allotment.covered ? batch.allotment : null))
+    : null;
+
+  const reload = () => {
+    setRefusal(null);
+    setBlocked(null);
+    setTarget(null);
+    void live.refetch();
+  };
+
+  const submitDecision = (status: SupplyBatchStatus | null = target) => {
+    if (!status || inFlight.current) return;
     // The API requires a note to reject; refusing a consignment becomes a
     // credit note and a conversation with the vendor, and "why" is the only
     // part that cannot be reconstructed afterwards.
-    if (target === "REJECTED" && !note.trim()) return;
+    if (status === "REJECTED" && !note.trim()) return;
 
+    inFlight.current = true;
+    setRefusal(null);
     decide.mutate(
-      { status: target, note: note.trim() || undefined },
+      { status, note: note.trim() || undefined },
       {
-        onSuccess: () => {
-          toast.success(`Consignment ${humanize(target).toLowerCase()}`);
+        onSuccess: (result) => {
+          if (status === "ACCEPTED") {
+            setStock(result.stock ?? null);
+            toast.success(
+              result.stock
+                ? `Accepted — ${formatNumber(result.stock.minted)} units added to the drop`
+                : "Consignment accepted"
+            );
+          } else {
+            toast.success(`Consignment ${humanize(status).toLowerCase()}`);
+          }
           setTarget(null);
           setNote("");
+          setBlocked(null);
+        },
+        onError: (err: unknown) => {
+          if (!(err instanceof ApiError)) {
+            toast.error("Could not record the decision.");
+            return;
+          }
+          // Accepting past the vendor's allotment: open the increase-then-retry
+          // flow instead of a dead end.
+          if (err.code === "SUPPLY_ALLOTMENT_INSUFFICIENT" && isAllotmentBlock(err.details)) {
+            setBlocked(err.details);
+            setTarget("ACCEPTED");
+          } else if (status === "ACCEPTED" || err.code === "SUPPLY_BATCH_STATE_INVALID") {
+            setRefusal(err);
+          }
+          toast.error(err.friendly);
+        },
+        onSettled: () => {
+          inFlight.current = false;
+        },
+      }
+    );
+  };
+
+  /** PATCH the suggested allotment, refetch, and optionally retry the accept. */
+  const increaseAllotment = (thenAccept: boolean) => {
+    const body = coverage?.suggestedPatch;
+    if (!body || !batch.dropId) return;
+    raise.mutate(
+      { dropId: batch.dropId, ...body },
+      {
+        onSuccess: async () => {
+          toast.success("Allotment increased");
+          setBlocked(null);
+          await live.refetch();
+          if (thenAccept) submitDecision("ACCEPTED");
         },
         onError: (err: unknown) =>
           toast.error(
-            err instanceof ApiError ? err.friendly : "Could not record the decision."
+            err instanceof ApiError ? err.friendly : "Could not increase the allotment."
           ),
       }
     );
   };
+
+  const busy = decide.isPending || raise.isPending;
+
+  const coverageBanner = coverage ? (
+    <AllotmentCoverageBanner allotment={coverage} audience="admin">
+      {canWrite && coverage.suggestedPatch && batch.dropId ? (
+        <>
+          <Button
+            variant="primary"
+            size="sm"
+            loading={busy}
+            disabled={busy}
+            onClick={() => increaseAllotment(target === "ACCEPTED")}
+          >
+            <TrendingUp className="h-3.5 w-3.5" />
+            {target === "ACCEPTED" ? "Increase allotment & accept" : "Increase allotment"}
+          </Button>
+          <span className="text-[11px] text-[var(--text-3)]">
+            Sets {describePatch(coverage)}.
+          </span>
+        </>
+      ) : canWrite ? (
+        <span className="text-[11px] text-[var(--text-2)]">
+          No single change covers it — adjust the allotment from the vendor&rsquo;s Drops tab.
+        </span>
+      ) : null}
+    </AllotmentCoverageBanner>
+  ) : null;
+
+  const refusalPanel = refusal ? (
+    <AcceptRefusal
+      error={refusal}
+      batch={batch}
+      pending={busy}
+      onRetry={() => submitDecision("ACCEPTED")}
+      onReload={reload}
+      onOpenChips={() => {
+        setRefusal(null);
+        setTab("manifest");
+      }}
+    />
+  ) : null;
 
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="rx-overlay fixed inset-0 z-50 bg-[rgba(0,0,0,0.5)]" />
         <Dialog.Content className="rx-drawer fixed right-0 top-0 z-50 flex h-dvh w-full max-w-[640px] flex-col border-l border-[var(--hairline-strong)] bg-[var(--surface-1)] shadow-[var(--shadow-3)]">
-          <div className="flex items-start justify-between gap-3 border-b border-[var(--hairline)] px-4 py-3.5">
-            <div className="min-w-0">
-              <Dialog.Title className="truncate text-[14px] font-semibold tracking-[-0.01em] text-[var(--text-1)]">
-                {batch.batchRef ?? "Consignment"}
-              </Dialog.Title>
-              <Dialog.Description className="mt-0.5 flex flex-wrap items-center gap-2 text-[12px] text-[var(--text-3)]">
-                <span>{batch.vendor?.name ?? "Unknown vendor"}</span>
-                <Badge tone={toneForStatus(batch.status)} dot>
-                  {humanize(batch.status)}
-                </Badge>
-                <Badge tone="neutral">{humanize(batch.itemType)}</Badge>
-              </Dialog.Description>
+          <div className="space-y-3 border-b border-[var(--hairline)] px-4 py-3.5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <Dialog.Title className="truncate text-[14px] font-semibold tracking-[-0.01em] text-[var(--text-1)]">
+                  {batch.batchRef ?? "Consignment"}
+                </Dialog.Title>
+                <Dialog.Description className="mt-0.5 flex flex-wrap items-center gap-2 text-[12px] text-[var(--text-3)]">
+                  <span>{batch.vendor?.name ?? "Unknown vendor"}</span>
+                  <Badge tone={toneForStatus(batch.status)} dot>
+                    {humanize(batch.status)}
+                  </Badge>
+                  <Badge tone="neutral">{humanize(batch.itemType)}</Badge>
+                </Dialog.Description>
+              </div>
+              <Dialog.Close asChild>
+                <Button variant="ghost" size="sm" aria-label="Close">
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </Dialog.Close>
             </div>
-            <Dialog.Close asChild>
-              <Button variant="ghost" size="sm" aria-label="Close">
-                <X className="h-3.5 w-3.5" />
-              </Button>
-            </Dialog.Close>
+            <ConsignmentStepper batch={batch} />
           </div>
 
           {CHIP_BEARING_ITEM_TYPES.includes(batch.itemType) && canWrite ? (
@@ -141,10 +273,23 @@ export function ConsignmentDrawer({
 
           <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
             {tab === "manifest" ? (
-              <ManifestForm batch={batch} disabled={!acceptsRows} />
+              <ManifestForm
+                batch={batch}
+                disabled={!acceptsRows}
+                submit={register.mutateAsync}
+                allowChunking
+                onCommitted={() => void live.refetch()}
+              />
             ) : (
               <>
+                {stock ? <AcceptedStock stock={stock} batch={batch} /> : null}
+
+                {target !== "ACCEPTED" ? coverageBanner : null}
+                {target !== "ACCEPTED" ? refusalPanel : null}
+
                 <Reconciliation batch={batch} canReadChips={canReadChips} />
+
+                <BatchLines batch={batch} />
 
                 <Panel>
                   <p className="px-3 pb-2 pt-3 text-[11px] font-medium uppercase tracking-wide text-[var(--text-3)]">
@@ -213,7 +358,7 @@ export function ConsignmentDrawer({
           </div>
 
           {tab === "detail" ? (
-            <div className="space-y-3 border-t border-[var(--hairline)] px-4 py-3">
+            <div className="max-h-[55dvh] space-y-3 overflow-y-auto border-t border-[var(--hairline)] px-4 py-3">
               {!canWrite ? (
                 <p className="flex items-center gap-1.5 text-[11px] text-[var(--text-3)]">
                   <Lock className="h-3 w-3" aria-hidden />
@@ -222,24 +367,25 @@ export function ConsignmentDrawer({
               ) : transitions.length === 0 ? (
                 <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-[var(--text-3)]">
                   <Lock className="mt-[1px] h-3 w-3 shrink-0" aria-hidden />
-                  {humanize(batch.status)} is terminal. The stock is in the
-                  building; a correction is a second consignment with a note,
-                  which keeps both facts on the record.
+                  {humanize(batch.status)} is terminal. A correction is a second
+                  consignment with a note, which keeps both facts on the record.
                 </p>
               ) : target ? (
                 <>
+                  {target === "ACCEPTED" ? <Readiness batch={batch} /> : null}
+
                   <Field
                     label={target === "REJECTED" ? "Why it was refused" : "Note"}
                     htmlFor="decision-note"
                     hint={
                       target === "REJECTED"
-                        ? "Required. A refusal becomes a credit note and a conversation with the vendor — this is the part that cannot be reconstructed later."
+                        ? "Required. A refusal becomes a credit note and a conversation with the vendor — this is the part that cannot be reconstructed later. The vendor sees it."
                         : "Optional. Appended to the notes, never overwriting them."
                     }
                   >
                     <Textarea
                       id="decision-note"
-                      rows={3}
+                      rows={target === "REJECTED" ? 3 : 2}
                       value={note}
                       onChange={(e) => setNote(e.target.value)}
                       placeholder={
@@ -251,63 +397,59 @@ export function ConsignmentDrawer({
                     />
                   </Field>
 
-                  {target === "ACCEPTED" && batch.reconciliation.shortfall > 0 ? (
-                    <p className="flex items-start gap-2 rounded-[8px] border border-[rgba(204,92,92,0.25)] bg-[var(--danger-dim)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--danger)]">
-                      <AlertTriangle className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
-                      {formatNumber(batch.reconciliation.shortfall)} short against
-                      the paperwork. Accepting is terminal — the gap stays on the
-                      record exactly as it is now.
-                    </p>
-                  ) : null}
+                  {target === "ACCEPTED" ? coverageBanner : null}
+                  {target === "ACCEPTED" ? refusalPanel : null}
 
                   <div className="flex items-center gap-2">
                     <Button
                       variant={target === "REJECTED" ? "danger" : "primary"}
                       size="sm"
                       loading={decide.isPending}
-                      disabled={target === "REJECTED" && !note.trim()}
-                      onClick={submitDecision}
+                      disabled={busy || (target === "REJECTED" && !note.trim())}
+                      onClick={() => submitDecision()}
                     >
-                      Confirm {humanize(target).toLowerCase()}
+                      {target === "ACCEPTED" ? <Check className="h-3.5 w-3.5" /> : null}
+                      Confirm {ACTION_LABEL[target]?.toLowerCase()}
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => setTarget(null)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => {
+                        setTarget(null);
+                        setRefusal(null);
+                      }}
+                    >
                       Back
                     </Button>
                   </div>
                 </>
               ) : (
                 <div className="space-y-2">
+                  {batch.status === "VALIDATED" ? <Readiness batch={batch} /> : null}
                   <div className="flex flex-wrap items-center gap-2">
                     {transitions.map((t) => (
                       <Button
                         key={t}
-                        variant={
-                          t === "REJECTED"
-                            ? "danger"
-                            : t === "ACCEPTED"
-                              ? "primary"
-                              : "secondary"
-                        }
+                        variant={t === "REJECTED" ? "danger" : "primary"}
                         size="sm"
                         onClick={() => {
                           setTarget(t);
                           setNote("");
+                          setRefusal(null);
                         }}
                       >
-                        {t === "ACCEPTED" ? <Check className="h-3.5 w-3.5" /> : null}
+                        {t === "ACCEPTED" || t === "VALIDATED" ? <Check className="h-3.5 w-3.5" /> : null}
                         {t === "REJECTED" ? <X className="h-3.5 w-3.5" /> : null}
-                        {humanize(t)}
+                        {ACTION_LABEL[t]}
                       </Button>
                     ))}
                   </div>
-                  {acceptsRows ? (
-                    <p className="text-[11px] leading-relaxed text-[var(--text-3)]">
-                      Register the chips first. Rows go in with the reviewer
-                      watching, so the decision is taken with them in front of
-                      you — appending to an accepted consignment would silently
-                      change counts somebody has signed off.
-                    </p>
-                  ) : null}
+                  <p className="text-[11px] leading-relaxed text-[var(--text-3)]">
+                    {batch.status === "UPLOADED"
+                      ? "Validate once the paperwork checks out — quantities, variants, invoice. The vendor can then upload the chip UIDs."
+                      : "Accepting mints one unit per chip that passed (or is pending) QC into the drop, each bound to its chip. Release approval and supply caps are checked when you accept."}
+                  </p>
                 </div>
               )}
             </div>
@@ -318,195 +460,82 @@ export function ConsignmentDrawer({
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* The chip manifest                                                    */
-/* ------------------------------------------------------------------ */
-
 /**
- * Paste the vendor's UIDs, preview, then commit.
- *
- * Nothing parses XLSX server-side, so converting the vendor's file is this
- * console's job — which here means a paste box that accepts one UID per line
- * and tolerates the separator styles vendors actually ship.
+ * Accept readiness, from data already on screen. The server re-checks all of
+ * it (plus release approval and caps, which only it knows) on accept.
  */
-function ManifestForm({
-  batch,
-  disabled,
-}: {
-  batch: SupplyBatch;
-  disabled: boolean;
-}) {
-  const register = useRegisterTagManifest(batch.id);
-  const [raw, setRaw] = React.useState("");
-  const [preview, setPreview] = React.useState<TagManifestResult | null>(null);
-
-  /*
-   * One UID per line, blanks dropped. Separator style is left alone: the API
-   * normalises 04:A3:…, 04-a3-… and 04a39b… to the same UID, and stripping
-   * them here would only add a second place that has to agree about it.
-   */
-  const uids = React.useMemo(
-    () =>
-      raw
-        .split(/[\r\n,;]+/)
-        .map((line) => line.trim())
-        .filter(Boolean),
-    [raw]
-  );
-
-  const overCap = uids.length > SUPPLY_MANIFEST_MAX;
-  const remaining = batch.quantity - batch.rowsReceived;
-  const overDeclared = uids.length > remaining;
-
-  const run = (dryRun: boolean) => {
-    if (uids.length === 0 || overCap) return;
-    register.mutate(
-      { dryRun, tags: uids.map((uid) => ({ uid })) },
-      {
-        onSuccess: (result) => {
-          setPreview(result);
-          if (!result.dryRun) {
-            toast.success(`${formatNumber(result.registered)} chips registered`);
-            setRaw("");
-          }
-        },
-        onError: (err: unknown) => {
-          setPreview(null);
-          toast.error(
-            err instanceof ApiError ? err.friendly : "Could not register the manifest."
-          );
-        },
-      }
-    );
-  };
-
-  if (disabled) {
-    return (
-      <p className="flex items-start gap-2 rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--surface-2)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--text-2)]">
-        <Lock className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
-        This consignment has been decided, and a decided consignment takes no
-        more rows. Appending would change counts somebody has already signed
-        off.
-      </p>
-    );
-  }
-
+function Readiness({ batch }: { batch: SupplyBatch }) {
+  const lines = batch.lines ?? [];
+  const chipsOk = manifestComplete(batch);
+  const allotment = batch.allotment;
   return (
-    <div className="space-y-4">
-      <p className="flex items-start gap-2 rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--surface-2)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--text-2)]">
-        <Info className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
-        <span>
-          One UID per line. Colons, dashes and bare hex are all accepted — they
-          normalise to the same chip, so the same consignment keyed from two
-          differently-formatted vendor files cannot become two rows.
+    <ul className="space-y-1 rounded-[8px] border border-[var(--hairline)] px-3 py-2 text-[12px]">
+      <li className="flex items-start gap-2">
+        <Tick ok={chipsOk} />
+        <span className="text-[var(--text-1)]">
+          Chips:{" "}
+          {lines.length > 0
+            ? lines.map((l, i) => (
+                <span key={l.variantId}>
+                  {i > 0 ? ", " : ""}
+                  <span className={l.rowsReceived < l.quantity ? "text-[var(--warning)]" : undefined}>
+                    {lineName(l)} {formatNumber(l.rowsReceived)} of {formatNumber(l.quantity)}
+                  </span>
+                </span>
+              ))
+            : `${formatNumber(batch.rowsReceived)} of ${formatNumber(batch.quantity)}`}
+          {batch.rowsRejected > 0 ? (
+            <span className="text-[var(--text-3)]">
+              {" "}
+              · {formatNumber(batch.rowsRejected)} failed QC (won&rsquo;t be minted)
+            </span>
+          ) : null}
         </span>
-      </p>
-
-      <Field
-        label="Chip UIDs"
-        htmlFor="manifest"
-        hint={`${formatNumber(uids.length)} read · ${formatNumber(
-          remaining
-        )} still declared on this consignment · at most ${formatNumber(
-          SUPPLY_MANIFEST_MAX
-        )} per call`}
-      >
-        <Textarea
-          id="manifest"
-          rows={10}
-          value={raw}
-          onChange={(e) => setRaw(e.target.value)}
-          placeholder={"04:A3:9B:2C:5D:6E:80\n04A39B2C5D6E81\n04-a3-9b-2c-5d-6e-82"}
-          className="font-mono text-[12px]"
-        />
-      </Field>
-
-      {overCap ? (
-        <p className="flex items-start gap-2 rounded-[8px] border border-[rgba(204,92,92,0.25)] bg-[var(--danger-dim)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--danger)]">
-          <AlertTriangle className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
-          {formatNumber(uids.length)} rows — the cap is{" "}
-          {formatNumber(SUPPLY_MANIFEST_MAX)}, matched to a physical carton and
-          registered in one transaction. Split the reel across several calls.
-        </p>
-      ) : overDeclared ? (
-        <p className="flex items-start gap-2 rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--warning-dim)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--warning)]">
-          <AlertTriangle className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
-          More rows than the consignment still declares. The declared quantity
-          is a ceiling, so this is refused with
-          SUPPLY_BATCH_QUANTITY_EXCEEDED — dry run first.
-        </p>
-      ) : null}
-
-      <div className="flex items-center gap-2">
-        <Button
-          variant="secondary"
-          size="sm"
-          loading={register.isPending}
-          disabled={uids.length === 0 || overCap}
-          onClick={() => run(true)}
-        >
-          Dry run
-        </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          loading={register.isPending}
-          disabled={uids.length === 0 || overCap}
-          onClick={() => run(false)}
-        >
-          <Cpu className="h-3.5 w-3.5" />
-          Register {formatNumber(uids.length)}
-        </Button>
-      </div>
-
-      {preview ? <ManifestResult result={preview} /> : null}
-    </div>
+      </li>
+      <li className="flex items-start gap-2">
+        <Tick ok={!allotment || allotment.covered} />
+        <span className="text-[var(--text-1)]">
+          {!allotment
+            ? "Not limited by a vendor allotment"
+            : allotment.covered
+              ? "Vendor allotment covers it"
+              : "Vendor allotment doesn't cover it — increase it first"}
+        </span>
+      </li>
+      <li className="flex items-start gap-2 text-[var(--text-3)]">
+        <span className="mt-[3px] h-3 w-3 shrink-0 rounded-full border border-[var(--hairline-strong)]" aria-hidden />
+        Release approval and variant / drop supply caps are checked on accept
+      </li>
+    </ul>
   );
 }
 
-function ManifestResult({ result }: { result: TagManifestResult }) {
-  return (
-    <Panel>
-      <p className="flex items-center gap-2 px-3 pb-2 pt-3 text-[11px] font-medium uppercase tracking-wide text-[var(--text-3)]">
-        {result.dryRun ? "Dry run — nothing written" : "Registered"}
-        {result.dryRun ? <Badge tone="neutral">Preview</Badge> : null}
-      </p>
-      <div className="grid grid-cols-2 gap-x-6 gap-y-2 px-3 pb-3 sm:grid-cols-4">
-        <Figure label="Rows" value={result.registered} />
-        <Figure label="Received" value={result.batch.rowsReceived} />
-        <Figure label="Accepted" value={result.batch.rowsAccepted} />
-        <Figure label="Rejected" value={result.batch.rowsRejected} />
-      </div>
-
-      {result.duplicates.length > 0 ? (
-        <div className="border-t border-[var(--hairline)] px-3 py-2.5">
-          <p className="text-[11px] font-medium text-[var(--danger)]">
-            {result.duplicates.length} duplicate
-            {result.duplicates.length === 1 ? "" : "s"} — the whole manifest is
-            refused
-          </p>
-          <p className="mt-1 text-[11px] leading-relaxed text-[var(--text-3)]">
-            Two rows claiming the same chip is precisely what a counterfeit
-            produces, so a carton containing one duplicate is a carton nobody
-            should accept the rest of without looking at it. Rows are named by
-            position, never by UID.
-          </p>
-          <ul className="mt-2 space-y-1">
-            {result.duplicates.map((d) => (
-              <li key={d.row} className="text-[12px] text-[var(--text-2)]">
-                <Mono className="text-[11px]">Row {d.row}</Mono> — {d.reason}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-    </Panel>
+function Tick({ ok }: { ok: boolean }) {
+  return ok ? (
+    <Check className="mt-[2px] h-3.5 w-3.5 shrink-0 text-[var(--positive)]" aria-label="Ready" />
+  ) : (
+    <AlertTriangle className="mt-[2px] h-3.5 w-3.5 shrink-0 text-[var(--warning)]" aria-label="Not ready" />
   );
 }
 
 /* ------------------------------------------------------------------ */
 
-function Reconciliation({
+/** "Red / S → 120" — what the suggested PATCH will set, in words. */
+function describePatch(a: BatchAllotment): string {
+  const p = a.suggestedPatch;
+  if (!p) return "";
+  if (p.variants?.length) {
+    return p.variants
+      .map((v) => {
+        const meta = a.variants.find((x) => x.variantId === v.variantId);
+        return `${meta ? variantName(meta) : "variant"} → ${formatNumber(v.quantity)}`;
+      })
+      .join(", ");
+  }
+  return `the drop allotment → ${p.quantity === null ? "no cap" : formatNumber(p.quantity ?? 0)}`;
+}
+
+export function Reconciliation({
   batch,
   canReadChips,
 }: {
@@ -540,30 +569,54 @@ function Reconciliation({
   );
 }
 
-function Figure({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number;
-  tone?: "warning";
-}) {
+/**
+ * The consignment's variant lines — present when it was booked against a
+ * drop allotted by variant. Each line is a ceiling for that variant's chips.
+ */
+export function BatchLines({ batch }: { batch: SupplyBatch }) {
+  const lines = batch.lines ?? [];
+  if (lines.length === 0) return null;
   return (
-    <div>
-      <p className="text-[11px] text-[var(--text-3)]">{label}</p>
-      <p
-        className={`tnum mt-0.5 text-[16px] font-medium ${
-          tone === "warning" ? "text-[var(--warning)]" : "text-[var(--text-1)]"
-        }`}
-      >
-        {formatNumber(value)}
+    <Panel>
+      <p className="px-3 pb-2 pt-3 text-[11px] font-medium uppercase tracking-wide text-[var(--text-3)]">
+        Variant lines
       </p>
-    </div>
+      <table className="mb-2 w-full text-[12px]">
+        <thead>
+          <tr className="text-left text-[10.5px] uppercase tracking-wide text-[var(--text-3)]">
+            <th className="px-3 py-1 font-medium">Variant</th>
+            <th className="px-3 py-1 text-right font-medium">Declared</th>
+            <th className="px-3 py-1 text-right font-medium">Chips</th>
+            <th className="px-3 py-1 text-right font-medium">Failed QC</th>
+            <th className="px-3 py-1 text-right font-medium">Shortfall</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-[var(--hairline)]">
+          {lines.map((l) => {
+            const shortfall = l.shortfall ?? Math.max(0, l.quantity - l.rowsReceived);
+            return (
+              <tr key={l.variantId}>
+                <td className="px-3 py-1.5 text-[var(--text-1)]">{lineName(l)}</td>
+                <td className="tnum px-3 py-1.5 text-right text-[var(--text-2)]">{formatNumber(l.quantity)}</td>
+                <td className="tnum px-3 py-1.5 text-right text-[var(--text-2)]">{formatNumber(l.rowsReceived)}</td>
+                <td className="tnum px-3 py-1.5 text-right text-[var(--text-2)]">{formatNumber(l.rowsRejected)}</td>
+                <td
+                  className={`tnum px-3 py-1.5 text-right ${
+                    shortfall > 0 ? "text-[var(--warning)]" : "text-[var(--text-3)]"
+                  }`}
+                >
+                  {shortfall > 0 ? formatNumber(shortfall) : "—"}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </Panel>
   );
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+export function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-4">
       <span className="text-[12px] text-[var(--text-3)]">{label}</span>
@@ -572,7 +625,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-function TabButton({
+export function TabButton({
   active,
   onClick,
   children,

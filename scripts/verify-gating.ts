@@ -157,6 +157,9 @@ const ROLE_GRANTS: Record<string, string[]> = {
     "search-discover:manage:global",
     "reports-dashboards:read:global",
   ],
+  // A vendor's own staff (vendor-onboarding-flow.md §1) — exactly two
+  // own-scoped keys, and nothing else in the console.
+  VENDOR: ["vendor-supply:read:own", "vendor-supply:create:own"],
   HITBOX_PLATFORM_ENGINEER: [
     "platform-config:manage:global",
     "service-health:manage:global",
@@ -221,6 +224,14 @@ function main() {
     navFor("HITBOX_PLATFORM_ENGINEER"),
     ["/dashboard"]
   );
+
+  check(
+    "a vendor is offered the dashboard and the vendor portal only",
+    navFor("VENDOR"),
+    ["/dashboard", "/vendor"]
+  );
+  check("a vendor is vendor-only", permsFor("VENDOR").isVendorOnly, true);
+  check("a system admin is not vendor-only", permsFor("HITBOX_SYSTEM_ADMIN").isVendorOnly, false);
 
   const orderManagerNav = navFor("HITBOX_ORDER_MANAGER");
   check("order manager gets Orders", orderManagerNav.includes("/orders"), true);
@@ -634,11 +645,12 @@ function main() {
     "/supply": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true, HITBOX_FINANCE_ADMIN: true },
     "/supply/consignments": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true },
     "/supply/chips": { ARTIST: false, HITBOX_DROP_MANAGER: false, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: true },
-    "/supply/vendors": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true },
+    "/supply/vendors": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true, VENDOR: false },
     "/inventory": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true, HITBOX_SUPPORT: true },
     "/media": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true },
     "/provenance": { ARTIST: false, HITBOX_DROP_MANAGER: false, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: true },
     "/demand": { ARTIST: true, BRAND_ADMIN: true, HITBOX_ORDER_MANAGER: false },
+    "/vendor": { VENDOR: true, HITBOX_SYSTEM_ADMIN: false, ARTIST: false },
     "/team": { BRAND_ADMIN: false, HITBOX_SYSTEM_ADMIN: true },
     "/roles": { BRAND_ADMIN: false, HITBOX_SYSTEM_ADMIN: true },
   };

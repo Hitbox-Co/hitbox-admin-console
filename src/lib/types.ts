@@ -2911,6 +2911,14 @@ export interface SupplyBatch {
   createdAt: string;
   updatedAt: string;
   /**
+   * One line per variant for a consignment of a drop allotted by variant;
+   * [] (or absent on older reads) otherwise. `quantity` is their sum, and
+   * every manifest row must then name one of these variants.
+   */
+  lines?: SupplyBatchLine[];
+  /** Coverage against the vendor's allotment — single-batch reads and the vendor's create response. */
+  allotment?: BatchAllotment | null;
+  /**
    * The number the intake screen exists to surface: what the vendor's
    * paperwork declared against what was actually keyed in.
    *
@@ -2926,17 +2934,54 @@ export interface SupplyBatch {
   };
 }
 
+export interface SupplyBatchLine {
+  variantId: string;
+  variantCode?: string;
+  label?: string;
+  quantity: number;
+  rowsReceived: number;
+  rowsAccepted: number;
+  rowsRejected: number;
+  shortfall?: number;
+}
+
 export interface SupplyBatchInput {
   vendorId: string;
   dropId?: string | null;
   itemType: SupplyItemType;
-  quantity: number;
+  /** Optional split per variant; staff bookings are not capped by allotments. */
+  lines?: { variantId: string; quantity: number }[];
+  /** With `lines`, optional — and must equal their sum if sent. */
+  quantity?: number;
   batchRef?: string;
   vendorInvoiceRef?: string;
   /** Defaults to now; batchDate then defaults to this. */
   receivedAt?: string;
   sourceFileRef?: string;
   notes?: string;
+}
+
+/**
+ * What an ACCEPT minted into the drop: one unit per chip that did not fail
+ * QC, with that chip's variant, bound to it. Absent for other decisions, and
+ * for a consignment with no drop (its chips only become stock).
+ */
+export interface SupplyAcceptStock {
+  minted: number;
+  units: { variantId: string | null; count: number; firstSerial: number; lastSerial: number }[];
+}
+
+export interface SupplyBatchDecisionResult extends SupplyBatch {
+  stock?: SupplyAcceptStock | null;
+}
+
+/** `details.lines[]` of 409 SUPPLY_MANIFEST_INCOMPLETE. */
+export interface ManifestIncompleteLine {
+  variantId?: string;
+  variantCode?: string | null;
+  quantity: number;
+  registered: number;
+  shortfall: number;
 }
 
 export interface SupplyBatchDecisionInput {
@@ -2954,6 +2999,11 @@ export type TagQcStatus = "PENDING" | "PASSED" | "FAILED";
 export interface TagManifestRow {
   /** Any separator style; normalised server-side, and never returned again. */
   uid: string;
+  /**
+   * The variant of the product this chip is embedded in. REQUIRED when the
+   * consignment has lines (and must be one of them); NOT ALLOWED when it has none.
+   */
+  variantId?: string;
   qcStatus?: TagQcStatus;
   qcNotes?: string;
 }
@@ -2976,6 +3026,8 @@ export interface TagManifestResult {
     rowsRejected: number;
     status: SupplyBatchStatus;
   };
+  /** Per-variant counts after this call, for a consignment with lines. */
+  lines?: Pick<SupplyBatchLine, "variantId" | "quantity" | "rowsReceived" | "rowsAccepted" | "rowsRejected">[];
 }
 
 /**
@@ -3052,6 +3104,191 @@ export interface VendorFilters {
   page?: number;
   limit?: number;
 }
+
+/* ------------------------------------------------------------------ */
+/* Vendor administration — /admin/supply/vendors/:id/{members,drops}    */
+/* (vendor-admin-api.md) and the vendor's own portal — /vendor          */
+/* (vendor-portal-api.md).                                              */
+/*                                                                      */
+/* A VendorMember is the part only supply knows: WHICH vendor a signed- */
+/* in account acts for. The VENDOR role itself (vendor-supply:*:own)    */
+/* comes from the staff invitation it is linked to.                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ *   INVITED ──(accepts)──▶ ACTIVE
+ *      │                     │
+ *      └────(admin revokes)──┴──▶ REVOKED   (final — re-invite is a new row)
+ */
+export type VendorMemberStatus = "INVITED" | "ACTIVE" | "REVOKED";
+
+export const VENDOR_MEMBER_STATUSES: VendorMemberStatus[] = ["INVITED", "ACTIVE", "REVOKED"];
+
+export interface VendorMember {
+  id: string;
+  vendorId: string;
+  email: string;
+  status: VendorMemberStatus;
+  userId: string | null;
+  invitationId: string | null;
+  invitedById: string | null;
+  invitedAt: string;
+  acceptedAt: string | null;
+  revokedAt: string | null;
+  revokeReason: string | null;
+}
+
+export interface VendorMemberInviteInput {
+  /** Defaults to the vendor's contactEmail server-side. */
+  email?: string;
+}
+
+export interface VendorMemberInviteResult {
+  /**
+   * INVITATION_SENT — Clerk emailed a sign-up link; member is INVITED.
+   * ROLE_ASSIGNED — the address already had an account; member is ACTIVE.
+   */
+  outcome: "INVITATION_SENT" | "ROLE_ASSIGNED";
+  member: VendorMember;
+  invitationExpiresAt: string | null;
+}
+
+/**
+ * Supply progress against an allotment.
+ *
+ * `booked` counts units in this vendor's NON-rejected consignments — a
+ * rejected carton gives its allotment back — and MAY exceed `allotted`:
+ * a vendor can book over, and `overBooked` says by how much. `approved` is
+ * what HitBox has ACCEPTED, the figure the allotment must cover.
+ * `registered`/`accepted` are chips (accepted = not failed QC).
+ *
+ * Drop-level progress compares totals only, so it can hide a variant that is
+ * over — always read the per-variant rows for warnings.
+ */
+export interface AllotmentProgress {
+  /** null = uncapped (drop without variants, no quantity). */
+  allotted: number | null;
+  booked: number;
+  registered: number;
+  accepted: number;
+  approved: number;
+  /** allotted − booked, never negative; null when uncapped. */
+  remaining: number | null;
+  /** booked − allotted, never negative. */
+  overBooked: number;
+}
+
+export interface VendorVariantAllotment extends AllotmentProgress {
+  variantId: string;
+  /** null for a variant booked WITHOUT an allotment (then allotted is 0). */
+  variantCode: string | null;
+  label: string | null;
+  /** e.g. "color=RED|size=S". */
+  options: string | null;
+  allotted: number;
+  remaining: number;
+}
+
+/** One variant's figures in a consignment's coverage check. */
+export interface BatchAllotmentFigures {
+  allotted: number | null;
+  /** The vendor's units already ACCEPTED in other consignments. */
+  acceptedElsewhere: number;
+  thisBatch: number;
+  /** acceptedElsewhere + thisBatch. */
+  required: number;
+  /** How far the allotment must grow before HitBox can accept this. */
+  shortBy: number;
+}
+
+export interface BatchAllotmentVariant extends BatchAllotmentFigures {
+  variantId: string;
+  variantCode: string | null;
+  label: string | null;
+}
+
+/**
+ * Could HitBox ACCEPT this consignment as the allotment stands?
+ *
+ * On GET …/batches/:id (admin and vendor), on the vendor's create response,
+ * and as `details` of 409 SUPPLY_ALLOTMENT_INSUFFICIENT. null when the vendor
+ * is not assigned to the drop (e.g. staff-booked stock).
+ */
+export interface BatchAllotment {
+  covered: boolean;
+  byVariant: boolean;
+  /** [] for a drop-level check — `total` carries the figures then. */
+  variants: BatchAllotmentVariant[];
+  total: BatchAllotmentFigures | null;
+  /** The PATCH …/allotment body that would cover it, when one does. */
+  suggestedPatch: VendorAllotmentInput | null;
+}
+
+export interface VendorDropAssignment {
+  id: string;
+  vendorId: string;
+  dropId: string;
+  drop: { id: string; groupCode: string; name: string; status: string };
+  assignedById: string | null;
+  assignedAt: string;
+  /**
+   * True when the drop is allotted per variant (the drop had live variants
+   * at assignment). False → `variants` is [] and `progress` is drop-level.
+   */
+  byVariant: boolean;
+  progress: AllotmentProgress;
+  variants: VendorVariantAllotment[];
+}
+
+/**
+ * POST …/drops (with dropId), PUT …/drops/:dropId/allotment and PATCH of the
+ * same (without). A drop with live variants takes `variants` (required); one
+ * without takes an optional `quantity` — omitted or null means no cap.
+ *
+ * PUT REPLACES: variants left out are removed. PATCH sets only the variants
+ * sent (adding new ones) and leaves the rest alone. Neither may go below what
+ * HitBox has already ACCEPTED (409 SUPPLY_ALLOTMENT_BELOW_ACCEPTED); going
+ * below merely booked units is allowed.
+ */
+export interface VendorAllotmentInput {
+  variants?: { variantId: string; quantity: number }[];
+  quantity?: number | null;
+}
+
+/** GET /vendor/me — the signed-in vendor user's own membership and vendor. */
+export interface VendorMe {
+  member: VendorMember;
+  vendor: {
+    id: string;
+    name: string;
+    legalName: string | null;
+    country: string | null;
+    vendorType: VendorType;
+    contactName: string | null;
+    contactEmail: string | null;
+    contactPhone: string | null;
+    /** False when HitBox deactivated or archived the vendor — reads work, writes are refused. */
+    isActive: boolean;
+  };
+}
+
+/** POST /vendor/batches — vendorId is never sent; it is always the caller's own. */
+export interface VendorBatchInput {
+  dropId: string;
+  itemType: SupplyItemType;
+  /** For a by-variant drop: one line per variant, each ≤ its remaining allotment. */
+  lines?: { variantId: string; quantity: number }[];
+  /** For a drop without variants. With `lines` it is optional and must equal their sum. */
+  quantity?: number;
+  batchRef?: string;
+  receivedAt?: string;
+  batchDate?: string;
+  vendorInvoiceRef?: string;
+  sourceFileRef?: string;
+  notes?: string;
+}
+
+export type VendorBatchFilters = Omit<SupplyBatchFilters, "vendorId">;
 
 /**
  * The rollup.

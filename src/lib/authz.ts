@@ -314,6 +314,30 @@ export class Permissions {
     return this.hasAction("order", "refund", "global") && this.canReadFinance();
   }
 
+  /**
+   * The vendor portal (vendor-portal-api.md §2). The VENDOR role holds exactly
+   * `vendor-supply:read:own` and `vendor-supply:create:own`; whether this
+   * account still acts for a vendor (an ACTIVE membership) only the server
+   * knows, and /vendor/me answers 403 SUPPLY_VENDOR_MEMBERSHIP_REQUIRED when
+   * it does not.
+   */
+  canUseVendorPortal(): boolean {
+    return this.can("vendor-supply", "read", "own");
+  }
+
+  /** Booking consignments and uploading manifests from the portal. */
+  canSupplyAsVendor(): boolean {
+    return this.hasAction("vendor-supply", "create", "own");
+  }
+
+  /**
+   * A vendor's own staff and nobody else — the portal is their whole console,
+   * so the dashboard sends them straight there.
+   */
+  get isVendorOnly(): boolean {
+    return this.canUseVendorPortal() && this.isTechnicalOnly;
+  }
+
   /** True when the caller holds no BUSINESS-domain grant worth a dashboard. */
   get isTechnicalOnly(): boolean {
     return !BUSINESS_RESOURCES.some((r) => this.hasResource(r));
@@ -422,6 +446,8 @@ const ROUTE_ACCESS: Record<string, (p: Permissions) => boolean> = {
     const scope = p.widestScope("brand-artist-record");
     return scope === "own" || scope === "organization";
   },
+  // The vendor's own portal — vendor-supply at OWN scope (the VENDOR role).
+  "/vendor": (p) => p.canUseVendorPortal(),
   // dashboard/markets — reports-dashboards at any scope. Its Configuration
   // tab (admin/markets) additionally needs reach; the page gates that tab.
   "/markets": (p) =>
@@ -546,6 +572,15 @@ export const NAV_ITEMS: NavItem[] = [
     icon: "LibraryBig",
     group: "Overview",
     visible: (p) => p.canOpen("/artist/collections"),
+  },
+  {
+    // A vendor's own staff: their assigned drops, consignments and chip
+    // manifests. Derived from the vendor-supply grant, never the role name.
+    href: "/vendor",
+    label: "Vendor portal",
+    icon: "Factory",
+    group: "Overview",
+    visible: (p) => p.canOpen("/vendor"),
   },
   {
     href: "/markets",

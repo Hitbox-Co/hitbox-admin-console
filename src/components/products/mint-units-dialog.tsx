@@ -180,7 +180,12 @@ export function MintUnitsDialog({
             setErrors({ variantId: err.friendly });
             return;
           }
-          if (err instanceof ApiError && err.code === "PRODUCTS_VARIANT_SUPPLY_EXCEEDED") {
+          if (
+            err instanceof ApiError &&
+            (err.code === "PRODUCTS_VARIANT_SUPPLY_EXCEEDED" ||
+              // The same cap, enforced inside the mint transaction.
+              err.code === "SKUS_VARIANT_SUPPLY_EXCEEDED")
+          ) {
             setErrors({ count: err.friendly });
             return;
           }

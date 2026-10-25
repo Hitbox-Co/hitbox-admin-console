@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowRight,
   CircleAlert,
@@ -44,6 +45,21 @@ import { SERIES, STATUS } from "@/components/charts/palette";
 import { ActivityFeed } from "@/components/dashboard/activity-feed";
 
 export default function DashboardPage() {
+  const { perms, loading } = useAuthz();
+  const router = useRouter();
+  // A vendor's own staff hold nothing the dashboard is built from; their
+  // whole console is the vendor portal, so land them there.
+  const vendorOnly = !loading && perms.isVendorOnly;
+
+  React.useEffect(() => {
+    if (vendorOnly) router.replace("/vendor");
+  }, [vendorOnly, router]);
+
+  if (vendorOnly) return <GridSkeleton count={2} />;
+  return <DashboardView />;
+}
+
+function DashboardView() {
   const [filters, setFilters] = React.useState<PeriodState>({ period: "month" });
   const { perms, loading: authzLoading } = useAuthz();
 

@@ -3,7 +3,7 @@
 import * as React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { toast } from "sonner";
-import { Archive, Info, X } from "lucide-react";
+import { Archive, Info, Package, Users, X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
 import { useCreateVendor, useUpdateVendor } from "@/lib/api/hooks";
 import { formatNumber, humanize } from "@/lib/format";
@@ -15,6 +15,11 @@ import {
   Panel,
   Textarea,
 } from "@/components/ui/primitives";
+import { TabButton } from "@/components/supply/consignment-drawer";
+import {
+  VendorDropsPanel,
+  VendorMembersPanel,
+} from "@/components/supply/vendor-access-panels";
 import { VENDOR_TYPES, type Vendor, type VendorInput, type VendorType } from "@/lib/types";
 
 /**
@@ -24,6 +29,11 @@ import { VENDOR_TYPES, type Vendor, type VendorInput, type VendorType } from "@/
  * cannot be removed without removing the record that those consignments
  * arrived. `archived` is the soft-retire switch, and it clears `isActive`
  * server-side as part of the same write.
+ *
+ * An existing vendor also carries two access tabs (vendor-admin-api.md):
+ * who may sign in to the vendor portal for it, and which drops it may
+ * supply. They need the same nfc-tag-claim:manage:global as editing, which
+ * is the only way this drawer opens on an existing vendor.
  */
 export function VendorDrawer({
   vendor,
@@ -50,6 +60,7 @@ export function VendorDrawer({
   const [notes, setNotes] = React.useState(vendor?.notes ?? "");
   const [isActive, setIsActive] = React.useState(vendor?.isActive ?? true);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
+  const [tab, setTab] = React.useState<"details" | "members" | "drops">("details");
 
   const onError = (err: unknown) =>
     toast.error(err instanceof ApiError ? err.friendly : "Could not save the vendor.");
@@ -128,9 +139,36 @@ export function VendorDrawer({
             </Dialog.Close>
           </div>
 
+          {editing ? (
+            <div className="flex items-center gap-1 border-b border-[var(--hairline)] px-4 py-2">
+              <TabButton active={tab === "details"} onClick={() => setTab("details")}>
+                Details
+              </TabButton>
+              <TabButton active={tab === "members"} onClick={() => setTab("members")}>
+                <Users className="h-3.5 w-3.5" />
+                Portal users
+              </TabButton>
+              <TabButton active={tab === "drops"} onClick={() => setTab("drops")}>
+                <Package className="h-3.5 w-3.5" />
+                Drops
+              </TabButton>
+            </div>
+          ) : null}
+
+          {editing && tab !== "details" ? (
+            <div className="flex-1 overflow-y-auto px-4 py-4">
+              {tab === "members" ? (
+                <VendorMembersPanel vendor={vendor} />
+              ) : (
+                <VendorDropsPanel vendor={vendor} />
+              )}
+            </div>
+          ) : null}
+
           <form
             id="vendor-form"
             onSubmit={submit}
+            hidden={editing && tab !== "details"}
             className="flex-1 space-y-4 overflow-y-auto px-4 py-4"
           >
             {editing ? (
@@ -266,7 +304,10 @@ export function VendorDrawer({
             ) : null}
           </form>
 
-          <div className="flex items-center gap-2 border-t border-[var(--hairline)] px-4 py-3">
+          <div
+            hidden={editing && tab !== "details"}
+            className="flex items-center gap-2 border-t border-[var(--hairline)] px-4 py-3"
+          >
             <Button
               type="submit"
               form="vendor-form"

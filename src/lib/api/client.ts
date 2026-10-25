@@ -137,6 +137,54 @@ export class ApiError extends Error {
       case "SUPPLY_TAG_KEY_UNAVAILABLE":
         return "This deployment has no chip-UID key configured, so chips cannot be registered. Rows written without it could never be matched against a real tap.";
 
+      /* Vendor administration and the vendor portal. */
+      case "SUPPLY_VENDOR_NOT_FOUND":
+        return "That vendor no longer exists.";
+      case "SUPPLY_VENDOR_MEMBER_NOT_FOUND":
+        return "That portal user is not on this vendor — reload the list.";
+      case "SUPPLY_VENDOR_EMAIL_REQUIRED":
+        return "Enter an email address — this vendor has no contact email on file to default to.";
+      case "SUPPLY_VENDOR_MEMBER_EXISTS":
+        return "That address is already invited or active here (or the member is already revoked).";
+      case "SUPPLY_VENDOR_MEMBER_OTHER_VENDOR":
+        return "That address already signs in for another vendor. Revoke that membership first.";
+      case "SUPPLY_VENDOR_INACTIVE":
+        return "This vendor is inactive. Reactivate it before inviting users, assigning drops or booking supply.";
+      case "SUPPLY_VENDOR_INVITATIONS_UNAVAILABLE":
+        return "Vendor invitations are not set up on this deployment yet (the VENDOR role is not seeded).";
+      case "SUPPLY_VENDOR_MEMBERSHIP_REQUIRED":
+        return "Your vendor access has been removed. Contact HitBox.";
+      case "SUPPLY_DROP_ALREADY_ASSIGNED":
+        return "That drop is already assigned to this vendor.";
+      case "SUPPLY_DROP_NOT_ASSIGNED":
+        return "That drop is not (or no longer) assigned to this vendor.";
+      case "SUPPLY_NOT_FOUND":
+        return "No such drop.";
+      case "SUPPLY_BATCH_NOT_FOUND":
+        return "Consignment not found.";
+
+      /* Variant allotments. */
+      case "SUPPLY_ALLOTMENT_SHAPE_INVALID":
+        return "This drop's allotment is the other shape — per-variant quantities for a drop with variants, a single quantity for one without. Reload and try again.";
+      case "SUPPLY_VARIANT_INVALID":
+        return "A variant here is not a live variant of this drop (or is not allotted to this vendor).";
+      case "SUPPLY_ALLOTMENT_BELOW_ACCEPTED":
+        return "An allotment can't go below what HitBox has already accepted — removing a variant counts as zero.";
+      case "SUPPLY_BATCH_NOT_VALIDATED":
+        return "HitBox hasn't validated this consignment yet, so chips can't be registered. A dry run works now.";
+      case "SUPPLY_MANIFEST_INCOMPLETE":
+        return "Not every declared unit has a chip yet. Accepting needs a full manifest on every variant line.";
+      case "SUPPLY_ACCEPT_CONFLICT":
+        return "Another change to this drop was in progress. Nothing was changed — try again.";
+      case "SUPPLY_ALLOTMENT_INSUFFICIENT":
+        return "The vendor's allotment doesn't cover this consignment. Increase the allotment, then accept.";
+      case "SUPPLY_VARIANT_REQUIRED":
+        return "Every chip row must name its variant on this consignment. Nothing was written.";
+      case "SUPPLY_VARIANT_NOT_IN_BATCH":
+        return "A row names a variant that isn't one of this consignment's lines. Nothing was written.";
+      case "SUPPLY_LINE_QUANTITY_EXCEEDED":
+        return "That would put more chips on a variant than its line declares. Nothing was written.";
+
       /* Unit inventory. */
       case "SKUS_BATCH_REJECTED":
         return "At least one unit refused the change, so nothing was written.";
@@ -332,7 +380,13 @@ export class ApiError extends Error {
         // a `skus` block on create.
         return "This drop type needs variants: add at least one, and mint every unit against a variant.";
       case "PRODUCTS_VARIANT_SUPPLY_EXCEEDED":
-        return this.message || "That goes past a variant's supply cap or the drop's total supply.";
+      case "SKUS_VARIANT_SUPPLY_EXCEEDED":
+        // Every mint path (add SKUs, drop creation, supply accept) can hit a
+        // variant's own cap; details name the variant and the numbers.
+        return (
+          variantCapMessage(this.details) ??
+          (this.message || "That goes past a variant's supply cap or the drop's total supply.")
+        );
       case "PRODUCTS_VARIANT_INACTIVE":
         return "That variant is inactive or archived, so no units can be minted for it.";
       case "PRODUCTS_VARIANT_GENERATE_TOO_LARGE":
@@ -572,6 +626,28 @@ export const api = {
 };
 
 /** Many endpoints wrap their payload in `{ data: ... }`; some do not. */
+/** "Variant TEE-RED-S cap reached — 100 of 100 minted, 3 more requested." */
+function variantCapMessage(details: unknown): string | null {
+  if (!details || typeof details !== "object") return null;
+  const d = details as Record<string, unknown>;
+  const name =
+    typeof d.variantCode === "string"
+      ? d.variantCode
+      : typeof d.label === "string"
+        ? d.label
+        : null;
+  if (!name) return null;
+  const cap = typeof d.variantTotalSupply === "number" ? d.variantTotalSupply : null;
+  const minted = typeof d.minted === "number" ? d.minted : null;
+  const requested = typeof d.requested === "number" ? d.requested : null;
+  return (
+    `Variant ${name} cap reached` +
+    (cap !== null && minted !== null ? ` — ${minted} of ${cap} minted` : "") +
+    (requested !== null ? `, ${requested} more requested` : "") +
+    ". Raise the variant's supply first."
+  );
+}
+
 export function unwrap<T>(payload: unknown): T {
   if (payload && typeof payload === "object" && "data" in payload) {
     return (payload as { data: T }).data;

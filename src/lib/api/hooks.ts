@@ -133,6 +133,7 @@ import type {
   SkuUpdateInput,
   SupplyBatch,
   SupplyBatchDecisionInput,
+  SupplyBatchDecisionResult,
   SupplyBatchFilters,
   SupplyBatchInput,
   SupplyMetrics,
@@ -144,6 +145,15 @@ import type {
   Vendor,
   VendorFilters,
   VendorInput,
+  VendorAllotmentInput,
+  VendorBatchFilters,
+  VendorBatchInput,
+  VendorDropAssignment,
+  VendorMe,
+  VendorMember,
+  VendorMemberInviteInput,
+  VendorMemberInviteResult,
+  VendorMemberStatus,
   ReleaseReopenInput,
   ResaleListResponse,
   AssetType,
@@ -2641,6 +2651,8 @@ export function useWebhookEvents(params: WebhookEventFilters, enabled = true) {
 /* ------------------------------------------------------------------ */
 
 function invalidateSupply(qc: ReturnType<typeof useQueryClient>) {
+  // Accepting/rejecting moves `booked` and `approved` on vendor allotments.
+  qc.invalidateQueries({ queryKey: ["supply-vendor-drops"] });
   qc.invalidateQueries({ queryKey: ["supply-vendors"] });
   qc.invalidateQueries({ queryKey: ["supply-vendor"] });
   qc.invalidateQueries({ queryKey: ["supply-batches"] });
@@ -2712,6 +2724,17 @@ export function useSupplyBatches(params: SupplyBatchFilters = {}) {
   });
 }
 
+/** One consignment, live — carries `lines` and the `allotment` coverage block. */
+export function useSupplyBatch(batchId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["supply-batch", batchId],
+    enabled: !!batchId,
+    queryFn: () =>
+      api.get<unknown>(`admin/supply/batches/${batchId}`).then(unwrap<SupplyBatch>),
+  });
+}
+
 export function useCreateSupplyBatch() {
   const qc = useQueryClient();
   return useMutation({
@@ -2733,8 +2756,18 @@ export function useSupplyBatchDecision(batchId: string) {
     mutationFn: (payload: SupplyBatchDecisionInput) =>
       api
         .post<unknown>(`admin/supply/batches/${batchId}/decision`, payload)
-        .then(unwrap<SupplyBatch>),
-    onSuccess: () => invalidateSupply(qc),
+        .then(unwrap<SupplyBatchDecisionResult>),
+    onSuccess: (result) => {
+      invalidateSupply(qc);
+      // An ACCEPT mints units into the drop in the same transaction: its SKU
+      // list, availability and per-variant minted counts all move.
+      if (result.stock && result.stock.minted > 0) {
+        invalidateSkus(qc);
+        qc.invalidateQueries({ queryKey: ["admin-product"] });
+        qc.invalidateQueries({ queryKey: ["product-variants"] });
+        qc.invalidateQueries({ queryKey: ["products"] });
+      }
+    },
   });
 }
 
@@ -2801,6 +2834,233 @@ export function useTagQc(tagId: string) {
         .patch<unknown>(`admin/supply/tags/${tagId}/qc`, payload)
         .then(unwrap<NfcTagRow>),
     onSuccess: () => invalidateSupply(qc),
+  });
+}
+
+/* ---- Vendor administration (vendor-admin-api.md) ---- */
+/*                                                                      */
+/* Every route here is nfc-tag-claim:manage at GLOBAL scope — even the   */
+/* member LIST, because it exposes invitees' email addresses.            */
+
+export function useVendorMembers(
+  vendorId: string | undefined,
+  status?: VendorMemberStatus
+) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["supply-vendor-members", vendorId, status ?? null],
+    enabled: !!vendorId,
+    queryFn: () =>
+      api
+        .get<unknown>(`admin/supply/vendors/${vendorId}/members`, { status })
+        .then(unwrap<VendorMember[]>),
+  });
+}
+
+/**
+ * Invite someone to sign in for this vendor. An empty body invites the
+ * vendor's contact person. Both 409s (here / another vendor) are checked
+ * before anything is emailed.
+ */
+export function useInviteVendorMember(vendorId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: VendorMemberInviteInput) =>
+      api
+        .post<unknown>(`admin/supply/vendors/${vendorId}/members`, payload)
+        .then(unwrap<VendorMemberInviteResult>),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["supply-vendor-members", vendorId] });
+      // The pending invitation also lists on Team → Invitations.
+      qc.invalidateQueries({ queryKey: ["authz", "invitations"] });
+      qc.invalidateQueries({ queryKey: ["activity"] });
+    },
+  });
+}
+
+/**
+ * Revoke a member, or withdraw a pending invite. Revoke vendor invites HERE
+ * rather than from Team → Invitations, so the membership closes too.
+ */
+export function useRevokeVendorMember(vendorId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ memberId, reason }: { memberId: string; reason: string }) =>
+      api
+        .post<unknown>(
+          `admin/supply/vendors/${vendorId}/members/${memberId}/revoke`,
+          { reason }
+        )
+        .then(unwrap<VendorMember>),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["supply-vendor-members", vendorId] });
+      qc.invalidateQueries({ queryKey: ["authz", "invitations"] });
+      qc.invalidateQueries({ queryKey: ["activity"] });
+    },
+  });
+}
+
+export function useVendorDropAssignments(vendorId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["supply-vendor-drops", vendorId],
+    enabled: !!vendorId,
+    queryFn: () =>
+      api
+        .get<unknown>(`admin/supply/vendors/${vendorId}/drops`)
+        .then(unwrap<VendorDropAssignment[]>),
+  });
+}
+
+/**
+ * Assign a drop WITH its allotment: `variants` for a drop with live variants
+ * (required), an optional `quantity` cap for one without. Sending the wrong
+ * shape is 400 SUPPLY_ALLOTMENT_SHAPE_INVALID.
+ */
+export function useAssignVendorDrop(vendorId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ dropId, ...allotment }: VendorAllotmentInput & { dropId: string }) =>
+      api
+        .post<unknown>(`admin/supply/vendors/${vendorId}/drops`, { dropId, ...allotment })
+        .then(unwrap<VendorDropAssignment>),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["supply-vendor-drops", vendorId] });
+      qc.invalidateQueries({ queryKey: ["activity"] });
+    },
+  });
+}
+
+function invalidateAllotments(qc: ReturnType<typeof useQueryClient>, vendorId: string) {
+  qc.invalidateQueries({ queryKey: ["supply-vendor-drops", vendorId] });
+  // Coverage on every consignment of this vendor moves with the allotment.
+  qc.invalidateQueries({ queryKey: ["supply-batch"] });
+  qc.invalidateQueries({ queryKey: ["activity"] });
+}
+
+/**
+ * REPLACES the allotment — variants left out are removed. Refused with 409
+ * SUPPLY_ALLOTMENT_BELOW_ACCEPTED if any variant would fall below what HitBox
+ * has already accepted (a removed variant counts as 0).
+ */
+export function useUpdateVendorAllotment(vendorId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ dropId, ...allotment }: VendorAllotmentInput & { dropId: string }) =>
+      api
+        .put<unknown>(`admin/supply/vendors/${vendorId}/drops/${dropId}/allotment`, allotment)
+        .then(unwrap<VendorDropAssignment>),
+    onSuccess: () => invalidateAllotments(qc, vendorId),
+  });
+}
+
+/**
+ * "Increase total supply": sets ONLY the variants sent (adding new ones) and
+ * leaves every other variant's allotment alone. The body a consignment's
+ * `allotment.suggestedPatch` carries goes here as-is.
+ */
+export function usePatchVendorAllotment(vendorId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ dropId, ...allotment }: VendorAllotmentInput & { dropId: string }) =>
+      api
+        .patch<unknown>(`admin/supply/vendors/${vendorId}/drops/${dropId}/allotment`, allotment)
+        .then(unwrap<VendorDropAssignment>),
+    onSuccess: () => invalidateAllotments(qc, vendorId),
+  });
+}
+
+/**
+ * Consignments already booked against the drop are untouched — they describe
+ * goods that shipped — but the vendor can no longer add manifests to them.
+ */
+export function useUnassignVendorDrop(vendorId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (dropId: string) =>
+      api.delete<unknown>(`admin/supply/vendors/${vendorId}/drops/${dropId}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["supply-vendor-drops", vendorId] });
+      qc.invalidateQueries({ queryKey: ["activity"] });
+    },
+  });
+}
+
+/* ---- The vendor portal (vendor-portal-api.md) ---- */
+/*                                                                      */
+/* No vendor id in any URL or body: the vendor is always the signed-in   */
+/* user's own, resolved from their ACTIVE membership on every request.   */
+
+function invalidateVendorPortal(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["vendor-batches"] });
+  qc.invalidateQueries({ queryKey: ["vendor-batch"] });
+  // Booked / registered / remaining on each allotment move with every write.
+  qc.invalidateQueries({ queryKey: ["vendor-drops"] });
+}
+
+export function useVendorMe(enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["vendor-me"],
+    enabled,
+    // Revoking closes the portal on the next request — re-check on return
+    // to the tab rather than serving a stale membership.
+    refetchOnWindowFocus: true,
+    queryFn: () => api.get<unknown>("vendor/me").then(unwrap<VendorMe>),
+  });
+}
+
+export function useMyVendorDrops(enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["vendor-drops"],
+    enabled,
+    queryFn: () =>
+      api.get<unknown>("vendor/drops").then(unwrap<VendorDropAssignment[]>),
+  });
+}
+
+export function useMyVendorBatches(params: VendorBatchFilters = {}, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["vendor-batches", params],
+    enabled,
+    queryFn: () =>
+      api.get<MetaPaginated<SupplyBatch>>("vendor/batches", { ...params }),
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useMyVendorBatch(batchId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["vendor-batch", batchId],
+    enabled: !!batchId,
+    queryFn: () =>
+      api.get<unknown>(`vendor/batches/${batchId}`).then(unwrap<SupplyBatch>),
+  });
+}
+
+export function useCreateMyVendorBatch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: VendorBatchInput) =>
+      api.post<unknown>("vendor/batches", payload).then(unwrap<SupplyBatch>),
+    onSuccess: () => invalidateVendorPortal(qc),
+  });
+}
+
+/** Same rules as the staff manifest route; the drop must still be assigned. */
+export function useRegisterMyVendorManifest(batchId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: TagManifestInput) =>
+      api
+        .post<unknown>(`vendor/batches/${batchId}/tags`, payload)
+        .then(unwrap<TagManifestResult>),
+    onSuccess: (result) => {
+      if (!result.dryRun) invalidateVendorPortal(qc);
+    },
   });
 }
 

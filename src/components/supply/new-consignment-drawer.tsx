@@ -5,9 +5,10 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { toast } from "sonner";
 import { Info, X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
-import { useCreateSupplyBatch, useVendors } from "@/lib/api/hooks";
-import { humanize } from "@/lib/format";
-import { Button, Field, Input, Textarea } from "@/components/ui/primitives";
+import { useCreateSupplyBatch, useProductVariants, useVendors } from "@/lib/api/hooks";
+import { formatNumber, humanize } from "@/lib/format";
+import { DropPicker } from "@/components/finance/entity-pickers";
+import { Button, Field, Input, Mono, Textarea } from "@/components/ui/primitives";
 import {
   SUPPLY_ITEM_TYPES,
   type SupplyBatchInput,
@@ -25,6 +26,18 @@ export function NewConsignmentDrawer({ onClose }: { onClose: () => void }) {
   const vendorsQuery = useVendors({ isActive: true, limit: 200 });
   const vendors = vendorsQuery.data?.data ?? [];
   const [vendorId, setVendorId] = React.useState("");
+  const [dropId, setDropId] = React.useState<string | undefined>();
+  /* A drop with live variants may be split per variant, as the vendor portal
+     does. Optional for staff, and staff bookings are not capped by allotments. */
+  const variantsQuery = useProductVariants(dropId);
+  const liveVariants = (variantsQuery.data ?? []).filter((v) => v.isActive && !v.archived);
+  const [split, setSplit] = React.useState(false);
+  const [lineQty, setLineQty] = React.useState<Record<string, string>>({});
+  const splitting = split && liveVariants.length > 0;
+  const lines = liveVariants
+    .map((v) => ({ variantId: v.id, quantity: Number(lineQty[v.id] || 0) }))
+    .filter((l) => l.quantity > 0);
+  const lineTotal = lines.reduce((sum, l) => sum + l.quantity, 0);
   const [itemType, setItemType] = React.useState<SupplyItemType>("FIGURE");
   const [quantity, setQuantity] = React.useState("");
   const [batchRef, setBatchRef] = React.useState("");
@@ -41,7 +54,9 @@ export function NewConsignmentDrawer({ onClose }: { onClose: () => void }) {
     const next: Record<string, string> = {};
     if (!vendorId) next.vendorId = "Required.";
     const qty = Number(quantity);
-    if (!quantity.trim() || !Number.isInteger(qty) || qty < 1) {
+    if (splitting) {
+      if (lines.length === 0) next.lines = "Enter at least one variant's quantity.";
+    } else if (!quantity.trim() || !Number.isInteger(qty) || qty < 1) {
       next.quantity = "A whole number of units, at least 1.";
     }
     setErrors(next);
@@ -49,8 +64,10 @@ export function NewConsignmentDrawer({ onClose }: { onClose: () => void }) {
 
     const payload: SupplyBatchInput = {
       vendorId,
+      dropId: dropId || undefined,
       itemType,
-      quantity: qty,
+      // With lines, quantity is their sum server-side — sending both invites a mismatch.
+      ...(splitting ? { lines } : { quantity: qty }),
       batchRef: batchRef.trim() || undefined,
       vendorInvoiceRef: invoiceRef.trim() || undefined,
       // Defaults to now server-side, and batchDate then follows it, so a
@@ -117,6 +134,70 @@ export function NewConsignmentDrawer({ onClose }: { onClose: () => void }) {
               </select>
             </Field>
 
+            <Field
+              label="Drop"
+              htmlFor="c-drop"
+              hint="Optional. Leave empty for platform stock bought ahead of any drop."
+            >
+              <DropPicker
+                id="c-drop"
+                value={dropId}
+                onChange={(v) => {
+                  setDropId(v);
+                  setSplit(false);
+                  setLineQty({});
+                }}
+              />
+            </Field>
+
+            {dropId && liveVariants.length > 0 ? (
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-2 text-[12.5px] text-[var(--text-2)]">
+                  <input
+                    type="checkbox"
+                    checked={split}
+                    onChange={(e) => setSplit(e.target.checked)}
+                    className="h-3.5 w-3.5 accent-[var(--accent)]"
+                  />
+                  Split by variant
+                  <span className="text-[11px] text-[var(--text-3)]">
+                    — each chip row will then name its variant
+                  </span>
+                </label>
+                {split ? (
+                  <>
+                    <ul className="divide-y divide-[var(--hairline)] rounded-[8px] border border-[var(--hairline)]">
+                      {liveVariants.map((v) => (
+                        <li key={v.id} className="flex items-center justify-between gap-3 px-2.5 py-1.5">
+                          <div className="min-w-0">
+                            <p className="truncate text-[12.5px] text-[var(--text-1)]">{v.label}</p>
+                            <Mono className="text-[9.5px]">{v.variantCode}</Mono>
+                          </div>
+                          <Input
+                            aria-label={`Units of ${v.label}`}
+                            inputMode="numeric"
+                            value={lineQty[v.id] ?? ""}
+                            onChange={(e) =>
+                              setLineQty((q) => ({ ...q, [v.id]: e.target.value.replace(/\D/g, "") }))
+                            }
+                            placeholder="—"
+                            className="h-7 w-24 text-right text-[12.5px]"
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                    {errors.lines ? (
+                      <p className="text-[11px] text-[var(--danger)]">{errors.lines}</p>
+                    ) : (
+                      <p className="text-[11px] text-[var(--text-3)]">
+                        Total {formatNumber(lineTotal)} — staff bookings are not capped by vendor allotments.
+                      </p>
+                    )}
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+
             <div className="grid grid-cols-2 gap-3">
               <Field
                 label="Contains"
@@ -147,7 +228,8 @@ export function NewConsignmentDrawer({ onClose }: { onClose: () => void }) {
                 <Input
                   id="c-qty"
                   inputMode="numeric"
-                  value={quantity}
+                  disabled={splitting}
+                  value={splitting ? String(lineTotal) : quantity}
                   invalid={!!errors.quantity}
                   onChange={(e) => setQuantity(e.target.value.replace(/\D/g, ""))}
                   placeholder="500"
