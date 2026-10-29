@@ -82,7 +82,7 @@ export function ArtistStatsTab({ artistId }: { artistId: string }) {
         </Panel>
       ) : (
         <div className={cn("space-y-4", q.isFetching && "opacity-70 transition-opacity")}>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div className={cn("grid grid-cols-2 gap-3", s.moneyVisible ? "lg:grid-cols-4" : "lg:grid-cols-3")}>
             <Kpi
               icon={ShoppingBag}
               label="Units sold"
@@ -90,13 +90,9 @@ export function ArtistStatsTab({ artistId }: { artistId: string }) {
               sub={`${formatNumber(s.sales.lifetime.unitsSold)} all time · ${formatNumber(s.sales.period.orders)} orders`}
               accent
             />
-            <Kpi
-              icon={TrendingUp}
-              label="Revenue"
-              money={s.moneyVisible ? s.sales.period.revenue : undefined}
-              hidden={!s.moneyVisible}
-              sub={s.moneyVisible ? "Paid orders, per currency" : undefined}
-            />
+            {s.moneyVisible ? (
+              <Kpi icon={TrendingUp} label="Revenue" money={s.sales.period.revenue} sub="Paid orders, per currency" />
+            ) : null}
             <Kpi
               icon={BadgeCheck}
               label="Claims"
@@ -140,8 +136,8 @@ export function ArtistStatsTab({ artistId }: { artistId: string }) {
             </Panel>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-            <Royalties stats={s} />
+          <div className={cn("grid grid-cols-1 gap-4", s.moneyVisible && s.royalties && "lg:grid-cols-2")}>
+            {s.moneyVisible && s.royalties ? <Royalties stats={s} /> : null}
             <TopDrops stats={s} canOpen={perms.canOpenDropPage()} />
           </div>
         </div>

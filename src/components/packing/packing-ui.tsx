@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import * as Dialog from "@radix-ui/react-dialog";
 import { toast } from "sonner";
 import {
@@ -18,7 +19,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
-import { useAdminOrder, useProductSkus, useProductVariants } from "@/lib/api/hooks";
+import { useAdminOrder, useOrderUnitCandidates, useProductVariants } from "@/lib/api/hooks";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import {
@@ -36,7 +37,7 @@ import { COMPANY } from "@/lib/company";
 import { ShipmentForm } from "@/components/orders/shipment-ui";
 import { usePermissions } from "@/components/layout/authz-provider";
 import { Badge, Button, Mono, Skeleton, Tooltip } from "@/components/ui/primitives";
-import type { AdminOrderDetail, OrderAddress, OrderPackingState, SkuUnit, UnitScan } from "@/lib/types";
+import type { AdminOrderDetail, OrderAddress, OrderPackingState, UnitScan } from "@/lib/types";
 
 /* ------------------------------------------------------------------ */
 /* What to pick                                                        */
@@ -333,6 +334,11 @@ export function ScanErrorCard({
         {error.title}
       </p>
       {error.detail ? <p className="mt-1 text-[12.5px] text-[var(--text-2)]">{error.detail}</p> : null}
+      {error.link ? (
+        <Link href={error.link.href} className="mt-1 inline-flex items-center gap-1 text-[12.5px] font-medium text-[var(--text-1)] underline-offset-2 hover:underline">
+          {error.link.label} →
+        </Link>
+      ) : null}
       {wrong ? <WrongItem raw={feedback.raw} expectedLabel={expectedLabel} /> : null}
       <p className="mt-1.5 text-[11px] text-[var(--text-3)]">
         Scanned <span className="font-mono">{feedback.scanned}</span>
@@ -522,10 +528,11 @@ export function ConfirmDialog({
 /* ------------------------------------------------------------------ */
 
 /**
- * Units a packer could take: unclaimed, active, not blocked, with a BOUND
- * tag, in the order's variant. Whether one is held by another order isn't on
- * the list — the server re-checks on assign. Choosing one is the same as
- * scanning its SKU code.
+ * Units a packer could take for this order, straight from
+ * GET /admin/orders/:orderId/unit/candidates — only units a scan would
+ * accept, so nothing is filtered here. The one already held for this order
+ * (checkout's placeholder, or the confirmed unit) is marked. Choosing one is
+ * the same as scanning its SKU code.
  */
 export function AvailableUnits({
   state,
@@ -536,33 +543,19 @@ export function AvailableUnits({
   onPick: (skuCode: string) => void;
   busy: boolean;
 }) {
-  const perms = usePermissions();
-  const canRead = perms.canReadUnits();
   const [search, setSearch] = React.useState("");
   const [page, setPage] = React.useState(1);
+  const limit = 8;
 
-  const list = useProductSkus(
-    state.productId,
-    {
-      page,
-      limit: 8,
-      sort: "serial_asc",
-      claimedStatus: "UNCLAIMED",
-      tagged: true,
-      tagLifecycleState: "BOUND",
-      resaleBlocked: false,
-      ...(state.variantId ? { variantId: state.variantId } : {}),
-      ...(search.trim() ? { search: search.trim() } : {}),
-    },
-    canRead
-  );
+  const list = useOrderUnitCandidates(state.orderId, {
+    page,
+    limit,
+    ...(search.trim() ? { search: search.trim() } : {}),
+  });
 
-  if (!canRead) return null;
-
-  const rows: SkuUnit[] = (list.data?.data ?? []).filter((u) => u.isActive && !u.archivedAt);
-  const total = list.data?.meta.total ?? 0;
-  const totalPages = list.data?.meta.totalPages ?? 1;
-  const placeholderId = state.unitState === "PROVISIONAL" ? state.unit?.skuId : null;
+  const rows = list.data?.items ?? [];
+  const total = list.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
   const assignedId = state.unitState === "ASSIGNED" ? state.unit?.skuId : null;
 
   return (
@@ -572,7 +565,7 @@ export function AvailableUnits({
           Available units
           {list.data ? (
             <span className="ml-1.5 font-normal text-[var(--text-3)]">
-              {formatNumber(total)} in stock{state.variantLabel ? ` for ${state.variantLabel}` : ""}
+              {formatNumber(total)} can go in this parcel{state.variantLabel ? ` · ${state.variantLabel}` : ""}
             </span>
           ) : null}
         </p>
@@ -584,7 +577,7 @@ export function AvailableUnits({
               setSearch(e.target.value);
               setPage(1);
             }}
-            placeholder="Serial, code or tag"
+            placeholder="Serial or code"
             aria-label="Search available units"
             className="h-7 w-[170px] rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-1)] pl-7 pr-2 text-[12px] text-[var(--text-1)]"
           />
@@ -603,32 +596,38 @@ export function AvailableUnits({
         </p>
       ) : rows.length === 0 ? (
         <p className="px-3 py-4 text-center text-[12px] text-[var(--text-3)]">
-          {search ? "No available unit matches." : "No tagged, unclaimed unit in stock for this item."}
+          {search ? "No available unit matches." : "No unit in stock can go in this parcel."}
         </p>
       ) : (
         <ul className={cn("divide-y divide-[var(--hairline)]", list.isFetching && "opacity-60")}>
           {rows.map((u) => {
-            const isPlaceholder = u.skuId === placeholderId;
             const isAssigned = u.skuId === assignedId;
             return (
-              <li key={u.skuId} className="flex items-center justify-between gap-3 px-3 py-2">
+              <li
+                key={u.skuId}
+                className={cn(
+                  "flex items-center justify-between gap-3 px-3 py-2",
+                  u.heldForThisOrder && "bg-[var(--info-dim)]"
+                )}
+              >
                 <div className="min-w-0">
-                  <p className="flex items-center gap-1.5 text-[12.5px] text-[var(--text-1)]">
+                  <p className="flex flex-wrap items-center gap-1.5 text-[12.5px] text-[var(--text-1)]">
                     <span className="font-mono">{u.skuCode}</span>
                     <span className="text-[var(--text-3)]">#{u.serialNumber}</span>
-                    {isPlaceholder ? (
-                      <Tooltip content="Checkout's placeholder for this order. Choosing it confirms it as-is.">
+                    {isAssigned ? (
+                      <Badge tone="positive" className="px-1 py-0 text-[10px]">In parcel</Badge>
+                    ) : u.heldForThisOrder ? (
+                      <Tooltip content="Already held for this order. Choosing it confirms it as-is.">
                         <span>
-                          <Badge tone="info" className="px-1 py-0 text-[10px]">Placeholder</Badge>
+                          <Badge tone="info" className="px-1 py-0 text-[10px]">Reserved for this order</Badge>
                         </span>
                       </Tooltip>
                     ) : null}
-                    {isAssigned ? <Badge tone="positive" className="px-1 py-0 text-[10px]">In parcel</Badge> : null}
                   </p>
-                  {u.tag?.tagId ? <Mono className="text-[10px]">{u.tag.tagId}</Mono> : null}
+                  {u.tagId ? <Mono className="text-[10px]">{u.tagId}</Mono> : null}
                 </div>
                 <Button
-                  variant="ghost"
+                  variant={u.heldForThisOrder && !isAssigned ? "secondary" : "ghost"}
                   size="sm"
                   disabled={isAssigned || busy}
                   onClick={() => onPick(u.skuCode)}

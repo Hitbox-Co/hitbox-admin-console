@@ -10,6 +10,7 @@ import {
   Check,
   CircleDashed,
   PackageCheck,
+  PackageX,
   Send,
   ShieldAlert,
   TriangleAlert,
@@ -65,6 +66,44 @@ const TAG_CONDITIONS: { value: NfcTagCondition; label: string; hint: string }[] 
   { value: "MISSING", label: "Missing", hint: "The unit is blocked from resale for a period and the tag goes to DISPUTED." },
   { value: "TAMPERED", label: "Tampered", hint: "Blocked from resale. A tag that 'stopped responding' may have been cloned." },
 ];
+
+/**
+ * What happens to the physical unit when the refund is processed
+ * (order-payments-and-refunds-api.md §7). Restocking keys off the confirmed
+ * return and its tag condition — without Confirm return, nothing is restocked.
+ */
+function unitOutcome(r: Refund): { tone: "positive" | "warning" | "neutral"; text: string } {
+  if (!r.physicalReturnConfirmedAt || !r.nfcTagCondition) {
+    return { tone: "neutral", text: "Unit stays with the buyer" };
+  }
+  if (r.nfcTagCondition === "INTACT") return { tone: "positive", text: "Unit back in stock" };
+  return {
+    tone: "warning",
+    text: r.resaleBlockedUntil
+      ? `Unit quarantined until ${formatDate(r.resaleBlockedUntil)}`
+      : "Unit quarantined (tag not intact)",
+  };
+}
+
+function UnitOutcomeNote({ refund }: { refund: Refund }) {
+  const o = unitOutcome(refund);
+  const Icon = o.tone === "positive" ? PackageCheck : o.tone === "warning" ? ShieldAlert : PackageX;
+  return (
+    <p
+      className={cn(
+        "flex items-center gap-2 rounded-[8px] px-3 py-2 text-[12.5px] font-medium",
+        o.tone === "positive"
+          ? "bg-[var(--positive-dim)] text-[var(--positive)]"
+          : o.tone === "warning"
+            ? "bg-[var(--warning-dim)] text-[var(--warning)]"
+            : "bg-[var(--surface-2)] text-[var(--text-2)]"
+      )}
+    >
+      <Icon className="h-4 w-4 shrink-0" aria-hidden />
+      {o.text}
+    </p>
+  );
+}
 
 /** Older payloads carry only allowedTransitions; map them to actions. */
 function actionsOf(r: Refund): RefundActionCode[] {
@@ -279,7 +318,7 @@ function Timeline({ refund: r }: { refund: Refund }) {
           {r.claimRevokedAt ? (
             <p>Buyer&rsquo;s ownership taken back {formatDateTime(r.claimRevokedAt)} — the claim is stamped revoked, not deleted.</p>
           ) : null}
-          {r.resaleBlockedUntil ? (
+          {r.resaleBlockedUntil && r.status !== "PROCESSED" ? (
             <p className="text-[var(--warning)]">Unit blocked from resale until {formatDate(r.resaleBlockedUntil)} (tag not intact).</p>
           ) : null}
         </div>
@@ -397,6 +436,8 @@ function ActionPanel({ refund, onConflict }: { refund: Refund; onConflict: () =>
 
   const actions = actionsOf(refund);
   const amount = formatCurrency(refund.amount, refund.currency);
+  // A required return that was never confirmed: processing restocks nothing.
+  const returnMissing = refund.physicalReturnRequired && !refund.physicalReturnConfirmedAt;
 
   const reset = () => {
     setPending(null);
@@ -479,9 +520,9 @@ function ActionPanel({ refund, onConflict }: { refund: Refund; onConflict: () =>
         process.mutate(needsGatewayId ? { gatewayRefundId: gatewayRefundId.trim() } : {}, {
           onSuccess: (r) => {
             toast.success(
-              r.claimRevokedAt
+              (r.claimRevokedAt
                 ? `${amount} paid back. Ownership taken back and the royalty reversed.`
-                : `${amount} paid back. The order is now refunded.`
+                : `${amount} paid back. The order is now refunded.`) + ` ${unitOutcome(r).text}.`
             );
             reset();
           },
@@ -500,7 +541,10 @@ function ActionPanel({ refund, onConflict }: { refund: Refund; onConflict: () =>
         {header}
         <div className="px-4 py-3">
           {refund.status === "PROCESSED" ? (
-            <p className="text-[12.5px] text-[var(--text-2)]">Done — the money is back with the buyer.</p>
+            <div className="space-y-2">
+              <p className="text-[12.5px] text-[var(--text-2)]">Done — the money is back with the buyer.</p>
+              <UnitOutcomeNote refund={refund} />
+            </div>
           ) : refund.status === "REJECTED" ? (
             <p className="text-[12.5px] text-[var(--text-2)]">Rejected. Nothing further happens to this refund.</p>
           ) : lacksPermission ? (
@@ -526,7 +570,17 @@ function ActionPanel({ refund, onConflict }: { refund: Refund; onConflict: () =>
               <ActionButton icon={Check} primary title="Approve" help="Nothing outstanding — approve the refund." onClick={() => setPending("APPROVE")} />
             ) : null}
             {actions.includes("PROCESS") ? (
-              <ActionButton icon={Send} primary title={`Pay back ${amount}`} help="Moves the money and closes the order as refunded." onClick={() => setPending("PROCESS")} />
+              <ActionButton
+                icon={Send}
+                primary={!returnMissing}
+                title={`Pay back ${amount}`}
+                help={
+                  returnMissing
+                    ? "The return isn't confirmed — processing now leaves the unit with the buyer."
+                    : "Moves the money and closes the order as refunded."
+                }
+                onClick={() => setPending("PROCESS")}
+              />
             ) : null}
             {actions.includes("APPROVE_WITH_OVERRIDE") ? (
               <ActionButton icon={TriangleAlert} title="Approve without the item" help="Override the return — needs a written reason." onClick={() => setPending("APPROVE_WITH_OVERRIDE")} />
@@ -599,6 +653,25 @@ function ActionPanel({ refund, onConflict }: { refund: Refund; onConflict: () =>
             <p className="text-[13px] text-[var(--text-1)]">
               Pay back <strong>{amount}</strong> to the buyer?
             </p>
+            {returnMissing ? (
+              <div className="space-y-2 rounded-[8px] border border-[var(--warning)] bg-[var(--warning-dim)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--text-1)]">
+                <p className="flex items-start gap-2">
+                  <TriangleAlert className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--warning)]" aria-hidden />
+                  <span>
+                    <strong>Confirm return hasn&rsquo;t been done.</strong> Without it (and the tag&rsquo;s condition) the unit
+                    isn&rsquo;t restocked — it stays with the buyer.
+                  </span>
+                </p>
+                {actions.includes("CONFIRM_RETURN") ? (
+                  <Button variant="secondary" size="sm" onClick={() => setPending("CONFIRM_RETURN")}>
+                    <PackageCheck className="h-3.5 w-3.5" /> Confirm return first
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+            <div className="flex items-center gap-2 text-[12px] text-[var(--text-3)]">
+              After this: <UnitOutcomePreview refund={refund} />
+            </div>
             <ul className="space-y-0.5 rounded-[8px] bg-[var(--surface-2)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-2)]">
               <li>· The refund is issued at Stripe and the order becomes Refunded</li>
               <li>· The buyer&rsquo;s ownership is taken back if they claimed the item</li>
@@ -690,5 +763,24 @@ function Confirm({
         Back
       </Button>
     </div>
+  );
+}
+
+/** The outcome Process will produce, shown before committing. */
+function UnitOutcomePreview({ refund }: { refund: Refund }) {
+  const o = unitOutcome(refund);
+  const text =
+    o.tone === "warning" && !refund.resaleBlockedUntil
+      ? "Unit quarantined for a period (tag not intact)"
+      : o.text;
+  return (
+    <span
+      className={cn(
+        "font-medium",
+        o.tone === "positive" ? "text-[var(--positive)]" : o.tone === "warning" ? "text-[var(--warning)]" : "text-[var(--text-2)]"
+      )}
+    >
+      {text}
+    </span>
   );
 }

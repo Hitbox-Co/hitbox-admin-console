@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { ApiError } from "@/lib/api/client";
+import type { UnitUnavailableDetails } from "@/lib/types";
 
 /**
  * Packing-station helpers (order-unit-assignment-api.md): what a scanned
@@ -43,6 +44,8 @@ export interface PackerError {
   /** The server's message, when it adds something to the title. */
   detail: string | null;
   tone: "danger" | "warning";
+  /** Where to look next — e.g. the order already holding the unit. */
+  link?: { href: string; label: string } | null;
 }
 
 /** error.code drives the wording; error.message is shown alongside it. */
@@ -60,8 +63,16 @@ export function packerError(err: unknown): PackerError {
   switch (err.code) {
     case "ORDERS_WRONG_ITEM":
       return out("Wrong item", "danger", null);
-    case "ORDERS_UNIT_UNAVAILABLE":
-      return out(`Can't use this item: ${msg ?? "it isn't available"}. Set it aside, scan another.`, "danger", null);
+    case "ORDERS_UNIT_UNAVAILABLE": {
+      // Shown exactly as the server words it ("…is held for order ORD-… (PAID).").
+      const d = (err.details ?? null) as UnitUnavailableDetails | null;
+      return {
+        ...out(msg ?? "That unit isn't available.", "danger", null),
+        link: d?.orderId
+          ? { href: `/orders/${d.orderId}`, label: `Open order ${d.orderPublicCode ?? ""}`.trim() }
+          : null,
+      };
+    }
     case "ORDERS_UNIT_NOT_FOUND":
       return out("Unknown tag or code — scan again.", "warning");
     case "ORDERS_UNIT_ALREADY_ASSIGNED":

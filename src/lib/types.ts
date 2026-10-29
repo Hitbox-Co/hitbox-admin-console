@@ -3627,6 +3627,26 @@ export interface ArtistImageUploadUrl {
  */
 export type OrderUnitState = "PROVISIONAL" | "ASSIGNED" | "NONE";
 
+/** GET /admin/orders/:orderId/unit/candidates — a unit a scan would accept for this order. */
+export interface UnitCandidate {
+  skuId: string;
+  skuCode: string;
+  serialNumber: number;
+  tagId: string | null;
+  variantId: string | null;
+  /** Already held for THIS order (its placeholder or the confirmed unit). */
+  heldForThisOrder: boolean;
+}
+
+/** details of 409 ORDERS_UNIT_UNAVAILABLE. */
+export interface UnitUnavailableDetails {
+  skuCode: string;
+  reason: "SOLD" | "HELD";
+  orderId: string | null;
+  orderPublicCode: string | null;
+  orderStatus: string | null;
+}
+
 export interface OrderPackingState {
   orderId: string;
   publicCode: string;

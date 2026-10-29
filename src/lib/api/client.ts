@@ -279,9 +279,8 @@ export class ApiError extends Error {
       case "ORDERS_WRONG_ITEM":
         return "Wrong item — that unit is a different drop or variant. Check the size and colour label.";
       case "ORDERS_UNIT_UNAVAILABLE":
-        return this.status === 409
-          ? "That unit is already sold or held for another order. Pick another one."
-          : this.message || "That unit can't be packed — it's archived, inactive, claimed, blocked, or its tag isn't bound.";
+        // The 409 names the unit and the order holding it — shown verbatim.
+        return this.message || "That unit can't be packed — it's archived, inactive, claimed, blocked, or its tag isn't bound.";
       case "ORDERS_NOT_ASSIGNABLE":
         return "This order can't take a unit — it must be Paid or Processing and hold stock.";
       case "ORDERS_UNIT_NOT_ASSIGNED":
@@ -317,16 +316,17 @@ export class ApiError extends Error {
       /* Artist administration (artist-admin-api.md §11). */
       case "ARTIST_NOT_FOUND":
         return "That artist doesn't exist.";
+      // The 409s on artist actions are shown exactly as the server words them.
       case "ARTIST_ARCHIVED":
-        return "This artist is archived. Restore them first.";
+        return this.message || "This artist is archived. Restore them first.";
       case "ARTIST_NOT_ARCHIVED":
-        return "This artist isn't archived.";
+        return this.message || "This artist isn't archived.";
       case "ARTIST_INACTIVE":
-        return "This artist is inactive. Activate them before publishing.";
+        return this.message || "This artist is inactive. Activate them before publishing.";
       case "ARTIST_STATE_UNCHANGED":
         return this.message || "Nothing to change — the artist is already in that state.";
       case "ARTIST_CHANGED":
-        return "Someone else changed this artist a moment ago. The page was refreshed — try again.";
+        return this.message || "Someone else changed this artist a moment ago. Reload and try again.";
       case "ARTIST_STATS_UNAVAILABLE":
         return "Artist statistics aren't available on this server yet.";
 

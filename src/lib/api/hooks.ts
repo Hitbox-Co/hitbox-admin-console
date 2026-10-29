@@ -44,6 +44,7 @@ import type {
   AssignOrderUnitInput,
   FulfilmentQueueParams,
   OrderPackingState,
+  UnitCandidate,
   ArtistGenre,
   ArtistImageKind,
   ArtistImageUploadUrl,
@@ -3255,6 +3256,25 @@ export function useRemoveArtistImage(kind: ArtistImageKind) {
 /* transitions) and the unit lists move with it, so those are re-read.  */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Units a scan would accept for this order (order:read) — the picker's
+ * source. Only units the server would take, so no client-side filtering.
+ */
+export function useOrderUnitCandidates(
+  orderId: string | undefined,
+  params: { search?: string; page?: number; limit?: number },
+  enabled = true
+) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["order-unit-candidates", orderId, params],
+    enabled: enabled && Boolean(orderId),
+    placeholderData: (prev) => prev,
+    queryFn: () =>
+      api.get<Paginated<UnitCandidate>>(`admin/orders/${orderId}/unit/candidates`, { ...params }),
+  });
+}
+
 /** Live by design: re-read every 30 s and whenever the station regains focus. */
 export function useFulfilmentQueue(params: FulfilmentQueueParams, enabled = true) {
   return useQuery({
@@ -3291,6 +3311,7 @@ function afterScan(qc: ReturnType<typeof useQueryClient>, state: OrderPackingSta
   // The placeholder went back into stock and the scanned unit left it.
   qc.invalidateQueries({ queryKey: ["product-skus", state.productId] });
   qc.invalidateQueries({ queryKey: ["skus"] });
+  qc.invalidateQueries({ queryKey: ["order-unit-candidates"] });
 }
 
 /** Scan a unit FOR this order. A double scan of the same unit is a 200 no-op. */
