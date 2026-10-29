@@ -36,6 +36,7 @@ import { ConfirmDialog } from "@/components/packing/packing-ui";
 import { CollectionFormDialog, useRestoreFlow } from "./collection-dialogs";
 import { AddDropsDialog } from "./add-drops-dialog";
 import { DropMonogram } from "./drop-tile";
+import { RewardPointsBadge } from "@/components/products/reward-points";
 import { BackToCollections, blockedDeleteCopy, useCollectionsLocked } from "./my-collections";
 import type { ArtistCollectionDetail, ArtistCollectionDrop } from "@/lib/types";
 
@@ -410,11 +411,14 @@ function DropCard({ d, onRemove }: { d: ArtistCollectionDrop; onRemove?: () => v
           <Mono className="text-[10.5px]">{d.groupCode}</Mono>
           <span className="tnum">{formatNumber(d.totalSupply)} made</span>
         </p>
-        <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-[var(--positive-dim)] px-2 py-0.5 text-[11px] text-[var(--positive)]">
-          <span className="h-1.5 w-1.5 rounded-full bg-current" />
-          On sale{start ? ` since ${formatDate(start)}` : ""}
-          {d.releaseEnd ? ` · ends ${formatDate(d.releaseEnd)}` : ""}
-        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <p className="inline-flex items-center gap-1.5 rounded-full bg-[var(--positive-dim)] px-2 py-0.5 text-[11px] text-[var(--positive)]">
+            <span className="h-1.5 w-1.5 rounded-full bg-current" />
+            On sale{start ? ` since ${formatDate(start)}` : ""}
+            {d.releaseEnd ? ` · ends ${formatDate(d.releaseEnd)}` : ""}
+          </p>
+          <RewardPointsBadge points={d.rewardPoints} />
+        </div>
       </div>
       {onRemove ? (
         <button

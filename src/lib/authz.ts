@@ -402,6 +402,14 @@ export class Permissions {
     return this.can("brand-artist-record", "update", "global");
   }
 
+  /**
+   * Reward points on a drop — an EXACT drop:configure at GLOBAL scope
+   * (System Admin). `manage` doesn't imply it here: the route checks the key.
+   */
+  canEditRewardPoints(): boolean {
+    return this.hasAction("drop", "configure", "global");
+  }
+
   canOpenDropPage(): boolean {
     return this.reaches("drop");
   }

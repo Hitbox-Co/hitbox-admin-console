@@ -39,6 +39,7 @@ import { ProductPricingPanel } from "./product-pricing-panel";
 import { ProductVariantsPanel } from "./product-variants-panel";
 import { DropTypeBadge } from "./variant-bits";
 import { SkuUnitsPanel } from "./sku-units-panel";
+import { RewardPointsBadge, RewardPointsPanel } from "./reward-points";
 import type { AdminProductDetail, ProductSkuUnit } from "@/lib/types";
 
 /**
@@ -191,6 +192,7 @@ export function ProductDetailView({ productId }: { productId: string }) {
 
         <aside className="min-w-0 space-y-4">
           <ProductLifecyclePanel product={product} />
+          <RewardPointsPanel product={product} />
           <DetailsPanel product={product} />
           <ActivityPanel product={product} />
         </aside>
@@ -235,6 +237,7 @@ function Header({ product }: { product: AdminProductDetail }) {
               </Badge>
             ) : null}
             {archived ? <Badge tone="danger">Archived</Badge> : null}
+            <RewardPointsBadge points={product.rewardPoints} />
             {!product.isActive && !archived ? (
               <Tooltip content="isActive is off — the catalog hides this drop regardless of status.">
                 <span>

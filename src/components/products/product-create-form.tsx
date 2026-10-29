@@ -5,7 +5,14 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { AlertTriangle, ArrowLeft, ArrowRight, Boxes, Coins, Info, ShieldAlert } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
-import { useAdminMarkets, useCreateProduct } from "@/lib/api/hooks";
+import {
+  RewardPointsFormSection,
+  rewardPointsError,
+  validateRewardPoints,
+  type RewardPointsDraft,
+} from "./reward-points";
+import { usePermissions } from "@/components/layout/authz-provider";
+import { useAdminMarkets, useCreateProduct, useSetRewardPoints } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/format";
 import { Button, Field, Input, Panel } from "@/components/ui/primitives";
 import {
@@ -71,7 +78,13 @@ type Step = "type" | "details" | "pricing" | "units";
 
 export function ProductCreateForm() {
   const router = useRouter();
+  const perms = usePermissions();
   const create = useCreateProduct();
+  // Points never go in the POST (refused, 422): a System Admin sets them here
+  // and the form applies them with PUT …/reward-points once the drop exists.
+  const canPoints = perms.canEditRewardPoints();
+  const setPoints = useSetRewardPoints();
+  const [points, setPointsDraft] = React.useState<RewardPointsDraft>({ points: "0", reason: "" });
   const [step, setStep] = React.useState<Step>("type");
   const [errors, setErrors] = React.useState<Record<string, string>>({});
   const [details, setDetails] = React.useState<ProductDetailsDraft>(EMPTY_DETAILS);
@@ -143,6 +156,10 @@ export function ProductCreateForm() {
     }
     if (step === "details") {
       const next = validateDetails(details, "create");
+      if (canPoints) {
+        const pe = validateRewardPoints(points);
+        if (pe) next.rewardPoints = pe;
+      }
       setErrors(next);
       if (Object.keys(next).length === 0) setStep("pricing");
       return;
@@ -182,7 +199,25 @@ export function ProductCreateForm() {
                 : `${product.name} created`
         );
         // Straight into the new drop, where variants, the gallery and Add SKUs live.
-        router.push(`/products/${product.id}`);
+        const go = () => router.push(`/products/${product.id}`);
+        const n = Number(points.points);
+        if (canPoints && n > 0) {
+          setPoints.mutate(
+            { productId: product.id, rewardPoints: n, ...(points.reason.trim() ? { reason: points.reason.trim() } : {}) },
+            {
+              onSuccess: () => {
+                toast.success(`Reward points set to ${formatNumber(n)}`);
+                go();
+              },
+              onError: (err) => {
+                toast.error(`Drop created, but points weren't set: ${rewardPointsError(err)} Set them from the drop's page.`);
+                go();
+              },
+            }
+          );
+          return;
+        }
+        go();
       },
       onError: (err) => {
         if (err instanceof ApiError && err.status === 422) {
@@ -250,6 +285,14 @@ export function ProductCreateForm() {
                 mode="create"
                 disabled={create.isPending}
               />
+              {canPoints ? (
+                <RewardPointsFormSection
+                  value={points}
+                  onChange={setPointsDraft}
+                  error={errors.rewardPoints}
+                  disabled={create.isPending || setPoints.isPending}
+                />
+              ) : null}
               <p className="flex items-start gap-2 text-[11px] leading-relaxed text-[var(--text-3)]">
                 <Info className="mt-px h-3 w-3 shrink-0" aria-hidden />
                 The drop is created as a <strong>Draft</strong>. Submitting it for

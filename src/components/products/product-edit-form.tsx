@@ -5,7 +5,14 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { AlertTriangle, Info, Lock } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
-import { useProductVariants, useUpdateProduct } from "@/lib/api/hooks";
+import { useProductVariants, useSetRewardPoints, useUpdateProduct } from "@/lib/api/hooks";
+import { usePermissions } from "@/components/layout/authz-provider";
+import {
+  RewardPointsFormSection,
+  rewardPointsError,
+  validateRewardPoints,
+  type RewardPointsDraft,
+} from "./reward-points";
 import { DropTypePicker } from "./drop-type-picker";
 import { humanize } from "@/lib/format";
 import { Badge, Button, Mono, Panel, toneForStatus } from "@/components/ui/primitives";
@@ -29,6 +36,9 @@ import type { AdminProductDetail, ProductInput } from "@/lib/types";
  *                own gated route.
  *   - groupCode, units, gallery, prices — each has its own route and its own
  *                panel on the drop's detail.
+ *   - rewardPoints — never in the PATCH (refused, 422). A System Admin gets a
+ *                Reward points section here, saved after the PATCH through
+ *                PUT …/reward-points.
  *
  * Only CHANGED fields are sent. A PATCH naming every field would rewrite
  * columns nobody touched — and on a drop under review, a no-op rewrite of
@@ -51,7 +61,14 @@ function changedFields(before: ProductInput, after: ProductInput): ProductInput 
 
 export function ProductEditForm({ product }: { product: AdminProductDetail }) {
   const router = useRouter();
+  const perms = usePermissions();
   const update = useUpdateProduct(product.id);
+  const setPoints = useSetRewardPoints();
+  const canPoints = perms.canEditRewardPoints();
+  const currentPoints = product.rewardPoints ?? 0;
+  const [points, setPointsDraft] = React.useState<RewardPointsDraft>({ points: String(currentPoints), reason: "" });
+  const pointsChanged = canPoints && Number(points.points) !== currentPoints;
+  const busy = update.isPending || setPoints.isPending;
   const initial = React.useMemo(() => detailsFromProduct(product), [product]);
   const [draft, setDraft] = React.useState<ProductDetailsDraft>(initial);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
@@ -72,7 +89,9 @@ export function ProductEditForm({ product }: { product: AdminProductDetail }) {
     if (dropType !== initialType) out.dropType = dropType || null;
     return out;
   }, [initial, draft, dropType, initialType]);
-  const dirty = Object.keys(changes).length > 0;
+  const detailsDirty = Object.keys(changes).length > 0;
+  const dirty = detailsDirty || pointsChanged;
+  const changeCount = Object.keys(changes).length + (pointsChanged ? 1 : 0);
 
   const ownershipChanged = "organizationId" in changes || "artistId" in changes;
   const ageChanged = "isAgeSpecific" in changes || "minimumAge" in changes;
@@ -80,15 +99,49 @@ export function ProductEditForm({ product }: { product: AdminProductDetail }) {
 
   const back = () => router.push(`/products/${product.id}`);
 
+  /** Points go through their own route, after any detail changes are saved. */
+  const savePoints = (afterDetails: boolean) =>
+    setPoints.mutate(
+      {
+        productId: product.id,
+        rewardPoints: Number(points.points),
+        ...(points.reason.trim() ? { reason: points.reason.trim() } : {}),
+      },
+      {
+        onSuccess: () => {
+          toast.success(afterDetails ? `${product.name} saved, points updated` : "Reward points updated");
+          back();
+        },
+        onError: (err) => {
+          const msg = rewardPointsError(err);
+          setErrors((e) => ({ ...e, rewardPoints: msg }));
+          toast.error(afterDetails ? `Details saved, but points weren't: ${msg}` : msg);
+        },
+      }
+    );
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (update.isPending || !dirty) return;
-    const next = validateDetails(draft, "edit");
+    if (busy || !dirty) return;
+    const next = detailsDirty ? validateDetails(draft, "edit") : {};
+    if (pointsChanged) {
+      const pe = validateRewardPoints(points);
+      if (pe) next.rewardPoints = pe;
+    }
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
+    if (!detailsDirty) {
+      savePoints(false);
+      return;
+    }
+
     update.mutate(changes, {
       onSuccess: (saved) => {
+        if (pointsChanged) {
+          savePoints(true);
+          return;
+        }
         toast.success(`${saved.name ?? product.name} saved`);
         back();
       },
@@ -164,8 +217,18 @@ export function ProductEditForm({ product }: { product: AdminProductDetail }) {
               onChange={setDraft}
               errors={errors}
               mode="edit"
-              disabled={update.isPending}
+              disabled={busy}
             />
+
+            {canPoints ? (
+              <RewardPointsFormSection
+                value={points}
+                onChange={setPointsDraft}
+                error={errors.rewardPoints}
+                disabled={busy}
+                current={currentPoints}
+              />
+            ) : null}
 
             {ownershipChanged && REVIEWED.has(product.status) ? (
               <Notice tone="warning">
@@ -195,15 +258,13 @@ export function ProductEditForm({ product }: { product: AdminProductDetail }) {
               Cancel
             </Button>
             <span className="ml-auto text-[11px] text-[var(--text-3)]">
-              {dirty
-                ? `${Object.keys(changes).length} field${Object.keys(changes).length === 1 ? "" : "s"} changed`
-                : "No changes"}
+              {dirty ? `${changeCount} field${changeCount === 1 ? "" : "s"} changed` : "No changes"}
             </span>
             <Button
               type="submit"
               variant="primary"
               size="sm"
-              loading={update.isPending}
+              loading={busy}
               disabled={!dirty}
             >
               Save changes

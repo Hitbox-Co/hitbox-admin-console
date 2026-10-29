@@ -19,6 +19,7 @@ import type {
   ArtistCollectionDetail,
   ArtistCollectionHeroUploadUrl,
   AdminArtistFilters,
+  UpdateRewardPointsInput,
   ArtistDirectorySummary,
   ArtistStaffProfile,
   ArtistStaffUpdate,
@@ -1000,9 +1001,20 @@ export function useCreateProduct() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (payload: ProductCreateInput) =>
-      api.post<unknown>("admin/products", payload).then(unwrap<AdminProductDetail>),
+      api.post<unknown>("admin/products", withoutRewardPoints(payload)).then(unwrap<AdminProductDetail>),
     onSuccess: () => invalidateProducts(qc),
   });
+}
+
+/**
+ * Points are never part of a create/edit body — the API refuses them (422);
+ * they change only through PUT …/reward-points. Stripped as a guard.
+ */
+function withoutRewardPoints<T extends object>(payload: T): T {
+  if (!("rewardPoints" in payload)) return payload;
+  const { rewardPoints: _drop, ...rest } = payload as T & { rewardPoints?: unknown };
+  void _drop;
+  return rest as T;
 }
 
 export function useUpdateProduct(productId: string) {
@@ -1010,9 +1022,42 @@ export function useUpdateProduct(productId: string) {
   return useMutation({
     mutationFn: (payload: ProductInput) =>
       api
-        .patch<unknown>(`admin/products/${productId}`, payload)
+        .patch<unknown>(`admin/products/${productId}`, withoutRewardPoints(payload))
         .then(unwrap<AdminProductDetail>),
     onSuccess: () => invalidateProducts(qc),
+  });
+}
+
+/**
+ * PUT /admin/products/:id/reward-points (drop:configure:global). Answers
+ * `{ data: Product }` — merged into every cached copy of the drop's detail
+ * (the detail adds performance and units on top, which a points change
+ * doesn't touch), then the lists re-read.
+ */
+export function useUpdateRewardPoints(productId: string) {
+  const set = useSetRewardPoints();
+  return {
+    ...set,
+    mutate: (body: UpdateRewardPointsInput, opts?: Parameters<typeof set.mutate>[1]) =>
+      set.mutate({ productId, ...body }, opts),
+  };
+}
+
+/** Same call with the drop id given per call — the create form learns it only after saving. */
+export function useSetRewardPoints() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ productId, ...body }: UpdateRewardPointsInput & { productId: string }) =>
+      api
+        .put<unknown>(`admin/products/${productId}/reward-points`, body)
+        .then(unwrap<Partial<AdminProductDetail>>),
+    onSuccess: (product, { productId }) => {
+      qc.setQueriesData<AdminProductDetail>({ queryKey: ["admin-product", productId] }, (prev) =>
+        prev ? { ...prev, ...product } : prev
+      );
+      qc.invalidateQueries({ queryKey: ["products"] });
+      qc.invalidateQueries({ queryKey: ["artist-drops"] });
+    },
   });
 }
 
@@ -1258,6 +1303,26 @@ export function useReleases(params: ReleaseFilters) {
   });
   useNextPageWarm<Paginated<ReleaseApproval>>("releases", "admin/releases", params, query.data);
   return query;
+}
+
+/**
+ * Drops waiting for a decision — the sidebar badge. Same filter as the review
+ * queue's default view (PENDING, latest version per drop); one row fetched,
+ * total read; re-read every 60 s. Shares the "releases" prefix, so every
+ * decision refreshes it.
+ */
+export function usePendingApprovalCount(enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["releases", "pending-count"],
+    enabled,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    queryFn: () =>
+      api
+        .get<Paginated<ReleaseApproval>>("admin/releases", { status: "PENDING", latestOnly: true, page: 1, limit: 1 })
+        .then((r) => r.total),
+  });
 }
 
 /**
@@ -2722,6 +2787,28 @@ export function useSupplyBatches(params: SupplyBatchFilters = {}) {
     queryFn: () =>
       api.get<MetaPaginated<SupplyBatch>>("admin/supply/batches", { ...params }),
     placeholderData: (prev) => prev,
+  });
+}
+
+/**
+ * Consignments still waiting on a decision (UPLOADED or VALIDATED) — the
+ * sidebar badge. Two one-row reads, totals summed; re-read every 60 s.
+ */
+export function usePendingConsignmentCount(enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["supply-batches", "pending-count"],
+    enabled,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    queryFn: async () => {
+      const [uploaded, validated] = await Promise.all(
+        (["UPLOADED", "VALIDATED"] as const).map((status) =>
+          api.get<MetaPaginated<SupplyBatch>>("admin/supply/batches", { status, page: 1, limit: 1 })
+        )
+      );
+      return uploaded.meta.total + validated.meta.total;
+    },
   });
 }
 

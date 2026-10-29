@@ -490,6 +490,8 @@ export interface ProductRow {
   publicCode?: string;
   collectionId?: string | null;
   isActive?: boolean;
+  /** Reward points a buyer earns for this drop. 0 means none set. */
+  rewardPoints?: number;
 }
 
 /**
@@ -1192,6 +1194,8 @@ export interface AdminProductDetail {
   variants: ProductVariantRef[];
   /** Paginated — a 10,000-unit edition is a legitimate drop. */
   skuUnits: Paginated<ProductSkuUnit>;
+  /** Reward points a buyer earns for this drop. 0 means none set. */
+  rewardPoints?: number;
 }
 
 export interface ProductVariantRef {
@@ -3746,6 +3750,8 @@ export interface ArtistCollectionDrop {
   publishedAt: string | null;
   releaseStart: string | null;
   releaseEnd: string | null;
+  /** Reward points a buyer earns for this drop. 0 means none set. */
+  rewardPoints?: number;
 }
 
 export interface ArtistCollectionDetail extends ArtistCollection {
@@ -3762,6 +3768,8 @@ export interface AvailableCollectionDrop {
   publishedAt: string | null;
   /** Only ever set with includeFiled=true — adding it moves it here. */
   currentCollection: { id: string; name: string } | null;
+  /** Reward points a buyer earns for this drop. 0 means none set. */
+  rewardPoints?: number;
 }
 
 export interface AvailableDropsParams {
@@ -3953,4 +3961,12 @@ export interface AuditTrailQuery {
   to?: string;
   /** ≤ 200. */
   limit?: number;
+}
+
+/** PUT /admin/products/:id/reward-points — drop:configure:global only. */
+export interface UpdateRewardPointsInput {
+  /** Whole number, 0 – 1,000,000. */
+  rewardPoints: number;
+  /** Up to 500 characters, kept in the audit trail. */
+  reason?: string;
 }

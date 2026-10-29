@@ -39,6 +39,7 @@ import { ArtistStatsTab } from "@/components/artist/artist-stats";
 import { ArtistAboutTab } from "@/components/artist/artist-about";
 import { ArtistActionMenu, EditArtistDialog } from "@/components/artist/artist-admin-actions";
 import { ResourceHistory } from "@/components/artist/collection-history";
+import { RewardPointsBadge } from "@/components/products/reward-points";
 
 /**
  * One artist (artist-admin-api.md). Staff with the platform-wide
@@ -407,6 +408,7 @@ function DropsTab({ artistId }: { artistId: string }) {
                     <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11.5px] text-[var(--text-3)]">
                       <Mono className="text-[10.5px]">{d.groupCode}</Mono>
                       <span className="tnum">{formatNumber(d.totalSupply)} made</span>
+                      <RewardPointsBadge points={d.rewardPoints} />
                       {d.collectionId ? (
                         <span className="inline-flex items-center gap-0.5">
                           <LibraryBig className="h-3 w-3" /> in a collection

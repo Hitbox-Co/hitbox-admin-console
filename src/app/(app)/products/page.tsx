@@ -29,6 +29,7 @@ import {
   useListState,
 } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
+import { RewardPointsBadge } from "@/components/products/reward-points";
 import type { ProductRow } from "@/lib/types";
 
 const DROP_STATUSES = [
@@ -220,6 +221,12 @@ function ProductsView() {
       header: "Supply",
       numeric: true,
       cell: (r) => formatNumber(r.totalSupply),
+    },
+    {
+      key: "points",
+      header: "Points",
+      numeric: true,
+      cell: (r) => (r.rewardPoints ? <RewardPointsBadge points={r.rewardPoints} /> : <span className="text-[12px] text-text-3">—</span>),
     },
     {
       key: "age",

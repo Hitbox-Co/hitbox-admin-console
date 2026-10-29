@@ -11,6 +11,7 @@ import { cn } from "@/lib/cn";
 import { Button, Mono, Skeleton } from "@/components/ui/primitives";
 import { EmptyState, ErrorState } from "@/components/ui/states";
 import { DropMonogram } from "./drop-tile";
+import { RewardPointsBadge } from "@/components/products/reward-points";
 import type { AvailableCollectionDrop, CollectionDropProblem } from "@/lib/types";
 
 /**
@@ -316,6 +317,7 @@ function PickRow({
             <Mono className="text-[10.5px]">{d.groupCode}</Mono>
             <span>{formatNumber(d.totalSupply)} made</span>
             {d.publishedAt ? <span>Live since {formatDate(d.publishedAt)}</span> : null}
+            <RewardPointsBadge points={d.rewardPoints} />
           </span>
           {d.currentCollection ? (
             <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-[var(--warning-dim)] px-2 py-0.5 text-[11px] text-[var(--warning)]">
