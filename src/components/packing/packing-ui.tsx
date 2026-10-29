@@ -746,8 +746,11 @@ export function printPackingSlip(state: OrderPackingState, order?: AdminOrderDet
     .filter(Boolean)
     .join(" &nbsp;·&nbsp; ");
 
+  // The brand mark is white on transparent (made for the dark console); the
+  // slip inverts it to black, so it prints crisply without "print backgrounds".
+  const logoUrl = `${window.location.origin}/brand/hitbox-mark-256.png`;
+
   const meta: [string, string][] = [
-    ["Order no.", state.publicCode],
     ["Order date", formatDateTime(state.placedAt)],
     ["Packed on", formatDateTime(state.unitAssignedAt)],
     ["Printed on", formatDateTime(new Date().toISOString())],
@@ -765,49 +768,61 @@ export function printPackingSlip(state: OrderPackingState, order?: AdminOrderDet
 <title>Packing slip — ${esc(state.publicCode)}</title>
 <style>
   @page { size: A4; margin: 14mm; }
-  * { box-sizing: border-box; }
-  body { font: 12px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif; color: #111; margin: 0; }
-  .page { max-width: 780px; margin: 24px auto; padding: 0 16px; }
-  @media print { .page { margin: 0 auto; padding: 0; } .noprint { display: none; } }
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font: 12px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif; color: #111; margin: 0; background: #fff; }
+  .page { max-width: 780px; margin: 0 auto; padding: 28px 16px 24px; }
+  @media print { .page { padding: 0; } .noprint { display: none !important; } }
   .muted { color: #6b7280; } .small { font-size: 10.5px; }
   .mono { font-family: ui-monospace, "Cascadia Mono", Menlo, monospace; }
-  header { display: flex; justify-content: space-between; gap: 24px; padding-bottom: 14px; border-bottom: 2px solid #111; }
-  .co-name { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
-  .co-legal { font-weight: 600; margin-top: 2px; }
-  .doc { text-align: right; }
-  .doc h1 { margin: 0 0 6px; font-size: 20px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .toolbar { position: sticky; top: 0; z-index: 10; display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px; background: #f3f4f6; border-bottom: 1px solid #e5e7eb; }
+  .toolbar span { margin-right: auto; align-self: center; color: #6b7280; }
+  .toolbar button { padding: 7px 16px; border: 0; border-radius: 6px; background: #111; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; padding-bottom: 16px; border-bottom: 2px solid #111; }
+  .brand { display: flex; gap: 14px; align-items: flex-start; }
+  .logo { width: 58px; height: 58px; flex: none; filter: invert(1); object-fit: contain; }
+  .co-name { font-size: 30px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.15; }
+  .co-tag { font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: #6b7280; margin-top: 2px; }
+  .co-legal { font-weight: 600; margin-top: 6px; }
+  .co-lines { margin-top: 4px; color: #374151; }
+  .doc { text-align: right; min-width: 250px; }
+  .doc h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; }
+  .order-code { display: inline-block; margin: 8px 0 8px; padding: 5px 12px; border: 1.5px solid #111; border-radius: 4px; font-size: 14px; font-weight: 700; letter-spacing: 0.02em; }
+  .order-code small { display: block; font: 600 8.5px/1.2 "Segoe UI", system-ui, sans-serif; letter-spacing: 0.14em; text-transform: uppercase; color: #6b7280; text-align: left; margin-bottom: 1px; }
   .doc table { margin-left: auto; border-collapse: collapse; }
-  .doc td { padding: 1px 0 1px 12px; text-align: right; }
+  .doc td { padding: 1px 0 1px 14px; text-align: right; white-space: nowrap; }
   .doc td:first-child { color: #6b7280; }
-  .order-code { display: inline-block; margin-top: 6px; padding: 4px 10px; border: 1.5px solid #111; border-radius: 4px; font-size: 14px; font-weight: 700; }
-  .addr { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0; }
+  .addr { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 20px 0 18px; }
   .box { border: 1px solid #d1d5db; border-radius: 6px; padding: 10px 12px; min-height: 96px; }
-  .box h2 { margin: 0 0 6px; font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #6b7280; }
-  table.items { width: 100%; border-collapse: collapse; margin-top: 4px; }
-  table.items th { text-align: left; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #374151; background: #f3f4f6; border-bottom: 1px solid #d1d5db; padding: 7px 8px; }
-  table.items td { border-bottom: 1px solid #e5e7eb; padding: 9px 8px; vertical-align: top; }
+  .box h2 { margin: 0 0 6px; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #6b7280; }
+  table.items { width: 100%; border-collapse: collapse; }
+  table.items th { text-align: left; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: #fff; background: #111; padding: 7px 8px; }
+  table.items td { border-bottom: 1px solid #e5e7eb; padding: 10px 8px; vertical-align: top; }
   table.items .pick { font-size: 15px; font-weight: 700; }
   .num { text-align: right; }
   .note { margin-top: 14px; padding: 10px 12px; background: #f9fafb; border-left: 3px solid #111; }
-  .sign { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; margin-top: 40px; }
+  .sign { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; margin-top: 44px; }
   .sign div { border-top: 1px solid #9ca3af; padding-top: 4px; font-size: 10.5px; color: #6b7280; }
-  footer { margin-top: 28px; padding-top: 10px; border-top: 1px solid #e5e7eb; text-align: center; }
-  .print-btn { position: fixed; top: 12px; right: 12px; padding: 8px 14px; border: 0; border-radius: 6px; background: #111; color: #fff; font: inherit; cursor: pointer; }
+  footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: center; gap: 10px; text-align: center; }
+  footer img { width: 20px; height: 20px; filter: invert(1); opacity: 0.85; }
 </style></head><body>
-<button class="print-btn noprint" onclick="window.print()">Print</button>
+<div class="toolbar noprint"><span>Packing slip · ${esc(state.publicCode)}</span><button onclick="window.print()">Print</button></div>
 <div class="page">
   <header>
-    <div>
-      <div class="co-name">${esc(c.name)}</div>
-      ${c.legalName && c.legalName !== c.name ? `<div class="co-legal">${esc(c.legalName)}</div>` : ""}
-      ${c.addressLines.length ? `<div>${c.addressLines.map(esc).join("<br>")}</div>` : ""}
-      ${companyContact ? `<div class="muted" style="margin-top:4px">${companyContact}</div>` : ""}
-      ${companyIds ? `<div class="muted small">${companyIds}</div>` : ""}
+    <div class="brand">
+      <img class="logo" src="${logoUrl}" alt="${esc(c.name)}">
+      <div>
+        <div class="co-name">${esc(c.name)}</div>
+        <div class="co-tag">Authentic collectibles</div>
+        ${c.legalName && c.legalName !== c.name ? `<div class="co-legal">${esc(c.legalName)}</div>` : ""}
+        ${c.addressLines.length ? `<div class="co-lines">${c.addressLines.map(esc).join("<br>")}</div>` : ""}
+        ${companyContact ? `<div class="muted" style="margin-top:4px">${companyContact}</div>` : ""}
+        ${companyIds ? `<div class="muted small">${companyIds}</div>` : ""}
+      </div>
     </div>
     <div class="doc">
       <h1>Packing slip</h1>
+      <div class="order-code mono"><small>Order no.</small>${esc(state.publicCode)}</div>
       <table>${meta.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}</table>
-      <div class="order-code mono">${esc(state.publicCode)}</div>
     </div>
   </header>
 
@@ -845,8 +860,11 @@ export function printPackingSlip(state: OrderPackingState, order?: AdminOrderDet
   <div class="sign"><div>Packed by</div><div>Checked by</div><div>Date</div></div>
 
   <footer>
-    <div>Thank you for your order from ${esc(c.name)}.</div>
-    ${c.email || c.phone ? `<div class="muted small">Questions? ${[c.email && esc(c.email), c.phone && esc(c.phone)].filter(Boolean).join(" · ")} — quote order ${esc(state.publicCode)}.</div>` : ""}
+    <img src="${logoUrl}" alt="">
+    <div>
+      <div>Thank you for your order from ${esc(c.name)}.</div>
+      ${c.email || c.phone ? `<div class="muted small">Questions? ${[c.email && esc(c.email), c.phone && esc(c.phone)].filter(Boolean).join(" · ")} — quote order ${esc(state.publicCode)}.</div>` : ""}
+    </div>
   </footer>
 </div>
 <script>window.onload=function(){setTimeout(function(){window.print()},150)}</script>
