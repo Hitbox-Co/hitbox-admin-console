@@ -28,6 +28,7 @@ import {
   useRenameRewardItem,
   useReorderRewardItems,
   useSaveCollectionReward,
+  useToggleCollectionReward,
 } from "@/lib/api/hooks";
 import { formatBytes, formatDateTime, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -193,15 +194,18 @@ function RewardView({
   // HitBox switched it off or removed it: only staff can bring it back.
   const locked = r.moderation?.locked === true;
 
-  const toggle = () =>
-    save.mutate(
-      { name: r.name, isActive: !r.isActive },
+  // Flips at once; the save runs behind it and is undone if it fails.
+  const toggleSave = useToggleCollectionReward(collectionId);
+  const toggle = () => {
+    const next = !r.isActive;
+    toggleSave.mutate(
+      { name: r.name, isActive: next },
       {
-        onSuccess: (next) =>
-          toast.success(next.isActive ? "Reward is on — fans with the full set have it now" : "Reward paused"),
-        onError: (err) => toast.error(errText(err, "Could not change the reward.")),
+        onError: (err) =>
+          toast.error(`${next ? "Couldn't switch it on" : "Couldn't pause it"} — ${errText(err, "the change was undone.")}`),
       }
     );
+  };
 
   const restore = () =>
     save.mutate(
@@ -286,9 +290,8 @@ function RewardView({
                 <Switch
                   checked={r.isActive}
                   onChange={toggle}
-                  busy={save.isPending}
                   disabled={locked && !r.isActive}
-                  label={locked ? "Off · locked" : r.isActive ? "On" : "Paused"}
+                  label={locked ? "Locked" : r.isActive ? "On" : "Paused"}
                 />
                 <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
                   <Pencil className="h-3.5 w-3.5" /> Edit
@@ -350,16 +353,18 @@ function Stat({ icon: Icon, text, warn }: { icon: typeof Users; text: string; wa
   );
 }
 
+/**
+ * The knob's position comes from layout (justify-start / justify-end), not a
+ * fixed offset — so the track can't shrink out from under it.
+ */
 function Switch({
   checked,
   onChange,
-  busy,
   disabled,
   label,
 }: {
   checked: boolean;
   onChange: () => void;
-  busy?: boolean;
   disabled?: boolean;
   label: string;
 }) {
@@ -368,20 +373,30 @@ function Switch({
       type="button"
       role="switch"
       aria-checked={checked}
-      disabled={busy || disabled}
+      aria-label={checked ? "Reward on — pause it" : "Reward paused — switch it on"}
+      disabled={disabled}
       onClick={onChange}
-      className="inline-flex h-8 items-center gap-2 rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] pl-1.5 pr-3 text-[12px] text-[var(--text-2)] disabled:opacity-50"
       title={disabled ? "Locked by HitBox" : checked ? "Pause the reward" : "Switch the reward on"}
+      className="group inline-flex h-7 shrink-0 items-center gap-2 rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] pl-1 pr-2.5 text-[12px] font-medium text-[var(--text-2)] transition-colors hover:border-[var(--hairline-strong)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
     >
-      <span className={cn("relative h-5 w-9 rounded-full transition-colors", checked ? "bg-[var(--positive)]" : "bg-[var(--surface-3)]")}>
+      {/* Fixed-size, non-shrinking track: 36px wide, 2px inset, 16px knob → 16px of travel. */}
+      <span
+        aria-hidden
+        className={cn(
+          "flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors duration-200",
+          checked ? "bg-[var(--positive)]" : "bg-[var(--surface-3)]"
+        )}
+      >
         <span
           className={cn(
-            "absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform",
-            checked ? "translate-x-[18px]" : "translate-x-0.5"
+            "h-4 w-4 rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.35)] transition-transform duration-200 ease-out",
+            checked ? "translate-x-4" : "translate-x-0"
           )}
         />
       </span>
-      {label}
+      <span className={cn("min-w-[44px] text-left", checked ? "text-[var(--text-1)]" : "text-[var(--text-3)]")}>
+        {label}
+      </span>
     </button>
   );
 }

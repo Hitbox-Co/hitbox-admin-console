@@ -11,7 +11,8 @@ import {
   useDropType,
   useSetDimensionArchived,
   useSetDimensionValueArchived,
-  useUpdateDimension,
+  useToggleDimensionFlag,
+  useToggleDropTypeActive,
   useUpdateDropType,
 } from "@/lib/api/hooks";
 import { formatDateTime, formatNumber } from "@/lib/format";
@@ -212,18 +213,19 @@ function DimensionRow({
   canManage: boolean;
   namedByRule: boolean;
 }) {
-  const update = useUpdateDimension(typeCode);
   const setArchived = useSetDimensionArchived(typeCode);
   const setValueArchived = useSetDimensionValueArchived(typeCode);
   const isColor = d.displayType === "COLOR";
   const values = [...d.values].sort((a, b) => a.position - b.position);
 
+  // Ticks at once; the save runs behind it and is undone if it fails.
+  const flag = useToggleDimensionFlag(typeCode);
   const toggle = (field: "required" | "allowCustomValues", next: boolean) =>
-    update.mutate(
-      { dimension: d.code, body: { [field]: next } },
+    flag.mutate(
+      { dimension: d.code, field, value: next },
       {
-        onSuccess: () => toast.success(`${d.label} updated`),
-        onError: (err) => toast.error(errorText(err, "Could not update the dimension.")),
+        onError: (err) =>
+          toast.error(`${d.label}: ${errorText(err, "could not update the dimension")} — the change was undone.`),
       }
     );
 
@@ -259,7 +261,6 @@ function DimensionRow({
                   <input
                     type="checkbox"
                     checked={d.required}
-                    disabled={update.isPending}
                     onChange={(e) => toggle("required", e.target.checked)}
                     className="h-3 w-3 accent-[var(--accent)]"
                   />
@@ -269,7 +270,6 @@ function DimensionRow({
                   <input
                     type="checkbox"
                     checked={d.allowCustomValues}
-                    disabled={update.isPending}
                     onChange={(e) => toggle("allowCustomValues", e.target.checked)}
                     className="h-3 w-3 accent-[var(--accent)]"
                   />
@@ -692,17 +692,20 @@ function SettingsPanel({ type }: { type: DropType }) {
     });
   };
 
-  const toggleActive = () =>
-    update.mutate(
-      { isActive: !type.isActive },
+  // Flips at once; the save runs behind it and is undone if it fails.
+  const activeToggle = useToggleDropTypeActive(type.code);
+  const toggleActive = () => {
+    const next = !type.isActive;
+    activeToggle.mutate(
+      { isActive: next },
       {
-        onSuccess: (t) =>
-          toast.success(
-            t.isActive ? `${t.name} re-activated` : `${t.name} deactivated — existing drops keep working`
+        onError: (err) =>
+          toast.error(
+            `${next ? "Couldn't re-activate" : "Couldn't deactivate"} ${type.name} — ${errorText(err, "the change was undone.")}`
           ),
-        onError: (err) => toast.error(errorText(err, "Could not change the type.")),
       }
     );
+  };
 
   return (
     <Panel>

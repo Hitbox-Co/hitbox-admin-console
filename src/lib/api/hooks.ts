@@ -3469,6 +3469,193 @@ export function useCorrectShipment(orderId: string) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Optimistic toggles                                                  */
+/*                                                                      */
+/* A switch should answer the click, not the network:                   */
+/*   - every click changes the cache at once;                           */
+/*   - the request waits until the clicks stop (DEBOUNCE_MS) and sends   */
+/*     only the final value — and nothing at all when the final value   */
+/*     is where it started, so on → off → on is zero requests;          */
+/*   - the server's answer replaces the guess; a failure puts back the  */
+/*     value from before the burst, unless newer clicks have followed.  */
+/* Clicks collapse per SLOT — one record's one field — so two different */
+/* switches on the same record never swallow each other.               */
+/* Pending sends are flushed on unmount, so leaving the page right      */
+/* after a click doesn't lose it.                                       */
+/* ------------------------------------------------------------------ */
+
+type QueryClient = ReturnType<typeof useQueryClient>;
+
+const DEBOUNCE_MS = 400;
+
+interface ToggleOptions<TCache, V, R> {
+  queryKey: (vars: V) => readonly unknown[];
+  /** The guessed cache value after the click. */
+  apply: (prev: TCache, vars: V) => TCache;
+  /** What the cache holds now for this toggle, as vars — the "from" value. */
+  read: (cache: TCache, vars: V) => V;
+  request: (vars: V) => Promise<R>;
+  /** Write the server's answer (and refresh anything derived from it). */
+  settle: (qc: QueryClient, result: R, vars: V) => void;
+  /** Which clicks collapse together. Defaults to the record (its query key). */
+  slot?: (vars: V) => string;
+  delayMs?: number;
+}
+
+type PendingToggle<V> = {
+  timer: ReturnType<typeof setTimeout>;
+  /** The value before the first click of this burst. */
+  original: V | undefined;
+  vars: V;
+  onError?: (err: unknown) => void;
+};
+
+export function useOptimisticToggle<TCache, V, R>(options: ToggleOptions<TCache, V, R>) {
+  const qc = useQueryClient();
+  // The latest options without re-creating `mutate` every render.
+  const optsRef = React.useRef(options);
+  React.useEffect(() => {
+    optsRef.current = options;
+  });
+  const pending = React.useRef(new Map<string, PendingToggle<V>>());
+  const latestSent = React.useRef(new Map<string, number>());
+  const counter = React.useRef(0);
+
+  const send = React.useCallback(
+    (slot: string) => {
+      const entry = pending.current.get(slot);
+      if (!entry) return;
+      pending.current.delete(slot);
+      const opts = optsRef.current;
+      const { vars, original, onError } = entry;
+      // Clicked back to where it started: nothing to tell the server.
+      if (original !== undefined && JSON.stringify(original) === JSON.stringify(vars)) return;
+
+      const seq = ++counter.current;
+      latestSent.current.set(slot, seq);
+      const key = opts.queryKey(vars);
+      // Newer clicks on this slot since this send decide instead.
+      const superseded = () => latestSent.current.get(slot) !== seq || pending.current.has(slot);
+
+      opts.request(vars).then(
+        (result) => {
+          if (!superseded()) opts.settle(qc, result, vars);
+        },
+        (err: unknown) => {
+          // A newer click is already on its way and will decide — nothing to undo or report.
+          if (superseded()) return;
+          if (original !== undefined) {
+            qc.setQueryData<TCache>(key, (cur) => (cur === undefined ? cur : opts.apply(cur, original)));
+          }
+          onError?.(err);
+        }
+      );
+    },
+    [qc]
+  );
+
+  const mutate = React.useCallback(
+    (vars: V, callbacks?: { onError?: (err: unknown) => void }) => {
+      const opts = optsRef.current;
+      const key = opts.queryKey(vars);
+      const slot = opts.slot ? opts.slot(vars) : JSON.stringify(key);
+      const current = qc.getQueryData<TCache>(key);
+      const existing = pending.current.get(slot);
+      if (existing) clearTimeout(existing.timer);
+
+      // Hold any refetch back so it can't paint the old value over the click.
+      void qc.cancelQueries({ queryKey: key });
+      if (current !== undefined) qc.setQueryData<TCache>(key, opts.apply(current, vars));
+
+      pending.current.set(slot, {
+        timer: setTimeout(() => send(slot), opts.delayMs ?? DEBOUNCE_MS),
+        original: existing ? existing.original : current !== undefined ? opts.read(current, vars) : undefined,
+        vars,
+        onError: callbacks?.onError ?? existing?.onError,
+      });
+    },
+    [qc, send]
+  );
+
+  // Leaving the page mid-burst sends what was clicked rather than dropping it.
+  React.useEffect(() => {
+    const map = pending.current;
+    return () => {
+      for (const [slot, entry] of [...map.entries()]) {
+        clearTimeout(entry.timer);
+        send(slot);
+      }
+    };
+  }, [send]);
+
+  return { mutate };
+}
+
+/** "Show on my page" / "Hide from my page" on the artist's own collection. */
+export function useToggleCollectionPublic(collectionId: string) {
+  return useOptimisticToggle<ArtistCollectionDetail | undefined, { isPublic: boolean }, ArtistCollection>({
+    queryKey: () => ["artist-collection", collectionId],
+    apply: (prev, { isPublic }) => (prev ? { ...prev, isPublic } : prev),
+    read: (c) => ({ isPublic: Boolean(c?.isPublic) }),
+    request: ({ isPublic }) =>
+      api.patch<unknown>(`artist/collections/${collectionId}`, { isPublic }).then(unwrap<ArtistCollection>),
+    settle: (qc, c) => {
+      qc.setQueryData<ArtistCollectionDetail>(["artist-collection", c.id], (prev) => (prev ? { ...prev, ...c } : prev));
+      qc.invalidateQueries({ queryKey: ["artist-collections"] });
+    },
+  });
+}
+
+function settleDropType(qc: QueryClient, type: DropType) {
+  qc.setQueryData(["drop-type", type.code], (prev: DropType | undefined) => ({
+    ...type,
+    dropCount: type.dropCount ?? prev?.dropCount,
+  }));
+  qc.invalidateQueries({ queryKey: ["drop-types"] });
+}
+
+/** Deactivate / re-activate a drop type. */
+export function useToggleDropTypeActive(code: string) {
+  return useOptimisticToggle<DropType | undefined, { isActive: boolean }, DropType>({
+    queryKey: () => ["drop-type", code],
+    apply: (prev, { isActive }) => (prev ? { ...prev, isActive } : prev),
+    read: (t) => ({ isActive: Boolean(t?.isActive) }),
+    request: ({ isActive }) => api.patch<unknown>(`admin/drop-types/${code}`, { isActive }).then(unwrap<DropType>),
+    settle: settleDropType,
+  });
+}
+
+/** A dimension's Required / Custom values checkbox. */
+export function useToggleDimensionFlag(code: string) {
+  return useOptimisticToggle<
+    DropType | undefined,
+    { dimension: string; field: "required" | "allowCustomValues"; value: boolean },
+    DropType
+  >({
+    queryKey: () => ["drop-type", code],
+    apply: (prev, { dimension, field, value }) =>
+      prev
+        ? {
+            ...prev,
+            dimensions: prev.dimensions.map((d) => (d.code === dimension ? { ...d, [field]: value } : d)),
+          }
+        : prev,
+    read: (t, { dimension, field }) => ({
+      dimension,
+      field,
+      value: Boolean(t?.dimensions.find((d) => d.code === dimension)?.[field]),
+    }),
+    // Required and Custom values on each dimension are separate switches.
+    slot: ({ dimension, field }) => `drop-type:${code}:${dimension}:${field}`,
+    request: ({ dimension, field, value }) =>
+      api
+        .patch<unknown>(`admin/drop-types/${code}/dimensions/${dimension}`, { [field]: value })
+        .then(unwrap<DropType>),
+    settle: settleDropType,
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Artist collections — the artist's own (artist-collection-api.md)    */
 /*                                                                      */
 /* /artist/collections is always the signed-in artist — no artist id   */
@@ -3944,6 +4131,19 @@ export function useSaveCollectionReward(collectionId: string) {
   return useRewardWrite(collectionId, (body: SaveCollectionRewardInput) =>
     api.put<unknown>(rewardBase(collectionId), body)
   );
+}
+
+/** On / off for a reward — optimistic (see useOptimisticToggle). */
+export function useToggleCollectionReward(collectionId: string) {
+  return useOptimisticToggle<CollectionReward | null, { name: string; isActive: boolean }, CollectionReward>({
+    queryKey: () => rewardKey(collectionId),
+    apply: (prev, { isActive }) =>
+      prev ? { ...prev, isActive, status: prev.status === "REMOVED" ? "REMOVED" : isActive ? "ON" : "OFF" } : prev,
+    read: (r, { name }) => ({ name, isActive: Boolean(r?.isActive) }),
+    request: ({ name, isActive }) =>
+      api.put<unknown>(rewardBase(collectionId), { name, isActive }).then(unwrap<CollectionReward>),
+    settle: (qc, reward) => qc.setQueryData(rewardKey(collectionId), reward),
+  });
 }
 
 export function useRemoveCollectionReward(collectionId: string) {
