@@ -30,11 +30,12 @@ import {
 import { ARTIST_IMAGE_MAX_BYTES, ARTIST_IMAGE_TYPES, prepareImage } from "@/lib/image-prep";
 import { formatDate, formatNumber } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
-import { Badge, Button, Mono, Panel, Skeleton, Tooltip } from "@/components/ui/primitives";
+import { Badge, Button, Mono, Panel, Segmented, Skeleton, Tooltip } from "@/components/ui/primitives";
 import { ErrorState } from "@/components/ui/states";
 import { ConfirmDialog } from "@/components/packing/packing-ui";
 import { CollectionFormDialog, useRestoreFlow } from "./collection-dialogs";
 import { AddDropsDialog } from "./add-drops-dialog";
+import { CollectionRewardTab } from "./collection-reward-tab";
 import { DropMonogram } from "./drop-tile";
 import { RewardPointsBadge } from "@/components/products/reward-points";
 import { BackToCollections, blockedDeleteCopy, useCollectionsLocked } from "./my-collections";
@@ -49,6 +50,7 @@ export function MyCollectionDetailView({ collectionId }: { collectionId: string 
   const profileLocked = useCollectionsLocked();
   const [editing, setEditing] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
+  const [tab, setTab] = React.useState<"drops" | "reward">("drops");
   const archive = useArchiveCollection();
   const update = useUpdateCollection(collectionId);
   const restoreFlow = useRestoreFlow();
@@ -152,7 +154,20 @@ export function MyCollectionDetailView({ collectionId }: { collectionId: string 
         </div>
       </Panel>
 
-      <DropsSection c={c} editable={canEdit} />
+      <Segmented
+        value={tab}
+        onChange={setTab}
+        options={[
+          { value: "drops", label: `Drops · ${formatNumber(c.counts.activeDrops)}` },
+          { value: "reward", label: "Reward" },
+        ]}
+      />
+
+      {tab === "reward" ? (
+        <CollectionRewardTab collectionId={c.id} collectionName={c.name} editable={canEdit} />
+      ) : (
+        <DropsSection c={c} editable={canEdit} />
+      )}
 
       {editing ? <CollectionFormDialog collection={c} onClose={() => setEditing(false)} /> : null}
       <ConfirmDialog

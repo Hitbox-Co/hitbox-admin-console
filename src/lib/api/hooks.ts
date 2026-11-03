@@ -19,6 +19,9 @@ import type {
   ArtistCollectionDetail,
   ArtistCollectionHeroUploadUrl,
   AdminArtistFilters,
+  CollectionReward,
+  RewardUploadUrl,
+  SaveCollectionRewardInput,
   UpdateRewardPointsInput,
   ArtistDirectorySummary,
   ArtistStaffProfile,
@@ -3893,5 +3896,131 @@ export function useUpdateArtistStaff(artistId: string) {
 export function useArtistStateAction(artistId: string) {
   return useArtistStaffWrite(artistId, ({ action, reason }: { action: ArtistStateAction; reason?: string }) =>
     api.post<unknown>(`admin/artists/${artistId}/${action}`, reason ? { reason } : {})
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Collection rewards — the artist's own (content/collection-rewards.md) */
+/*                                                                      */
+/* Every write answers with the whole reward; it replaces the cache.    */
+/* ------------------------------------------------------------------ */
+
+const rewardKey = (collectionId: string) => ["collection-reward", collectionId] as const;
+const rewardBase = (collectionId: string) => `artist/collections/${collectionId}/reward`;
+
+/** `null` when the collection has no reward yet. */
+export function useCollectionReward(collectionId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: rewardKey(collectionId ?? ""),
+    enabled: Boolean(collectionId),
+    queryFn: () =>
+      api.get<unknown>(rewardBase(collectionId!)).then(unwrap<CollectionReward | null>),
+  });
+}
+
+function useRewardWrite<V>(collectionId: string, request: (vars: V) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: V) => request(vars).then(unwrap<CollectionReward>),
+    onSuccess: (reward) => qc.setQueryData(rewardKey(collectionId), reward),
+    onError: (err) => {
+      // The list changed under us — show the current one.
+      if (err instanceof ApiError && err.code === "CONTENT_REWARD_ORDER_MISMATCH") {
+        qc.invalidateQueries({ queryKey: rewardKey(collectionId) });
+      }
+    },
+  });
+}
+
+/** Create, edit, pause / switch on, or restore a removed reward. */
+export function useSaveCollectionReward(collectionId: string) {
+  return useRewardWrite(collectionId, (body: SaveCollectionRewardInput) =>
+    api.put<unknown>(rewardBase(collectionId), body)
+  );
+}
+
+export function useRemoveCollectionReward(collectionId: string) {
+  return useRewardWrite(collectionId, () => api.delete<unknown>(rewardBase(collectionId)));
+}
+
+/**
+ * Adding a file, all three steps:
+ *   1. POST …/items/upload-url  — presign for this type and exact size
+ *   2. PUT  <uploadUrl>          — the bytes straight to S3, with exactly
+ *      `requiredHeaders`; XHR rather than fetch, for upload progress
+ *   3. POST …/items { assetId }  — only after S3 answered 2xx
+ */
+export function useAddRewardItem(collectionId: string) {
+  return useRewardWrite(
+    collectionId,
+    async ({
+      file,
+      title,
+      onProgress,
+    }: {
+      file: File;
+      title?: string;
+      onProgress?: (fraction: number) => void;
+    }) => {
+      const presigned = await api
+        .post<unknown>(`${rewardBase(collectionId)}/items/upload-url`, {
+          fileName: file.name,
+          mimeType: file.type,
+          sizeBytes: file.size,
+        })
+        .then(unwrap<RewardUploadUrl>);
+
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", presigned.uploadUrl);
+        for (const [k, v] of Object.entries(presigned.requiredHeaders ?? {})) xhr.setRequestHeader(k, v);
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) onProgress?.(e.loaded / e.total);
+        };
+        xhr.onload = () =>
+          xhr.status >= 200 && xhr.status < 300
+            ? resolve()
+            : reject(
+                new ApiError(
+                  xhr.status,
+                  "STORAGE_UPLOAD_FAILED",
+                  xhr.status === 403
+                    ? "Storage rejected the upload — the link expired or the file changed. Try again."
+                    : `The storage service rejected the upload (${xhr.status}).`,
+                  null
+                )
+              );
+        xhr.onerror = () =>
+          reject(new ApiError(0, "STORAGE_UPLOAD_FAILED", "The upload didn't reach storage. Check the connection and try again.", null));
+        xhr.send(file);
+      });
+      onProgress?.(1);
+
+      return api.post<unknown>(`${rewardBase(collectionId)}/items`, {
+        assetId: presigned.assetId,
+        ...(title?.trim() ? { title: title.trim() } : {}),
+      });
+    }
+  );
+}
+
+/** `title: null` falls back to the file name. */
+export function useRenameRewardItem(collectionId: string) {
+  return useRewardWrite(collectionId, ({ itemId, title }: { itemId: string; title: string | null }) =>
+    api.patch<unknown>(`${rewardBase(collectionId)}/items/${itemId}`, { title })
+  );
+}
+
+/** Every item id, once, in the new order. */
+export function useReorderRewardItems(collectionId: string) {
+  return useRewardWrite(collectionId, (itemIds: string[]) =>
+    api.put<unknown>(`${rewardBase(collectionId)}/items/order`, { itemIds })
+  );
+}
+
+export function useRemoveRewardItem(collectionId: string) {
+  return useRewardWrite(collectionId, (itemId: string) =>
+    api.delete<unknown>(`${rewardBase(collectionId)}/items/${itemId}`)
   );
 }

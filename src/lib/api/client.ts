@@ -340,6 +340,29 @@ export class ApiError extends Error {
       case "AUDIT_WRITE_FAILED":
         return "The change was refused because its audit record couldn't be written. Nothing was changed — try again.";
 
+      /* Collection rewards (content/collection-rewards.md §7) — the server's
+         message is shown as returned; these are fallbacks for an empty one. */
+      case "CONTENT_REWARD_FILE_TYPE":
+        return this.message || "That file type or size isn't allowed for a reward.";
+      case "CONTENT_REWARD_FILE_INVALID":
+        return this.message || "That file can't be used — it isn't uploaded yet, was removed, or failed the virus scan.";
+      case "CONTENT_REWARD_TOO_MANY_ITEMS":
+        return this.message || "A reward can hold at most 20 files.";
+      case "CONTENT_REWARD_FILE_DUPLICATE":
+        return this.message || "That file is already in the reward.";
+      case "CONTENT_REWARD_ORDER_MISMATCH":
+        return this.message || "The files changed in another tab. The list was refreshed — try again.";
+      case "CONTENT_REWARD_NOT_FOUND":
+        return this.message || "This collection has no reward yet.";
+      case "CONTENT_REWARD_ITEM_NOT_FOUND":
+        return this.message || "That file isn't in the reward any more.";
+      case "CONTENT_REWARD_ARCHIVED":
+        return this.message || "The reward is removed. Restore it first.";
+      case "CONTENT_REWARD_MEDIA_UNAVAILABLE":
+        return this.message || "File storage isn't configured on this server.";
+      case "ARTIST_COLLECTION_REWARDS_UNAVAILABLE":
+        return this.message || "Rewards aren't available on this server yet.";
+
       /* Artist collections (artist-collection-api.md). */
       case "ARTIST_COLLECTION_NOT_FOUND":
         return "That collection doesn't exist, or it isn't yours.";
@@ -348,7 +371,7 @@ export class ApiError extends Error {
       case "ARTIST_COLLECTION_SLUG_TAKEN":
         return "That web address is already used by another collection.";
       case "ARTIST_COLLECTION_ARCHIVED":
-        return "This collection is deleted. Restore it before changing it.";
+        return this.message || "This collection is deleted. Restore it before changing it.";
       case "ARTIST_COLLECTION_NOT_ARCHIVED":
         return "This collection isn't deleted — it may have just been restored.";
       case "ARTIST_COLLECTION_HAS_DROPS":

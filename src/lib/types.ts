@@ -3970,3 +3970,62 @@ export interface UpdateRewardPointsInput {
   /** Up to 500 characters, kept in the audit trail. */
   reason?: string;
 }
+
+/* ------------------------------------------------------------------ */
+/* Collection rewards (content/collection-rewards.md §3)               */
+/* ------------------------------------------------------------------ */
+
+export type RewardItemKind = "VIDEO" | "AUDIO" | "GIF" | "IMAGE";
+export type CollectionRewardStatus = "ON" | "OFF" | "REMOVED";
+
+export interface CollectionRewardItem {
+  id: string;
+  publicCode: string;
+  assetId: string;
+  kind: RewardItemKind;
+  /** The artist's title, or the file name when none was given. */
+  title: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  position: number;
+  /** Signed preview link, valid for expiresIn seconds. Never stored. */
+  url: string | null;
+  expiresIn: number;
+}
+
+/** GET …/reward — and what every write answers with. */
+export interface CollectionReward {
+  id: string;
+  publicCode: string;
+  collectionId: string;
+  name: string;
+  description: string | null;
+  status: CollectionRewardStatus;
+  isActive: boolean;
+  archivedAt: string | null;
+  items: CollectionRewardItem[];
+  itemCounts: Record<RewardItemKind, number>;
+  /** Buyers who have it unlocked right now. */
+  unlockedCount: number;
+  /** Released drops a buyer must collect. */
+  requiredDrops: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SaveCollectionRewardInput {
+  name: string;
+  description?: string | null;
+  isActive?: boolean;
+}
+
+/** POST …/reward/items/upload-url */
+export interface RewardUploadUrl {
+  assetId: string;
+  uploadUrl: string;
+  expiresIn: number;
+  /** Send exactly these with the PUT. */
+  requiredHeaders: Record<string, string>;
+  kind: RewardItemKind;
+}
