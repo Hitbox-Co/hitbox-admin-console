@@ -486,6 +486,9 @@ const ROUTE_ACCESS: Record<string, (p: Permissions) => boolean> = {
   // The artist directory (/admin/artists) takes drop:read; it carries no
   // organization context, so only a platform-wide read passes.
   "/artists": (p) => p.reaches("drop"),
+  // Collection rewards: monitoring and moderation, content-unlock:manage
+  // platform-wide (globalOnly server-side).
+  "/rewards": (p) => p.can("content-unlock", "manage", "global"),
   // Monitoring of every artist's collections — globalOnly server-side, so an
   // organization-scoped Brand Admin is refused.
   "/artist-collections": (p) => p.can("brand-artist-record", "read", "global"),
@@ -676,6 +679,13 @@ export const NAV_ITEMS: NavItem[] = [
     icon: "LibraryBig",
     group: "Artists",
     visible: (p) => p.canOpen("/artist-collections"),
+  },
+  {
+    href: "/rewards",
+    label: "Rewards",
+    icon: "Gift",
+    group: "Artists",
+    visible: (p) => p.canOpen("/rewards"),
   },
   {
     href: "/products/types",

@@ -14,6 +14,7 @@ import {
   LayoutDashboard,
   LibraryBig,
   MicVocal,
+  Gift,
   Package,
   Palette,
   Repeat,
@@ -75,6 +76,7 @@ const ICONS: Record<string, LucideIcon> = {
   Undo2,
   LibraryBig,
   MicVocal,
+  Gift,
 };
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {

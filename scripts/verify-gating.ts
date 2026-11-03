@@ -328,6 +328,10 @@ function main() {
   check("system admin gets Artists", navFor("HITBOX_SYSTEM_ADMIN").includes("/artists"), true);
   check("brand admin does NOT get Artists (organization scope)", brandAdminNav.includes("/artists"), false);
   check("artist does NOT get Artists", artistNav.includes("/artists"), false);
+  // Rewards moderation: content-unlock:manage platform-wide (admin-rewards-api.md §1).
+  check("system admin gets Rewards", navFor("HITBOX_SYSTEM_ADMIN").includes("/rewards"), true);
+  check("brand admin does NOT get Rewards (organization scope)", brandAdminNav.includes("/rewards"), false);
+  check("artist does NOT get Rewards", artistNav.includes("/rewards"), false);
 
   console.log("\nMedia keys off a platform-wide read grant, which `manage` subsumes\n");
   const hrefs = (keys: string[]) =>

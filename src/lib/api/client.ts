@@ -356,6 +356,12 @@ export class ApiError extends Error {
         return this.message || "This collection has no reward yet.";
       case "CONTENT_REWARD_ITEM_NOT_FOUND":
         return this.message || "That file isn't in the reward any more.";
+      case "CONTENT_REWARD_STATE_UNCHANGED":
+        return this.message || "Nothing to change — the reward is already in that state.";
+      case "CONTENT_REWARD_NOT_MODERATED":
+        return this.message || "The artist did this themselves, so it's theirs to undo.";
+      case "CONTENT_REWARD_MODERATION_LOCKED":
+        return this.message || "HitBox has locked this reward. Contact support to have it switched back on.";
       case "CONTENT_REWARD_ARCHIVED":
         return this.message || "The reward is removed. Restore it first.";
       case "CONTENT_REWARD_MEDIA_UNAVAILABLE":

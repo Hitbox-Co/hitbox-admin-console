@@ -12,6 +12,7 @@ import {
   GripVertical,
   Lock,
   Pencil,
+  ShieldAlert,
   Sparkles,
   Trash2,
   Upload,
@@ -28,7 +29,7 @@ import {
   useReorderRewardItems,
   useSaveCollectionReward,
 } from "@/lib/api/hooks";
-import { formatBytes, formatNumber } from "@/lib/format";
+import { formatBytes, formatDateTime, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { Badge, Button, Field, Input, Panel, Skeleton, Textarea } from "@/components/ui/primitives";
 import { ErrorState } from "@/components/ui/states";
@@ -95,6 +96,17 @@ const KIND_LABEL: Record<RewardItemKind, [string, string]> = {
 };
 
 const errText = (err: unknown, fallback: string) => (err instanceof ApiError ? err.friendly : fallback);
+
+/** "1 video · 2 tracks · 1 image" — empty kinds left out. */
+export function rewardContentsSummary(counts: Partial<Record<RewardItemKind, number>> | undefined): string {
+  return (Object.keys(KIND_LABEL) as RewardItemKind[])
+    .filter((k) => (counts?.[k] ?? 0) > 0)
+    .map((k) => {
+      const n = counts![k]!;
+      return `${n} ${KIND_LABEL[k][n === 1 ? 0 : 1]}`;
+    })
+    .join(" · ");
+}
 
 /* ------------------------------------------------------------------ */
 
@@ -177,12 +189,9 @@ function RewardView({
   const removed = r.status === "REMOVED";
   const canFiles = editable && !removed;
 
-  const contents = (Object.keys(KIND_LABEL) as RewardItemKind[])
-    .filter((k) => (r.itemCounts?.[k] ?? 0) > 0)
-    .map((k) => {
-      const n = r.itemCounts[k];
-      return `${n} ${KIND_LABEL[k][n === 1 ? 0 : 1]}`;
-    });
+  const contents = rewardContentsSummary(r.itemCounts);
+  // HitBox switched it off or removed it: only staff can bring it back.
+  const locked = r.moderation?.locked === true;
 
   const toggle = () =>
     save.mutate(
@@ -205,6 +214,21 @@ function RewardView({
 
   return (
     <div className="space-y-4">
+      {locked ? (
+        <div role="alert" className="flex items-start gap-2.5 rounded-xl border-2 border-[var(--danger)] bg-[var(--danger-dim)] px-4 py-3">
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-[var(--danger)]" />
+          <div className="text-[12.5px]">
+            <p className="font-semibold text-[var(--danger)]">
+              {removed ? "Removed" : "Switched off"} by HitBox: {r.moderation?.reason ?? "no reason given"}
+            </p>
+            <p className="mt-0.5 text-[var(--text-2)]">
+              {r.moderation?.lockedAt ? `Since ${formatDateTime(r.moderation.lockedAt)}. ` : ""}
+              You can still edit the name, description and files, but only HitBox can switch it back on. Contact
+              support once it&rsquo;s fixed.
+            </p>
+          </div>
+        </div>
+      ) : null}
       {removed ? (
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--hairline-strong)] bg-[var(--surface-2)] px-4 py-3">
           <p className="flex-1 text-[12.5px] text-[var(--text-2)]">
@@ -212,7 +236,14 @@ function RewardView({
             all back.
           </p>
           {editable ? (
-            <Button variant="primary" size="sm" loading={save.isPending} onClick={restore}>
+            <Button
+              variant="primary"
+              size="sm"
+              loading={save.isPending}
+              onClick={restore}
+              disabled={locked}
+              title={locked ? "Locked by HitBox — only staff can restore it" : undefined}
+            >
               <ArchiveRestore className="h-3.5 w-3.5" /> Restore
             </Button>
           ) : null}
@@ -247,12 +278,18 @@ function RewardView({
                   }
                   warn={r.requiredDrops === 0}
                 />
-                {contents.length ? <Stat icon={Sparkles} text={contents.join(" · ")} /> : null}
+                {contents ? <Stat icon={Sparkles} text={contents} /> : null}
               </div>
             </div>
             {editable && !removed ? (
               <div className="flex flex-wrap items-center gap-2">
-                <Switch checked={r.isActive} onChange={toggle} busy={save.isPending} label={r.isActive ? "On" : "Paused"} />
+                <Switch
+                  checked={r.isActive}
+                  onChange={toggle}
+                  busy={save.isPending}
+                  disabled={locked && !r.isActive}
+                  label={locked ? "Off · locked" : r.isActive ? "On" : "Paused"}
+                />
                 <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
                   <Pencil className="h-3.5 w-3.5" /> Edit
                 </Button>
@@ -291,7 +328,7 @@ function RewardView({
   );
 }
 
-function StatusBadge({ status }: { status: CollectionReward["status"] }) {
+export function StatusBadge({ status }: { status: CollectionReward["status"] }) {
   if (status === "ON") return <Badge tone="positive" dot>On</Badge>;
   if (status === "OFF") return <Badge tone="warning" dot>Off</Badge>;
   return <Badge tone="neutral" dot>Removed</Badge>;
@@ -313,16 +350,28 @@ function Stat({ icon: Icon, text, warn }: { icon: typeof Users; text: string; wa
   );
 }
 
-function Switch({ checked, onChange, busy, label }: { checked: boolean; onChange: () => void; busy?: boolean; label: string }) {
+function Switch({
+  checked,
+  onChange,
+  busy,
+  disabled,
+  label,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  busy?: boolean;
+  disabled?: boolean;
+  label: string;
+}) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
-      disabled={busy}
+      disabled={busy || disabled}
       onClick={onChange}
       className="inline-flex h-8 items-center gap-2 rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] pl-1.5 pr-3 text-[12px] text-[var(--text-2)] disabled:opacity-50"
-      title={checked ? "Pause the reward" : "Switch the reward on"}
+      title={disabled ? "Locked by HitBox" : checked ? "Pause the reward" : "Switch the reward on"}
     >
       <span className={cn("relative h-5 w-9 rounded-full transition-colors", checked ? "bg-[var(--positive)]" : "bg-[var(--surface-3)]")}>
         <span
@@ -354,6 +403,7 @@ function RewardForm({
   const [name, setName] = React.useState(reward?.name ?? "");
   const [description, setDescription] = React.useState(reward?.description ?? "");
   const [isActive, setIsActive] = React.useState(reward?.isActive ?? true);
+  const locked = reward?.moderation?.locked === true;
   const [errors, setErrors] = React.useState<Record<string, string>>({});
 
   const submit = (e: React.FormEvent) => {
@@ -396,7 +446,13 @@ function RewardForm({
         <Textarea id="rw-desc" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Unseen footage from the Neon Nights tour." />
       </Field>
       <label className="flex cursor-pointer items-start gap-2.5">
-        <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--accent)]" />
+        <input
+          type="checkbox"
+          checked={isActive}
+          disabled={locked && !reward?.isActive}
+          onChange={(e) => setIsActive(e.target.checked)}
+          className="mt-0.5 h-4 w-4 accent-[var(--accent)] disabled:opacity-50"
+        />
         <span>
           <span className="block text-[12.5px] text-[var(--text-1)]">Switched on</span>
           <span className="block text-[11.5px] text-[var(--text-3)]">
@@ -768,7 +824,7 @@ function ItemRow({
 }
 
 /** Previews from the signed link — never stored, re-read with the reward. */
-function Preview({ item: it }: { item: CollectionRewardItem }) {
+export function Preview({ item: it }: { item: CollectionRewardItem }) {
   const box = "w-full shrink-0 overflow-hidden rounded-[10px] bg-[var(--surface-3)] sm:w-[220px]";
   if (!it.url) {
     const Icon = KIND_ICON[it.kind];

@@ -4010,8 +4010,18 @@ export interface CollectionReward {
   unlockedCount: number;
   /** Released drops a buyer must collect. */
   requiredDrops: number;
+  /** Set while a HitBox switch-off or removal stands. */
+  moderation?: RewardModeration;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RewardModeration {
+  locked: boolean;
+  reason: string | null;
+  lockedAt: string | null;
+  /** Admin views only — the staff member behind the last moderation change. */
+  byId?: string | null;
 }
 
 export interface SaveCollectionRewardInput {
@@ -4029,3 +4039,77 @@ export interface RewardUploadUrl {
   requiredHeaders: Record<string, string>;
   kind: RewardItemKind;
 }
+
+/* Admin monitoring and moderation (content/admin-rewards-api.md) */
+
+export type AdminRewardStatusFilter = "ON" | "OFF" | "REMOVED" | "LOCKED";
+
+/** GET /admin/rewards — one row. */
+export interface AdminReward {
+  id: string;
+  publicCode: string;
+  name: string;
+  status: CollectionRewardStatus;
+  isActive: boolean;
+  archivedAt: string | null;
+  collection: {
+    id: string;
+    name: string;
+    slug: string;
+    heroImageUrl: string | null;
+    artist: { id: string; name: string; slug: string };
+    /** The artist deleted the collection — the reward can't be opened. */
+    deleted: boolean;
+  };
+  itemCounts: Record<RewardItemKind, number>;
+  itemTotal: number;
+  /** Buyers who can open it right now. */
+  unlockedCount: number;
+  moderation: RewardModeration;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /admin/rewards/:id — and what every moderation action answers with. */
+export interface AdminRewardDetail extends AdminReward {
+  description: string | null;
+  items: CollectionRewardItem[];
+  requiredDrops: number;
+  auditTrail: { resourceType: string; resourceId: string };
+}
+
+export interface AdminRewardFilters {
+  status?: AdminRewardStatusFilter;
+  artistId?: string;
+  collectionId?: string;
+  q?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface AdminRewardSummary {
+  rewards: { total: number; on: number; off: number; removed: number; lockedByHitbox: number };
+  unlocks: { live: number; thisMonth: number; buyersWithRewards: number };
+  topRewards: {
+    id: string;
+    name: string;
+    unlockedCount: number;
+    collection: { id: string; name: string };
+    artist: { id: string; name: string };
+  }[];
+}
+
+/** GET /admin/rewards/:id/unlocks — one buyer's unlock. */
+export interface RewardUnlockRow {
+  id: string;
+  publicCode: string;
+  buyer: { userId: string; handle: string | null; fullName: string | null };
+  status: "LIVE" | "ENDED";
+  unlockedAt: string;
+  endedAt: string | null;
+  firstOpenedAt: string | null;
+  lastOpenedAt: string | null;
+  timesOpened: number;
+}
+
+export type RewardModerationAction = "switch-off" | "switch-on" | "remove" | "restore";

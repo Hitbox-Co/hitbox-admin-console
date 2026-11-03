@@ -35,6 +35,15 @@ const EVENT_LABEL: Record<string, string> = {
   "artist.profile.restore": "Restored",
   "artist.profile.publish": "Published",
   "artist.profile.unlist": "Unlisted",
+  "artist.collection.reward.save": "Reward saved",
+  "artist.collection.reward.remove": "Reward removed by artist",
+  "artist.collection.reward.item.add": "File added",
+  "artist.collection.reward.item.update": "File updated",
+  "artist.collection.reward.item.remove": "File removed",
+  "content.reward.switch-off": "Switched off by HitBox",
+  "content.reward.switch-on": "Switched on by HitBox",
+  "content.reward.remove": "Removed by HitBox",
+  "content.reward.restore": "Restored by HitBox",
 };
 
 const EVENT_TONE: Record<string, "positive" | "danger" | "accent" | "neutral"> = {
@@ -48,6 +57,11 @@ const EVENT_TONE: Record<string, "positive" | "danger" | "accent" | "neutral"> =
   "artist.profile.compliance.revoke": "danger",
   "artist.profile.restore": "accent",
   "artist.profile.publish": "accent",
+  "content.reward.switch-off": "danger",
+  "content.reward.remove": "danger",
+  "artist.collection.reward.remove": "danger",
+  "content.reward.switch-on": "positive",
+  "content.reward.restore": "accent",
 };
 
 /** Bookkeeping fields every snapshot carries — noise in a diff. */

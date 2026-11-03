@@ -20,6 +20,12 @@ import type {
   ArtistCollectionHeroUploadUrl,
   AdminArtistFilters,
   CollectionReward,
+  AdminReward,
+  AdminRewardDetail,
+  AdminRewardFilters,
+  AdminRewardSummary,
+  RewardModerationAction,
+  RewardUnlockRow,
   RewardUploadUrl,
   SaveCollectionRewardInput,
   UpdateRewardPointsInput,
@@ -4023,4 +4029,82 @@ export function useRemoveRewardItem(collectionId: string) {
   return useRewardWrite(collectionId, (itemId: string) =>
     api.delete<unknown>(`${rewardBase(collectionId)}/items/${itemId}`)
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Rewards — admin monitoring and moderation (admin-rewards-api.md)    */
+/*                                                                      */
+/* content-unlock:manage at GLOBAL scope. Moderation actions answer     */
+/* with the detail, which replaces the cache.                           */
+/* ------------------------------------------------------------------ */
+
+const adminRewardKey = (id: string) => ["admin-reward", id] as const;
+
+export function useAdminRewards(params: AdminRewardFilters) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-rewards", params],
+    placeholderData: (prev) => prev,
+    queryFn: () => api.get<Paginated<AdminReward>>("admin/rewards", { ...params }),
+  });
+}
+
+export function useAdminRewardSummary() {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-rewards-summary"],
+    queryFn: () => api.get<unknown>("admin/rewards/summary").then(unwrap<AdminRewardSummary>),
+  });
+}
+
+/**
+ * The detail carries signed file links that expire after `expiresIn`
+ * seconds (an hour). They're never kept: the query is dropped as soon as
+ * nobody shows it, and re-read a minute before the links run out.
+ */
+export function useAdminReward(rewardId: string | undefined) {
+  return useQuery({
+    queryKey: adminRewardKey(rewardId ?? ""),
+    enabled: Boolean(rewardId),
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+    refetchInterval: (q) => {
+      const items = (q.state.data as AdminRewardDetail | undefined)?.items ?? [];
+      const ttl = Math.min(...items.map((i) => i.expiresIn || 3600), 3600);
+      return Math.max(60, ttl - 60) * 1000;
+    },
+    queryFn: () => api.get<unknown>(`admin/rewards/${rewardId}`).then(unwrap<AdminRewardDetail>),
+  });
+}
+
+export function useRewardUnlocks(
+  rewardId: string | undefined,
+  params: { status?: "LIVE" | "ENDED"; page?: number; limit?: number }
+) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-reward-unlocks", rewardId, params],
+    enabled: Boolean(rewardId),
+    placeholderData: (prev) => prev,
+    queryFn: () =>
+      api.get<Paginated<RewardUnlockRow>>(`admin/rewards/${rewardId}/unlocks`, { ...params }),
+  });
+}
+
+/** switch-off / remove need a reason (shown to the artist); switch-on / restore take one optionally. */
+export function useModerateReward(rewardId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ action, reason }: { action: RewardModerationAction; reason?: string }) =>
+      api
+        .post<unknown>(`admin/rewards/${rewardId}/${action}`, reason ? { reason } : {})
+        .then(unwrap<AdminRewardDetail>),
+    onSuccess: (detail) => {
+      qc.setQueryData(adminRewardKey(rewardId), detail);
+      qc.invalidateQueries({ queryKey: ["admin-rewards"] });
+      qc.invalidateQueries({ queryKey: ["admin-rewards-summary"] });
+      qc.invalidateQueries({ queryKey: ["audit-trail"] });
+    },
+  });
 }
