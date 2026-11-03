@@ -4049,6 +4049,25 @@ export function useAdminRewards(params: AdminRewardFilters) {
   });
 }
 
+/**
+ * Rewards HitBox has switched off or removed — the sidebar badge. One row of
+ * the LOCKED filter, total read; re-read every 60 s. Shares the
+ * "admin-rewards" prefix, so every moderation action refreshes it.
+ */
+export function useLockedRewardCount(enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-rewards", "locked-count"],
+    enabled,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    queryFn: () =>
+      api
+        .get<Paginated<AdminReward>>("admin/rewards", { status: "LOCKED", page: 1, limit: 1 })
+        .then((r) => r.total),
+  });
+}
+
 export function useAdminRewardSummary() {
   return useQuery({
     ...baseOptions,

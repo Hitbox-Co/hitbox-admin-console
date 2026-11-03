@@ -43,6 +43,7 @@ import { useAuthz } from "./authz-provider";
 import {
   useFulfilmentQueue,
   useOpenRefunds,
+  useLockedRewardCount,
   usePendingApprovalCount,
   usePendingConsignmentCount,
 } from "@/lib/api/hooks";
@@ -168,6 +169,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                         {item.href === "/packing" ? <ToPackCount /> : null}
                         {item.href === "/supply/consignments" ? <NewConsignmentsCount /> : null}
                         {item.href === "/release-approvals" ? <PendingApprovalsCount /> : null}
+                        {item.href === "/rewards" ? <LockedRewardsCount /> : null}
                       </Link>
                     </li>
                   );
@@ -197,6 +199,7 @@ const COUNT_TONE = {
   accent: "bg-[var(--accent)] text-white",
   info: "bg-[var(--info)] text-white",
   warning: "bg-[var(--warning)] text-black",
+  danger: "bg-[var(--danger)] text-white",
 } as const;
 
 function NavCount({
@@ -247,6 +250,12 @@ function NewConsignmentsCount() {
 function PendingApprovalsCount() {
   const n = usePendingApprovalCount().data ?? 0;
   return <NavCount n={n} tone="warning" label={`${plural(n, "drop")} waiting for approval`} />;
+}
+
+/** Rewards HitBox has switched off or removed — content staff are keeping an eye on. */
+function LockedRewardsCount() {
+  const n = useLockedRewardCount().data ?? 0;
+  return <NavCount n={n} tone="danger" label={`${plural(n, "reward")} locked by HitBox`} />;
 }
 
 /** Refunds waiting on someone — an initiated refund is seen without anyone looking for it. */
