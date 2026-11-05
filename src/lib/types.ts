@@ -3010,6 +3010,14 @@ export interface TagManifestRow {
   variantId?: string;
   qcStatus?: TagQcStatus;
   qcNotes?: string;
+  /**
+   * The chip's own NTAG 424 DNA keys, as the vendor wrote them onto it: Key 00
+   * (master), Key 01 (decrypts e), Key 02 (checks c). 32 hex each, all three or
+   * none. The API wraps them on the way in and never returns them.
+   */
+  key0?: string;
+  key1?: string;
+  key2?: string;
 }
 
 export interface TagManifestInput {
@@ -3022,6 +3030,8 @@ export interface TagManifestResult {
   batchId: string;
   dryRun: boolean;
   registered: number;
+  /** Of those, rows that carried chip keys (stored wrapped). A count, never the keys. */
+  withKeys?: number;
   /** Offending rows are identified BY POSITION, never by UID. */
   duplicates: { row: number; reason: string }[];
   batch: {

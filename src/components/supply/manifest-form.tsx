@@ -5,9 +5,20 @@ import { toast } from "sonner";
 import { AlertTriangle, Cpu, Download, FileUp, Info, Lock } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
 import { formatNumber } from "@/lib/format";
-import { chunkManifest, countByVariant, formatManifest, parseManifest } from "@/lib/manifest";
+import {
+  chunkManifest,
+  countByVariant,
+  emptyEntry,
+  entriesFromRows,
+  entriesToCsv,
+  entryIndexes,
+  formatManifest,
+  parseManifest,
+  type ManifestEntry,
+} from "@/lib/manifest";
 import { chipProgressText } from "@/components/supply/consignment-lifecycle";
-import { Badge, Button, Field, Mono, Panel, Textarea } from "@/components/ui/primitives";
+import { ManifestRows } from "@/components/supply/manifest-rows";
+import { Badge, Button, Field, Mono, Panel, Segmented, Textarea } from "@/components/ui/primitives";
 import {
   SUPPLY_MANIFEST_MAX,
   type SupplyBatch,
@@ -32,6 +43,8 @@ import {
 interface ManifestOutcome {
   dryRun: boolean;
   registered: number;
+  /** Rows that carried chip keys. A count, never the keys. */
+  withKeys: number;
   /** Row numbers are positions in the whole manifest, never UIDs. */
   duplicates: { row: number; reason: string }[];
   batch: TagManifestResult["batch"] | null;
@@ -65,6 +78,10 @@ export function ManifestForm({
   commitBlockedReason?: string;
   onCommitted?: (registered: number) => void;
 }) {
+  // Two ways in: one chip per row (UID + its three keys), or pasted text / a
+  // CSV. Both end up as the same manifest text and the same checks.
+  const [mode, setMode] = React.useState<"rows" | "text">("rows");
+  const [entries, setEntries] = React.useState<ManifestEntry[]>(() => [emptyEntry()]);
   const [raw, setRaw] = React.useState("");
   const [pending, setPending] = React.useState(false);
   const [outcome, setOutcome] = React.useState<ManifestOutcome | null>(null);
@@ -77,14 +94,50 @@ export function ManifestForm({
     batchLines.length === 1 ? batchLines[0].variantId : ""
   );
 
+  const source = React.useMemo(
+    () => (mode === "rows" ? entriesToCsv(entries) : raw),
+    [mode, entries, raw]
+  );
   const parsed = React.useMemo(
     () =>
-      parseManifest(raw, {
+      parseManifest(source, {
         lines: batchLines,
         defaultVariantId: defaultVariantId || undefined,
       }),
-    [raw, batchLines, defaultVariantId]
+    [source, batchLines, defaultVariantId]
   );
+  // Manifest row N is the N-th non-blank editor row.
+  const rowProblems = React.useMemo(() => {
+    const out = new Map<number, string[]>();
+    if (mode !== "rows") return out;
+    const indexes = entryIndexes(entries);
+    for (const p of parsed.problems) {
+      const at = indexes[p.row - 1];
+      if (at === undefined) continue;
+      out.set(at, [...(out.get(at) ?? []), p.message]);
+    }
+    return out;
+  }, [mode, entries, parsed.problems]);
+
+  const switchMode = (next: "rows" | "text") => {
+    if (next === mode) return;
+    if (next === "text") {
+      setRaw(entriesToCsv(entries));
+    } else {
+      // Text with problems would lose the cells it could not read.
+      if (parsed.problems.length > 0) {
+        toast.error("Fix the rows listed below first, then switch to rows.");
+        return;
+      }
+      setEntries(parsed.rows.length > 0 ? entriesFromRows(parsed.rows) : [emptyEntry()]);
+    }
+    setMode(next);
+    setOutcome(null);
+  };
+  const resetInput = (rows: typeof parsed.rows = []) => {
+    if (mode === "rows") setEntries(rows.length > 0 ? entriesFromRows(rows) : [emptyEntry()]);
+    else setRaw(rows.length > 0 ? formatManifest(rows, batchLines) : "");
+  };
   // Lines this manifest would overfill — refused with SUPPLY_LINE_QUANTITY_EXCEEDED.
   const overfull = React.useMemo(() => {
     const counts = countByVariant(parsed.rows);
@@ -107,8 +160,21 @@ export function ManifestForm({
     overDeclared ||
     pending;
 
+  // A clean file opens as rows; one with problems opens as text, so nothing
+  // the parser could not read is dropped before the person sees it.
   const loadFile = async (file: File) => {
-    setRaw(await file.text());
+    const text = await file.text();
+    const check = parseManifest(text, {
+      lines: batchLines,
+      defaultVariantId: defaultVariantId || undefined,
+    });
+    if (check.problems.length === 0 && check.rows.length > 0) {
+      setEntries(entriesFromRows(check.rows));
+      setMode("rows");
+    } else {
+      setRaw(text);
+      setMode("text");
+    }
     setOutcome(null);
   };
 
@@ -118,6 +184,7 @@ export function ManifestForm({
     const agg: ManifestOutcome = {
       dryRun,
       registered: 0,
+      withKeys: 0,
       duplicates: [],
       batch: null,
       lines: undefined,
@@ -129,6 +196,7 @@ export function ManifestForm({
       try {
         const result = await submit({ dryRun, tags: chunks[i] });
         agg.registered += result.registered;
+        agg.withKeys += result.withKeys ?? 0;
         agg.batch = result.batch;
         agg.lines = result.lines;
         agg.duplicates.push(
@@ -149,7 +217,7 @@ export function ManifestForm({
         agg.duplicates.push(...rows.map((d) => ({ ...d, row: d.row + offset })));
         if (chunks.length > 1 || lineDetail || raced) agg.failure = { chunk: i + 1, message };
         // Keep exactly what was not written, so "Register" resumes.
-        if (!dryRun && i > 0) setRaw(formatManifest(parsed.rows.slice(offset), batchLines));
+        if (!dryRun && i > 0) resetInput(parsed.rows.slice(offset));
         if (!dryRun && agg.registered > 0) onCommitted?.(agg.registered);
         setOutcome(agg.duplicates.length || agg.failure ? agg : null);
         toast.error(
@@ -166,7 +234,8 @@ export function ManifestForm({
     setPending(false);
     if (!dryRun) {
       toast.success(`${formatNumber(agg.registered)} chips registered`);
-      setRaw("");
+      // Nothing of the upload is kept on screen — keys included.
+      resetInput();
       onCommitted?.(agg.registered);
     }
   };
@@ -197,7 +266,12 @@ export function ManifestForm({
           ) : null}
           , <Mono className="text-[10px]">qc_status</Mono>,{" "}
           <Mono className="text-[10px]">qc_notes</Mono>
-          {split ? "" : " (no variant column — this consignment has no variants)"}. A
+          {split ? "" : " (no variant column — this consignment has no variants)"}, and
+          optionally the keys written onto each chip:{" "}
+          <Mono className="text-[10px]">key0</Mono>,{" "}
+          <Mono className="text-[10px]">key1</Mono>,{" "}
+          <Mono className="text-[10px]">key2</Mono> (32 hex each, all three or
+          none — stored encrypted, never shown again). A
           UID may contain <Mono className="text-[10px]">:</Mono>,{" "}
           <Mono className="text-[10px]">-</Mono> or spaces; an empty qc_status
           means PENDING. Dry run first — it checks everything and writes
@@ -251,9 +325,21 @@ export function ManifestForm({
         </>
       ) : null}
 
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[12px] font-medium text-[var(--text-2)]">Chips</span>
+        <Segmented
+          size="sm"
+          value={mode}
+          onChange={switchMode}
+          options={[
+            { value: "rows", label: "Row by row" },
+            { value: "text", label: "Paste text" },
+          ]}
+        />
+      </div>
       <Field
-        label="Chip UIDs"
-        htmlFor="manifest"
+        label={mode === "rows" ? "One chip per row: UID and its Key 00 / 01 / 02" : "Chip UIDs"}
+        htmlFor={mode === "rows" ? undefined : "manifest"}
         hint={`${formatNumber(count)} read · ${formatNumber(
           remaining
         )} still declared on this consignment · ${
@@ -262,17 +348,29 @@ export function ManifestForm({
             : `at most ${formatNumber(SUPPLY_MANIFEST_MAX)} per call`
         }`}
       >
-        <Textarea
-          id="manifest"
-          rows={10}
-          value={raw}
-          onChange={(e) => {
-            setRaw(e.target.value);
-            setOutcome(null);
-          }}
-          placeholder={"04:A3:9B:2C:5D:6E:80\n04A39B2C5D6E81\n04-a3-9b-2c-5d-6e-82"}
-          className="font-mono text-[12px]"
-        />
+        {mode === "rows" ? (
+          <ManifestRows
+            entries={entries}
+            onChange={(next) => {
+              setEntries(next);
+              setOutcome(null);
+            }}
+            lines={batchLines}
+            problems={rowProblems}
+          />
+        ) : (
+          <Textarea
+            id="manifest"
+            rows={10}
+            value={raw}
+            onChange={(e) => {
+              setRaw(e.target.value);
+              setOutcome(null);
+            }}
+            placeholder={"04:A3:9B:2C:5D:6E:80\n04A39B2C5D6E81\n04-a3-9b-2c-5d-6e-82"}
+            className="font-mono text-[12px]"
+          />
+        )}
       </Field>
 
       <input
@@ -295,7 +393,9 @@ export function ManifestForm({
             fix before sending
           </p>
           <p className="mt-0.5 text-[11px] text-[var(--text-3)]">
-            Rows count from the first line under the header.
+            {mode === "rows"
+              ? "Each problem is also shown under its row. Empty rows are skipped and not counted."
+              : "Rows count from the first line under the header."}
           </p>
           <ul className="mt-1.5 max-h-32 space-y-0.5 overflow-y-auto">
             {parsed.problems.slice(0, 50).map((p, i) => (
@@ -480,6 +580,9 @@ function ManifestResult({
       {outcome.batch ? (
         <div className="grid grid-cols-2 gap-x-6 gap-y-2 px-3 pb-3 sm:grid-cols-4">
           <Figure label={outcome.dryRun ? "Would add" : "Added"} value={outcome.registered} />
+          {outcome.withKeys > 0 ? (
+            <Figure label={outcome.dryRun ? "Would store keys" : "Keys stored"} value={outcome.withKeys} />
+          ) : null}
           <Figure label="Chips on consignment" value={outcome.batch.rowsReceived} />
           <Figure label="Passed / pending QC" value={outcome.batch.rowsAccepted} />
           <Figure label="Failed QC" value={outcome.batch.rowsRejected} />
