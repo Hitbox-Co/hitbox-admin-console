@@ -40,6 +40,7 @@ import { ProductVariantsPanel } from "./product-variants-panel";
 import { DropTypeBadge } from "./variant-bits";
 import { SkuUnitsPanel } from "./sku-units-panel";
 import { RewardPointsBadge, RewardPointsPanel } from "./reward-points";
+import { ExclusiveUnitsPanel } from "./exclusive-units-panel";
 import type { AdminProductDetail, ProductSkuUnit } from "@/lib/types";
 
 /**
@@ -96,6 +97,7 @@ export function ProductDetailView({ productId }: { productId: string }) {
   const canWrite = perms.canManageCatalog();
   // Mirrors buildSkuAccess: refuses PUBLIC visibility and OWN scope.
   const canReadUnits = perms.canReadUnits();
+  const canPickExclusive = perms.can("content-unlock", "manage", "global");
   const archived = !!product.archivedAt || product.status === "ARCHIVED";
   // Minting waits for the owner's approval (drop-approval-lifecycle.md §10).
   const gate = mintGate(product, latestReview.data, canReadReviews);
@@ -187,7 +189,15 @@ export function ProductDetailView({ productId }: { productId: string }) {
               }}
             />
           )}
-         
+
+          {/* HitBox picking which SKUs open an exclusive tier — content-unlock:manage:global. */}
+          {canPickExclusive ? (
+            <ExclusiveUnitsPanel
+              productId={productId}
+              totalSupply={product.totalSupply}
+              variants={product.variants ?? []}
+            />
+          ) : null}
         </div>
 
         <aside className="min-w-0 space-y-4">

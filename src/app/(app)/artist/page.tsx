@@ -170,6 +170,8 @@ function GrantPanel({
 
 function DropsPanel({ query }: { query: ReturnType<typeof useProducts> }) {
   const rows = query.data?.items ?? [];
+  // A drop's content page answers the artist's OWN grant only.
+  const canOpenContent = usePermissions().canOpen("/artist/drops");
 
   return (
     <Panel className="flex flex-col overflow-hidden">
@@ -199,9 +201,19 @@ function DropsPanel({ query }: { query: ReturnType<typeof useProducts> }) {
           {rows.map((r) => (
             <li key={r.id} className="flex items-center gap-3 px-3 py-2.5">
               <div className="min-w-0 flex-1">
-                <p className="truncate text-[12.5px] font-medium text-[var(--text-1)]">
-                  {r.name}
-                </p>
+                {canOpenContent ? (
+                  <Link
+                    href={`/artist/drops/${r.id}`}
+                    className="block truncate text-[12.5px] font-medium text-[var(--text-1)] hover:underline"
+                    title="Regular and exclusive content for this drop"
+                  >
+                    {r.name}
+                  </Link>
+                ) : (
+                  <p className="truncate text-[12.5px] font-medium text-[var(--text-1)]">
+                    {r.name}
+                  </p>
+                )}
                 <Mono className="mt-0.5 text-[10px]">{r.groupCode}</Mono>
               </div>
               <Badge tone={toneForStatus(r.status)} dot>

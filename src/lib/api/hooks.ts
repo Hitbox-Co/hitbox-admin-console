@@ -157,6 +157,14 @@ import type {
   VendorFilters,
   VendorInput,
   VendorAllotmentInput,
+  AdminDropContent,
+  AdminDropUnit,
+  AdminDropUnitFilters,
+  ArtistDropContent,
+  CreateDropContentTierInput,
+  DropContentTier,
+  ExclusiveUnitsResult,
+  UpdateDropContentTierInput,
   VendorBatchFilters,
   VendorBatchInput,
   VendorDropAssignment,
@@ -4151,15 +4159,46 @@ export function useRemoveCollectionReward(collectionId: string) {
 }
 
 /**
+ * Where a set of reward files lives, and how a write lands in the cache.
+ * Collection rewards and a drop's content tiers share the same file routes
+ * under different bases (`…/items/upload-url`, `…/items`, `…/items/order`,
+ * `…/items/:itemId`), so the file UI is written once against this.
+ */
+export interface RewardFilesTarget {
+  /** e.g. `artist/collections/:id/reward` or `artist/drops/:id/content/:bundleId`. */
+  base: string;
+  /** Apply a write's response to the cache; `undefined` means "re-read it". */
+  settle: (qc: ReturnType<typeof useQueryClient>, data: unknown) => void;
+}
+
+export function collectionFilesTarget(collectionId: string): RewardFilesTarget {
+  return {
+    base: rewardBase(collectionId),
+    settle: (qc, data) =>
+      data === undefined
+        ? void qc.invalidateQueries({ queryKey: rewardKey(collectionId) })
+        : qc.setQueryData(rewardKey(collectionId), data as CollectionReward),
+  };
+}
+
+function useFilesWrite<V>(target: RewardFilesTarget, request: (vars: V) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: V) => request(vars).then(unwrap<unknown>),
+    onSuccess: (data) => target.settle(qc, data),
+  });
+}
+
+/**
  * Adding a file, all three steps:
  *   1. POST …/items/upload-url  — presign for this type and exact size
  *   2. PUT  <uploadUrl>          — the bytes straight to S3, with exactly
  *      `requiredHeaders`; XHR rather than fetch, for upload progress
  *   3. POST …/items { assetId }  — only after S3 answered 2xx
  */
-export function useAddRewardItem(collectionId: string) {
-  return useRewardWrite(
-    collectionId,
+export function useAddRewardItem(target: RewardFilesTarget) {
+  return useFilesWrite(
+    target,
     async ({
       file,
       title,
@@ -4170,7 +4209,7 @@ export function useAddRewardItem(collectionId: string) {
       onProgress?: (fraction: number) => void;
     }) => {
       const presigned = await api
-        .post<unknown>(`${rewardBase(collectionId)}/items/upload-url`, {
+        .post<unknown>(`${target.base}/items/upload-url`, {
           fileName: file.name,
           mimeType: file.type,
           sizeBytes: file.size,
@@ -4203,7 +4242,7 @@ export function useAddRewardItem(collectionId: string) {
       });
       onProgress?.(1);
 
-      return api.post<unknown>(`${rewardBase(collectionId)}/items`, {
+      return api.post<unknown>(`${target.base}/items`, {
         assetId: presigned.assetId,
         ...(title?.trim() ? { title: title.trim() } : {}),
       });
@@ -4212,22 +4251,31 @@ export function useAddRewardItem(collectionId: string) {
 }
 
 /** `title: null` falls back to the file name. */
-export function useRenameRewardItem(collectionId: string) {
-  return useRewardWrite(collectionId, ({ itemId, title }: { itemId: string; title: string | null }) =>
-    api.patch<unknown>(`${rewardBase(collectionId)}/items/${itemId}`, { title })
+export function useRenameRewardItem(target: RewardFilesTarget) {
+  return useFilesWrite(target, ({ itemId, title }: { itemId: string; title: string | null }) =>
+    api.patch<unknown>(`${target.base}/items/${itemId}`, { title })
   );
 }
 
 /** Every item id, once, in the new order. */
-export function useReorderRewardItems(collectionId: string) {
-  return useRewardWrite(collectionId, (itemIds: string[]) =>
-    api.put<unknown>(`${rewardBase(collectionId)}/items/order`, { itemIds })
-  );
+export function useReorderRewardItems(target: RewardFilesTarget) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (itemIds: string[]) =>
+      api.put<unknown>(`${target.base}/items/order`, { itemIds }).then(unwrap<unknown>),
+    onSuccess: (data) => target.settle(qc, data),
+    // The list changed under us — re-read it.
+    onError: (err) => {
+      if (err instanceof ApiError && err.code === "CONTENT_REWARD_ORDER_MISMATCH") {
+        target.settle(qc, undefined);
+      }
+    },
+  });
 }
 
-export function useRemoveRewardItem(collectionId: string) {
-  return useRewardWrite(collectionId, (itemId: string) =>
-    api.delete<unknown>(`${rewardBase(collectionId)}/items/${itemId}`)
+export function useRemoveRewardItem(target: RewardFilesTarget) {
+  return useFilesWrite(target, (itemId: string) =>
+    api.delete<unknown>(`${target.base}/items/${itemId}`)
   );
 }
 
@@ -4324,6 +4372,130 @@ export function useModerateReward(rewardId: string) {
       qc.invalidateQueries({ queryKey: ["admin-rewards"] });
       qc.invalidateQueries({ queryKey: ["admin-rewards-summary"] });
       qc.invalidateQueries({ queryKey: ["audit-trail"] });
+    },
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Drop content — the artist's tiers (drop-content.md §3)               */
+/*                                                                      */
+/* Every write answers with ONE tier; the drop's whole content is       */
+/* re-read rather than spliced, since a write can move counts on others.*/
+/* ------------------------------------------------------------------ */
+
+const dropContentKey = (dropId: string) => ["artist-drop-content", dropId] as const;
+const dropContentBase = (dropId: string) => `artist/drops/${dropId}/content`;
+
+export function useArtistDropContent(dropId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: dropContentKey(dropId ?? ""),
+    enabled: Boolean(dropId),
+    queryFn: () => api.get<unknown>(dropContentBase(dropId!)).then(unwrap<ArtistDropContent>),
+  });
+}
+
+function useDropContentWrite<V>(dropId: string, request: (vars: V) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: V) => request(vars).then(unwrap<DropContentTier>),
+    onSuccess: () => qc.invalidateQueries({ queryKey: dropContentKey(dropId) }),
+  });
+}
+
+export function useCreateDropContentTier(dropId: string) {
+  return useDropContentWrite(dropId, (body: CreateDropContentTierInput) =>
+    api.post<unknown>(dropContentBase(dropId), body)
+  );
+}
+
+export function useUpdateDropContentTier(dropId: string) {
+  return useDropContentWrite(
+    dropId,
+    ({ bundleId, ...body }: UpdateDropContentTierInput & { bundleId: string }) =>
+      api.patch<unknown>(`${dropContentBase(dropId)}/${bundleId}`, body)
+  );
+}
+
+/** Removed tiers are kept with their files and serials, so they can be restored. */
+export function useRemoveDropContentTier(dropId: string) {
+  return useDropContentWrite(dropId, (bundleId: string) =>
+    api.delete<unknown>(`${dropContentBase(dropId)}/${bundleId}`)
+  );
+}
+
+export function useRestoreDropContentTier(dropId: string) {
+  return useDropContentWrite(dropId, (bundleId: string) =>
+    api.post<unknown>(`${dropContentBase(dropId)}/${bundleId}/restore`, {})
+  );
+}
+
+/** The shared file UI, pointed at one tier. */
+export function dropTierFilesTarget(dropId: string, bundleId: string): RewardFilesTarget {
+  return {
+    base: `${dropContentBase(dropId)}/${bundleId}`,
+    settle: (qc) => void qc.invalidateQueries({ queryKey: dropContentKey(dropId) }),
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Drop content — HitBox choosing exclusive SKUs (drop-content.md §4A) */
+/*                                                                      */
+/* content-unlock:manage at GLOBAL scope. Unit by unit, on minted SKUs, */
+/* and only while each is UNCLAIMED with no owner.                      */
+/* ------------------------------------------------------------------ */
+
+const adminDropContentBase = (dropId: string) => `admin/rewards/drops/${dropId}`;
+
+export function useAdminDropContent(dropId: string | undefined, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-drop-content", dropId],
+    enabled: Boolean(dropId) && enabled,
+    queryFn: () =>
+      api.get<unknown>(`${adminDropContentBase(dropId!)}/content`).then(unwrap<AdminDropContent>),
+  });
+}
+
+export function useAdminDropUnits(
+  dropId: string | undefined,
+  params: AdminDropUnitFilters,
+  enabled = true
+) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-drop-units", dropId, params],
+    enabled: Boolean(dropId) && enabled,
+    queryFn: () =>
+      api.get<MetaPaginated<AdminDropUnit>>(`${adminDropContentBase(dropId!)}/units`, { ...params }),
+    placeholderData: (prev) => prev,
+  });
+}
+
+/** Adds or removes SKUs on an exclusive tier — both all-or-nothing and idempotent. */
+export function useChangeExclusiveUnits(dropId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      bundleId,
+      skuIds,
+      action,
+    }: {
+      bundleId: string;
+      skuIds: string[];
+      action: "add" | "remove";
+    }) =>
+      api
+        .post<unknown>(
+          `${adminDropContentBase(dropId)}/content/${bundleId}/units${action === "remove" ? "/remove" : ""}`,
+          { skuIds }
+        )
+        .then(unwrap<ExclusiveUnitsResult>),
+    // Refresh on failure too: a 409 means a unit's claim state moved.
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["admin-drop-content", dropId] });
+      qc.invalidateQueries({ queryKey: ["admin-drop-units", dropId] });
+      qc.invalidateQueries({ queryKey: dropContentKey(dropId) });
     },
   });
 }

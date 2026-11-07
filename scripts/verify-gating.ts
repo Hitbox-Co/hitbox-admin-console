@@ -655,6 +655,7 @@ function main() {
     "/provenance": { ARTIST: false, HITBOX_DROP_MANAGER: false, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: true },
     "/demand": { ARTIST: true, BRAND_ADMIN: true, HITBOX_ORDER_MANAGER: false },
     "/vendor": { VENDOR: true, HITBOX_SYSTEM_ADMIN: false, ARTIST: false },
+    "/artist/drops": { ARTIST: true, BRAND_ADMIN: false, HITBOX_SYSTEM_ADMIN: false },
     "/team": { BRAND_ADMIN: false, HITBOX_SYSTEM_ADMIN: true },
     "/roles": { BRAND_ADMIN: false, HITBOX_SYSTEM_ADMIN: true },
   };

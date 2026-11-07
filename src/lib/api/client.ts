@@ -163,6 +163,29 @@ export class ApiError extends Error {
       case "SUPPLY_BATCH_NOT_FOUND":
         return "Consignment not found.";
 
+      /* Drop content — regular and SKU-exclusive tiers. */
+      case "DROP_CONTENT_UNIT_CLAIMED":
+        // The server's message names the units ("Unit #7 is already claimed…").
+        return this.message || "A unit here is already claimed or owned, so its exclusive content is settled. Nothing was saved.";
+      case "DROP_CONTENT_UNIT_NOT_IN_DROP":
+        return "A selected unit isn't part of this drop. Reload and try again.";
+      case "DROP_CONTENT_NOT_EXCLUSIVE":
+        return "The regular tier opens for every owner — it has no unit list to edit.";
+      case "DROP_CONTENT_ARCHIVED":
+        return "This tier is removed. Restore it first.";
+      case "DROP_CONTENT_NOT_ARCHIVED":
+        return "This tier isn't removed.";
+      case "DROP_CONTENT_SERIALS_INVALID":
+        return "That serial list isn't allowed — a tier needs at least one unit, at most 1,000, each within the drop's supply.";
+      case "DROP_CONTENT_REGULAR_EXISTS":
+        return "This drop already has regular content. Edit (or restore) that one instead.";
+      case "DROP_CONTENT_TOO_MANY_TIERS":
+        return "A drop can have at most 10 exclusive tiers, removed ones included. Restore and reuse one instead.";
+      case "DROP_CONTENT_NOT_FOUND":
+        return "That tier no longer exists on this drop.";
+      case "ARTIST_DROP_NOT_FOUND":
+        return "That drop isn't one of yours, or no longer exists.";
+
       /* Variant allotments. */
       case "SUPPLY_ALLOTMENT_SHAPE_INVALID":
         return "This drop's allotment is the other shape — per-variant quantities for a drop with variants, a single quantity for one without. Reload and try again.";

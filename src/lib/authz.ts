@@ -448,6 +448,8 @@ const ROUTE_ACCESS: Record<string, (p: Permissions) => boolean> = {
   // own user id: only an artist's own grant reaches a profile. A Brand Admin
   // (organization) is a 403; a global holder passes but has no profile (404).
   "/artist/profile": (p) => p.widestScope("brand-artist-record") === "own",
+  // A drop's content tiers (artist/drops/:id/content) — the same OWN grant.
+  "/artist/drops": (p) => p.widestScope("brand-artist-record") === "own",
   // /artist/collections takes the same OWN grant as /artist/me.
   "/artist/collections": (p) => p.widestScope("brand-artist-record") === "own",
   "/artist": (p) => {

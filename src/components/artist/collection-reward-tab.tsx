@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
 import {
+  collectionFilesTarget,
   useAddRewardItem,
   useCollectionReward,
   useRemoveCollectionReward,
@@ -29,6 +30,7 @@ import {
   useReorderRewardItems,
   useSaveCollectionReward,
   useToggleCollectionReward,
+  type RewardFilesTarget,
 } from "@/lib/api/hooks";
 import { formatBytes, formatDateTime, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -185,6 +187,7 @@ function RewardView({
 }) {
   const save = useSaveCollectionReward(collectionId);
   const remove = useRemoveCollectionReward(collectionId);
+  const filesTarget = React.useMemo(() => collectionFilesTarget(collectionId), [collectionId]);
   const [editing, setEditing] = React.useState(false);
   const [removing, setRemoving] = React.useState(false);
   const removed = r.status === "REMOVED";
@@ -305,7 +308,7 @@ function RewardView({
         )}
       </div>
 
-      <RewardFiles reward={r} collectionId={collectionId} editable={canFiles} />
+      <RewardFiles items={r.items} target={filesTarget} editable={canFiles} />
 
       <ConfirmDialog
         open={removing}
@@ -337,7 +340,7 @@ export function StatusBadge({ status }: { status: CollectionReward["status"] }) 
   return <Badge tone="neutral" dot>Removed</Badge>;
 }
 
-function Stat({ icon: Icon, text, warn }: { icon: typeof Users; text: string; warn?: boolean }) {
+export function Stat({ icon: Icon, text, warn }: { icon: typeof Users; text: string; warn?: boolean }) {
   return (
     <span
       className={cn(
@@ -357,7 +360,7 @@ function Stat({ icon: Icon, text, warn }: { icon: typeof Users; text: string; wa
  * The knob's position comes from layout (justify-start / justify-end), not a
  * fixed offset — so the track can't shrink out from under it.
  */
-function Switch({
+export function Switch({
   checked,
   onChange,
   disabled,
@@ -494,17 +497,20 @@ function RewardForm({
 
 type Upload = { key: string; file: File; progress: number; error?: string };
 
-function RewardFiles({
-  reward: r,
-  collectionId,
+export function RewardFiles({
+  items: rawItems,
+  target,
   editable,
+  noun = "reward",
 }: {
-  reward: CollectionReward;
-  collectionId: string;
+  items: CollectionRewardItem[];
+  target: RewardFilesTarget;
   editable: boolean;
+  /** What the files belong to, in messages: "reward", "tier". */
+  noun?: string;
 }) {
-  const add = useAddRewardItem(collectionId);
-  const reorder = useReorderRewardItems(collectionId);
+  const add = useAddRewardItem(target);
+  const reorder = useReorderRewardItems(target);
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [uploads, setUploads] = React.useState<Upload[]>([]);
   const [dragOverZone, setDragOverZone] = React.useState(false);
@@ -512,7 +518,7 @@ function RewardFiles({
   const [overId, setOverId] = React.useState<string | null>(null);
   const running = React.useRef(false);
 
-  const items = [...r.items].sort((a, b) => a.position - b.position);
+  const items = [...rawItems].sort((a, b) => a.position - b.position);
   const slots = MAX_FILES - items.length - uploads.filter((u) => !u.error).length;
 
   /** Uploads run one at a time, in the order picked — later picks join the queue. */
@@ -558,7 +564,7 @@ function RewardFiles({
         continue;
       }
       if (room <= 0) {
-        toast.error(`A reward can hold at most ${MAX_FILES} files.`);
+        toast.error(`A ${noun} can hold at most ${MAX_FILES} files.`);
         break;
       }
       room -= 1;
@@ -713,7 +719,7 @@ function RewardFiles({
                 overId === it.id && dragId !== it.id && "bg-[var(--accent-dim)]"
               )}
             >
-              <ItemRow item={it} index={i} count={items.length} collectionId={collectionId} editable={editable} onMove={move} />
+              <ItemRow item={it} index={i} count={items.length} target={target} noun={noun} editable={editable} onMove={move} />
             </li>
           ))}
         </ul>
@@ -726,19 +732,21 @@ function ItemRow({
   item: it,
   index,
   count,
-  collectionId,
+  target,
+  noun,
   editable,
   onMove,
 }: {
   item: CollectionRewardItem;
   index: number;
   count: number;
-  collectionId: string;
+  target: RewardFilesTarget;
+  noun: string;
   editable: boolean;
   onMove: (from: number, to: number) => void;
 }) {
-  const rename = useRenameRewardItem(collectionId);
-  const remove = useRemoveRewardItem(collectionId);
+  const rename = useRenameRewardItem(target);
+  const remove = useRemoveRewardItem(target);
   const [editing, setEditing] = React.useState(false);
   const [title, setTitle] = React.useState(it.title);
   const [confirm, setConfirm] = React.useState(false);
@@ -820,7 +828,7 @@ function ItemRow({
       <ConfirmDialog
         open={confirm}
         title={`Remove ${it.title}?`}
-        body="It's taken out of the reward. The file is kept in storage for the record."
+        body={`It's taken out of the ${noun}. The file is kept in storage for the record.`}
         confirmLabel="Remove file"
         busy={remove.isPending}
         onCancel={() => setConfirm(false)}

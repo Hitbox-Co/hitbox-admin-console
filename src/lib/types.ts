@@ -4113,3 +4113,120 @@ export interface RewardUnlockRow {
 }
 
 export type RewardModerationAction = "switch-off" | "switch-on" | "remove" | "restore";
+
+/* ------------------------------------------------------------------ */
+/* Drop content — regular and SKU-exclusive tiers (drop-content.md)    */
+/*                                                                      */
+/* REGULAR (≤1 per drop): the owner of ANY unit opens it.               */
+/* EXCLUSIVE (≤10): only the owner of a unit whose serial it lists.     */
+/* "Owner" = owns it now AND has claimed it (NFC tap); access is live.  */
+/*                                                                      */
+/* Lock rule: a serial can be added to or removed from an exclusive     */
+/* tier only while its unit is UNCLAIMED with no owner (or not minted   */
+/* yet) — 409 DROP_CONTENT_UNIT_CLAIMED otherwise, for artist and admin */
+/* alike. Serials that stay listed are not checked.                     */
+/* ------------------------------------------------------------------ */
+
+export type DropContentTierKind = "REGULAR" | "EXCLUSIVE";
+
+/** One tier as the artist panel sees it — every artist write answers with this. */
+export interface DropContentTier {
+  id: string;
+  publicCode: string;
+  dropId: string;
+  tier: DropContentTierKind;
+  name: string;
+  description: string | null;
+  /** ON: owners open it. OFF: paused, hidden. REMOVED: deleted; restore it. */
+  status: CollectionRewardStatus;
+  isActive: boolean;
+  archivedAt: string | null;
+  /** EXCLUSIVE: ascending. REGULAR: always []. */
+  serialNumbers: number[];
+  items: CollectionRewardItem[];
+  itemCounts: Record<RewardItemKind, number>;
+  /** Buyers who own a unit that opens it right now. */
+  holders: number;
+  /** Buyers who have opened it at least once. */
+  openedBy: number;
+  moderation?: RewardModeration;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /artist/drops/:dropId/content. Removed tiers are included. */
+export interface ArtistDropContent {
+  drop: { id: string; publicCode: string; name: string; totalSupply: number };
+  regular: DropContentTier | null;
+  exclusive: DropContentTier[];
+  limits: { maxExclusiveTiers: number; maxSerialsPerTier: number; maxItemsPerTier: number };
+}
+
+export interface CreateDropContentTierInput {
+  tier: DropContentTierKind;
+  name: string;
+  description?: string | null;
+  isActive?: boolean;
+  /** EXCLUSIVE only: 1–1000 serials within 1…totalSupply. */
+  serialNumbers?: number[];
+}
+
+/** Any subset, at least one. `serialNumbers` REPLACES the whole list. */
+export type UpdateDropContentTierInput = Partial<
+  Pick<CreateDropContentTierInput, "name" | "description" | "isActive" | "serialNumbers">
+>;
+
+/** `details.units[]` of 409 DROP_CONTENT_UNIT_CLAIMED — nothing was saved. */
+export interface DropContentClaimedUnit {
+  skuId: string;
+  serialNumber: number;
+  claimedStatus: string;
+  owned: boolean;
+}
+
+/** GET /admin/rewards/drops/:dropId/content. */
+export interface AdminDropContent {
+  drop: { id: string; name: string; totalSupply: number };
+  tiers: {
+    bundleId: string;
+    name: string;
+    tier: DropContentTierKind;
+    isActive: boolean;
+    removed: boolean;
+    serialNumbers: number[];
+  }[];
+}
+
+/** One minted unit in the admin exclusive-SKU picker. */
+export interface AdminDropUnit {
+  skuId: string;
+  publicCode: string | null;
+  skuCode: string;
+  serialNumber: number;
+  variantId: string | null;
+  variant: { variantCode: string; label: string } | null;
+  claimedStatus: string;
+  owned: boolean;
+  /** False once claimed or owned: its exclusivity is settled. */
+  selectable: boolean;
+  /** Live (non-removed) exclusive tiers this unit opens. */
+  exclusiveTiers: { bundleId: string; name: string }[];
+}
+
+export interface AdminDropUnitFilters {
+  claimed?: boolean;
+  variantId?: string;
+  serialFrom?: number;
+  serialTo?: number;
+  page?: number;
+  limit?: number;
+}
+
+/** POST …/content/:bundleId/units[/remove] — all-or-nothing, idempotent. */
+export interface ExclusiveUnitsResult {
+  bundleId: string;
+  name: string;
+  serialNumbers: number[];
+  /** Serials actually added or removed; 0 when nothing changed. */
+  changed: number;
+}

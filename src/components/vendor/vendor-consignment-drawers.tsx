@@ -57,7 +57,7 @@ function StatusMessage({ batch }: { batch: SupplyBatch }) {
   let text: React.ReactNode;
   switch (batch.status) {
     case "UPLOADED":
-      text = "Waiting for HitBox to validate. You can check your chip file now (dry run).";
+      text = "Waiting for HitBox to validate. You can dry-run your chip file now.";
       break;
     case "VALIDATED":
       text = manifestComplete(batch)
@@ -157,7 +157,7 @@ export function VendorConsignmentDrawer({
                   </Badge>
                   <Badge tone="neutral">{humanize(batch.itemType)}</Badge>
                   {awaitingIncrease(batch) ? (
-                    <Badge tone="warning">Awaiting allotment increase from HitBox</Badge>
+                    <Badge tone="warning">Awaiting allotment increase</Badge>
                   ) : null}
                 </Dialog.Description>
               </div>
