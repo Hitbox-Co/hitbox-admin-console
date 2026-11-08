@@ -1,66 +1,83 @@
 "use client";
 
 import * as React from "react";
-import { useActivity } from "@/lib/api/hooks";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useAuditEventTypes } from "@/lib/api/hooks";
 import { usePageChrome } from "@/components/layout/app-shell";
 import { PageGuard } from "@/components/layout/page-guard";
-import { Panel } from "@/components/ui/primitives";
-import { Pagination } from "@/components/ui/table";
-import { FilterRow, FilterSelect, useListState } from "@/components/ui/filters";
-import { ErrorState, TableSkeleton } from "@/components/ui/states";
-import { ActivityFeed } from "@/components/dashboard/activity-feed";
+import { Segmented } from "@/components/ui/primitives";
+import { TableSkeleton } from "@/components/ui/states";
+import { AuditTrail, TRAIL_KEYS, type TrailFilters } from "@/components/audit/audit-trail";
+import { EventTypesPanel, RetentionPanel } from "@/components/audit/audit-catalog";
 
+/**
+ * Audit log — the real trail (audit-logging.md §6): GET /admin/audit/events
+ * with every filter it supports, each event in full with its before/after
+ * and the rest of its request, plus the event catalog and retention windows.
+ *
+ * Filters and the tab live in the URL, so any view can be linked to — e.g.
+ * /activity?resourceType=Order&resourceId=… for one order's history.
+ */
 export default function ActivityPage() {
   return (
-    <PageGuard
-      can={(p) => p.canRead("audit-log")}
-      what="The audit log"
-      requires="audit-log:read"
-    >
-      <ActivityView />
+    <PageGuard can={(p) => p.canOpen("/activity")} what="The audit log" requires="audit-log:read">
+      <React.Suspense fallback={<TableSkeleton rows={12} cols={4} />}>
+        <ActivityView />
+      </React.Suspense>
     </PageGuard>
   );
 }
 
-function ActivityView() {
-  const list = useListState<{ severity?: string }>({ severity: undefined });
-  const query = useActivity(list.params);
+type Tab = "trail" | "types" | "retention";
 
+function ActivityView() {
   usePageChrome({
     title: "Audit log",
-    description: "Who did what, with the role they held at the time.",
+    description: "Who did what, when, and what it changed — with the role they held at the time.",
   });
 
-  return (
-    <Panel className="overflow-hidden">
-      <FilterRow onReset={list.reset} active={list.active}>
-        <FilterSelect
-          label="Severity"
-          value={list.filters.severity}
-          onChange={(v) => list.setFilter("severity", v)}
-          options={["INFO", "WARNING", "CRITICAL"]}
-          allLabel="All severities"
-        />
-      </FilterRow>
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const tab = (searchParams.get("tab") as Tab | null) ?? "trail";
 
-      {query.isLoading ? (
-        <TableSkeleton rows={12} cols={4} />
-      ) : query.isError ? (
-        <ErrorState error={query.error} onRetry={() => query.refetch()} />
+  const filters: TrailFilters = {};
+  TRAIL_KEYS.forEach((k) => {
+    const v = searchParams.get(k);
+    if (v) filters[k] = v;
+  });
+
+  const go = (nextTab: Tab, nextFilters: TrailFilters) => {
+    const sp = new URLSearchParams();
+    if (nextTab !== "trail") sp.set("tab", nextTab);
+    TRAIL_KEYS.forEach((k) => {
+      const v = nextFilters[k];
+      if (v) sp.set(k, v);
+    });
+    const qs = sp.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  };
+
+  const catalog = useAuditEventTypes(false);
+
+  return (
+    <div className="space-y-4">
+      <Segmented
+        value={tab}
+        onChange={(t) => go(t, t === "trail" ? filters : {})}
+        options={[
+          { value: "trail", label: "Trail" },
+          { value: "types", label: "What gets recorded" },
+          { value: "retention", label: "Retention" },
+        ]}
+      />
+      {tab === "types" ? (
+        <EventTypesPanel onPick={(eventType) => go("trail", { eventType })} />
+      ) : tab === "retention" ? (
+        <RetentionPanel />
       ) : (
-        <>
-          <div className={query.isFetching ? "opacity-55 transition-opacity" : ""}>
-            <ActivityFeed events={query.data?.items ?? []} />
-          </div>
-          <Pagination
-            page={query.data?.page ?? 1}
-            limit={query.data?.limit ?? 20}
-            total={query.data?.total ?? 0}
-            onPageChange={list.setPage}
-            onLimitChange={list.setLimit}
-          />
-        </>
+        <AuditTrail filters={filters} setFilters={(f) => go("trail", f)} catalog={catalog.data ?? []} />
       )}
-    </Panel>
+    </div>
   );
 }

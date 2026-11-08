@@ -12,9 +12,9 @@ import { RoleForm } from "@/components/authz/role-form";
 export default function EditRolePage() {
   return (
     <PageGuard
-      can={(p) => p.canRead("employee-role-mgmt")}
+      can={(p) => p.canOpen("/roles")}
       what="Role detail"
-      requires="employee-role-mgmt:read"
+      requires="employee-role-mgmt:read (platform-wide)"
     >
       <EditRoleView />
     </PageGuard>

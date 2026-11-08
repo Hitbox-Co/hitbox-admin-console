@@ -18,16 +18,65 @@ export class ApiError extends Error {
     this.details = details;
   }
 
-  /** Field-level errors from a 422, when the backend supplied them. */
+  /**
+   * Field-level errors from a 422, keyed by field path.
+   *
+   * `details` arrives in two shapes and this used to understand only one of
+   * them. The product endpoints send an ARRAY of issues:
+   *
+   *   [{ path: "totalSupply", message: "Expected number, received nan",
+   *      code: "invalid_type", receivedType: "string", received: "lots" }]
+   *
+   * The old implementation bailed on `Array.isArray(details)` and returned
+   * `{}`, so a 422 from Add product highlighted no field at all and the
+   * operator saw only the bare "Request validation failed".
+   *
+   * `received` is appended when present — product-upload-api.md's checklist
+   * says to read it before changing the payload by guesswork, which is only
+   * possible if the UI actually shows it.
+   */
   get fieldErrors(): Record<string, string> {
-    if (this.details && typeof this.details === "object" && !Array.isArray(this.details)) {
-      const out: Record<string, string> = {};
-      for (const [k, v] of Object.entries(this.details as Record<string, unknown>)) {
-        if (typeof v === "string") out[k] = v;
+    if (!this.details || typeof this.details !== "object") return {};
+    const out: Record<string, string> = {};
+
+    if (Array.isArray(this.details)) {
+      for (const raw of this.details) {
+        if (!raw || typeof raw !== "object") continue;
+        const issue = raw as {
+          path?: unknown;
+          message?: unknown;
+          received?: unknown;
+        };
+        // A nested path arrives as an array: ["skus", "count"].
+        const path = Array.isArray(issue.path)
+          ? issue.path.join(".")
+          : typeof issue.path === "string"
+            ? issue.path
+            : "";
+        if (typeof issue.message !== "string") continue;
+        const shown =
+          issue.received === undefined || issue.received === null
+            ? issue.message
+            : `${issue.message} (received ${JSON.stringify(issue.received)})`;
+        // The first issue on a field wins; later ones are usually cascades.
+        if (!(path in out)) out[path] = shown;
       }
       return out;
     }
-    return {};
+
+    for (const [k, v] of Object.entries(this.details as Record<string, unknown>)) {
+      if (typeof v === "string") out[k] = v;
+    }
+    return out;
+  }
+
+  /** A one-line summary of a 422, for a toast that would otherwise say nothing. */
+  get validationSummary(): string | null {
+    const fields = Object.entries(this.fieldErrors);
+    if (!fields.length) return null;
+    const [first, msg] = fields[0];
+    const rest = fields.length - 1;
+    return `${first ? `${first}: ` : ""}${msg}${rest ? ` (+${rest} more)` : ""}`;
   }
 
   /** A sentence to show the operator, chosen per documented error code. */
@@ -35,6 +84,12 @@ export class ApiError extends Error {
     switch (this.code) {
       case "AUTH_UNAUTHENTICATED":
         return "Your session has expired. Sign in again to continue.";
+      case "AUTH_INVALID_TOKEN":
+        return "Your session token could not be verified. Reconnecting…";
+      case "AUTH_ACCOUNT_NOT_FOUND":
+        return "Your account is still being provisioned. This usually takes a few seconds.";
+      case "AUTH_ACCOUNT_SUSPENDED":
+        return "This account has been suspended. Contact an administrator.";
       case "AUTH_EMAIL_UNVERIFIED":
         return "Verify your email address before using the console.";
       case "AUTHZ_FORBIDDEN":
@@ -51,8 +106,494 @@ export class ApiError extends Error {
         return "Every permission on a role must belong to the role's own domain.";
       case "INVALID_RANGE":
         return "The start of the range must come before the end.";
+
+      /*
+       * Supply intake.
+       *
+       * AUDIT_WRITE_FAILED is the one that matters: the mutation commits in
+       * its own transaction and the audit row is appended AFTER it, so an
+       * audit failure is "the data changed and you were told it failed". The
+       * operator must not read this as "nothing happened" and retry — a
+       * second consignment or a second manifest is a real cost.
+       */
+      case "AUDIT_WRITE_FAILED":
+        return "The change may have gone through even though this failed — the audit record did not. Reload and check before trying again.";
+      case "SUPPLY_FORBIDDEN":
+        return "Your role does not reach this part of supply.";
+      case "SUPPLY_VENDOR_ARCHIVED":
+        return "This vendor has been retired and cannot take new consignments.";
+      case "SUPPLY_BATCH_STATE_INVALID":
+        return "That is not a legal move from this consignment's current state — reload, it may already have been decided.";
+      case "SUPPLY_BATCH_ITEM_TYPE_INVALID":
+        return "This consignment carries no chips, so it takes no manifest.";
+      case "SUPPLY_BATCH_QUANTITY_EXCEEDED":
+        return "That would register more items than the consignment declared. The declared quantity is a ceiling.";
+      case "SUPPLY_TAG_UID_TAKEN":
+        return "A chip in this manifest is already registered on the platform. Nothing was written — two rows claiming one chip is what a counterfeit looks like.";
+      case "SUPPLY_TAG_UID_DUPLICATED":
+        return "The manifest lists the same chip twice. Nothing was written.";
+      case "SUPPLY_NO_CHANGES":
+        return "Nothing in that would change anything.";
+      case "SUPPLY_TAG_KEY_UNAVAILABLE":
+        return "This deployment has no chip-UID key configured, so chips cannot be registered. Rows written without it could never be matched against a real tap.";
+
+      /* Vendor administration and the vendor portal. */
+      case "SUPPLY_VENDOR_NOT_FOUND":
+        return "That vendor no longer exists.";
+      case "SUPPLY_VENDOR_MEMBER_NOT_FOUND":
+        return "That portal user is not on this vendor — reload the list.";
+      case "SUPPLY_VENDOR_EMAIL_REQUIRED":
+        return "Enter an email address — this vendor has no contact email on file to default to.";
+      case "SUPPLY_VENDOR_MEMBER_EXISTS":
+        return "That address is already invited or active here (or the member is already revoked).";
+      case "SUPPLY_VENDOR_MEMBER_OTHER_VENDOR":
+        return "That address already signs in for another vendor. Revoke that membership first.";
+      case "SUPPLY_VENDOR_INACTIVE":
+        return "This vendor is inactive. Reactivate it before inviting users, assigning drops or booking supply.";
+      case "SUPPLY_VENDOR_INVITATIONS_UNAVAILABLE":
+        return "Vendor invitations are not set up on this deployment yet (the VENDOR role is not seeded).";
+      case "SUPPLY_VENDOR_MEMBERSHIP_REQUIRED":
+        return "Your vendor access has been removed. Contact HitBox.";
+      case "SUPPLY_DROP_ALREADY_ASSIGNED":
+        return "That drop is already assigned to this vendor.";
+      case "SUPPLY_DROP_NOT_ASSIGNED":
+        return "That drop is not (or no longer) assigned to this vendor.";
+      case "SUPPLY_NOT_FOUND":
+        return "No such drop.";
+      case "SUPPLY_BATCH_NOT_FOUND":
+        return "Consignment not found.";
+
+      /* Drop content — regular and SKU-exclusive tiers. */
+      case "DROP_CONTENT_UNIT_CLAIMED":
+        // The server's message names the units ("Unit #7 is already claimed…").
+        return this.message || "A unit here is already claimed or owned, so its exclusive content is settled. Nothing was saved.";
+      case "DROP_CONTENT_UNIT_NOT_IN_DROP":
+        return "A selected unit isn't part of this drop. Reload and try again.";
+      case "DROP_CONTENT_NOT_EXCLUSIVE":
+        return "The regular tier opens for every owner — it has no unit list to edit.";
+      case "DROP_CONTENT_ARCHIVED":
+        return "This tier is removed. Restore it first.";
+      case "DROP_CONTENT_NOT_ARCHIVED":
+        return "This tier isn't removed.";
+      case "DROP_CONTENT_SERIALS_INVALID":
+        return "That serial list isn't allowed — a tier needs at least one unit, at most 1,000, each within the drop's supply.";
+      case "DROP_CONTENT_REGULAR_EXISTS":
+        return "This drop already has regular content. Edit (or restore) that one instead.";
+      case "DROP_CONTENT_TOO_MANY_TIERS":
+        return "A drop can have at most 10 exclusive tiers, removed ones included. Restore and reuse one instead.";
+      case "DROP_CONTENT_NOT_FOUND":
+        return "That tier no longer exists on this drop.";
+      case "ARTIST_DROP_NOT_FOUND":
+        return "That drop isn't one of yours, or no longer exists.";
+
+      /* Variant allotments. */
+      case "SUPPLY_ALLOTMENT_SHAPE_INVALID":
+        return "This drop's allotment is the other shape — per-variant quantities for a drop with variants, a single quantity for one without. Reload and try again.";
+      case "SUPPLY_VARIANT_INVALID":
+        return "A variant here is not a live variant of this drop (or is not allotted to this vendor).";
+      case "SUPPLY_ALLOTMENT_BELOW_ACCEPTED":
+        return "An allotment can't go below what HitBox has already accepted — removing a variant counts as zero.";
+      case "SUPPLY_BATCH_NOT_VALIDATED":
+        return "HitBox hasn't validated this consignment yet, so chips can't be registered. A dry run works now.";
+      case "SUPPLY_MANIFEST_INCOMPLETE":
+        return "Not every declared unit has a chip yet. Accepting needs a full manifest on every variant line.";
+      case "SUPPLY_ACCEPT_CONFLICT":
+        return "Another change to this drop was in progress. Nothing was changed — try again.";
+      case "SUPPLY_ALLOTMENT_INSUFFICIENT":
+        return "The vendor's allotment doesn't cover this consignment. Increase the allotment, then accept.";
+      case "SUPPLY_VARIANT_REQUIRED":
+        return "Every chip row must name its variant on this consignment. Nothing was written.";
+      case "SUPPLY_VARIANT_NOT_IN_BATCH":
+        return "A row names a variant that isn't one of this consignment's lines. Nothing was written.";
+      case "SUPPLY_LINE_QUANTITY_EXCEEDED":
+        return "That would put more chips on a variant than its line declares. Nothing was written.";
+
+      /* Unit inventory. */
+      case "SKUS_BATCH_REJECTED":
+        return "At least one unit refused the change, so nothing was written.";
+      case "SKUS_BATCH_EMPTY":
+        return "That selection matched no units.";
+      case "SKUS_FILTER_FORBIDDEN":
+        return "You may not filter by those columns — filtering one is a read of it.";
+      case "SKUS_UPDATE_FORBIDDEN":
+        return "Your grants do not cover every field in that change, so none of it was applied.";
+      case "SKUS_NO_CHANGES":
+        return "That names no editable field.";
+      case "SKUS_VARIANT_MISMATCH":
+        return "That variant belongs to a different drop.";
       case "STORAGE_UNAVAILABLE":
         return "Media storage is not configured on this deployment.";
+
+      /* Markets — the three invariants, in the operator's words. */
+      case "MARKETS_CODE_TAKEN":
+        return "A market with that code already exists.";
+      case "MARKETS_COUNTRY_TAKEN":
+        return "One or more of those countries is already mapped to another market.";
+      case "MARKETS_IN_USE":
+        return "This market still has product prices against it. Repoint them before archiving.";
+      case "MARKETS_DEFAULT_REQUIRED":
+        return "Exactly one market must be the default. Promote another one instead of clearing this.";
+      case "MARKETS_NOT_FOUND":
+        return "Market not found — or outside your scope.";
+
+      /* Orders — the lifecycle graph is the server's, not ours. */
+      case "ORDERS_STATUS_NOT_SETTABLE":
+        return "Paid and refunded are written by the payment pipelines, not by hand.";
+      case "ORDERS_INVALID_TRANSITION":
+        return "That status change is not allowed from where this order is now.";
+      case "ORDERS_NOT_FOUND":
+        return "Order not found — or outside your scope.";
+
+      /* Releases — the compliance refusals. */
+      case "RELEASES_ALREADY_PENDING":
+        return "This drop already has an open review. Decide that one first.";
+      case "RELEASES_ALREADY_DECIDED":
+        return "This review is already decided. Reversing it needs the override permission.";
+      case "RELEASES_COMMENT_REQUIRED":
+        return "A rejection needs a comment saying why.";
+      case "RELEASES_COMPLIANCE_INCOMPLETE":
+        return "An age-restricted drop cannot be approved until it carries a minimum age.";
+      case "RELEASES_NOT_FOUND":
+        return "Review not found — or outside your scope.";
+      case "RELEASES_NOT_THE_APPROVER":
+        // The server's sentence names who may decide — more useful than ours.
+        return this.message || "You are not the party entitled to decide this drop.";
+      case "RELEASES_LEGAL_ACCEPTANCE_REQUIRED":
+        return "Approving needs the legal compliance statement ticked.";
+      case "RELEASES_NOT_REOPENABLE":
+        return "Only a decided review can be reopened.";
+
+      /* Publishing — the last gate. */
+      case "PRODUCTS_NOT_APPROVED":
+        // One code, two routes: 400 is a `skus` block on create for an owned
+        // drop; 409 is publishing without an approved latest review.
+        return this.status === 400
+          ? "A drop with an artist or brand cannot mint units at creation. Create it, get it approved, then add SKUs."
+          : "The latest review of this drop is not approved, so it cannot go live.";
+      case "SKUS_NOT_APPROVED":
+        return "Units cannot be minted until the drop's owner approves it.";
+      case "PRODUCTS_NOT_PUBLISHABLE":
+        return "This drop cannot be published from its current state — it is archived, ended, or already there.";
+      case "PRODUCTS_PUBLISH_BLOCKED":
+        // details.field names the missing piece; the server's message says which.
+        return this.message || "This drop is missing something it needs to go live.";
+      case "PRODUCTS_RELEASE_GATE_UNAVAILABLE":
+        return "The approval check is not wired up on this deployment, so publishing is refused.";
+
+      /* Shipments and cancelling (order-history-and-shipments.md §8, checkout-sweep.md §5). */
+      case "ORDERS_SHIPMENT_REQUIRED":
+        return "Orders are shipped by recording the carrier and tracking number.";
+      case "ORDERS_NOT_SHIPPABLE":
+        return "This order can't be shipped (or its tracking corrected) in its current state.";
+      case "ORDERS_SHIPMENT_EXISTS":
+        return "A shipment is already recorded. Use Correct tracking instead.";
+      case "ORDERS_TRACKING_IN_USE":
+        return "That carrier and tracking number are already on another order.";
+      case "ORDERS_CANCEL_REQUIRES_REFUND":
+        return "The buyer has paid — cancelling means refunding. Use Cancel & refund.";
+
+      /* Stripe refund failures (order-payments-and-refunds-api.md §11). */
+      case "PAYMENTS_GATEWAY_REJECTED":
+        return this.message || "Stripe refused the refund. Nothing changed — it may already have been refunded in the dashboard.";
+      case "PAYMENTS_GATEWAY_UNREACHABLE":
+        return "Stripe didn't respond. Nothing changed — try again.";
+
+      /* Packing — scan-to-assign (order-unit-assignment-api.md §13). */
+      case "ORDERS_WRONG_ITEM":
+        return "Wrong item — that unit is a different drop or variant. Check the size and colour label.";
+      case "ORDERS_UNIT_UNAVAILABLE":
+        // The 409 names the unit and the order holding it — shown verbatim.
+        return this.message || "That unit can't be packed — it's archived, inactive, claimed, blocked, or its tag isn't bound.";
+      case "ORDERS_NOT_ASSIGNABLE":
+        return "This order can't take a unit — it must be Paid or Processing and hold stock.";
+      case "ORDERS_UNIT_NOT_ASSIGNED":
+        return "Scan the physical unit for this order before marking it shipped.";
+      case "ORDERS_UNIT_NOT_FOUND":
+        return "Nothing matches that scan. Check the tag or code and try again.";
+      case "ORDERS_NO_WAITING_ORDER":
+        return "No order is waiting for that item — put it back on the shelf.";
+      case "ORDERS_UNIT_ALREADY_ASSIGNED":
+        return "This order already has a different unit. Use Replace item to swap it.";
+      case "ORDERS_ASSIGN_CONFLICT":
+        return "Another packer changed this order or unit at the same moment. Scan again.";
+
+      /* Artist self-service profile (artist-profile-api.md §9). */
+      case "ARTIST_GENRE_INVALID":
+        return "That genre isn't on the list. Pick one from the dropdown.";
+      case "ARTIST_IMAGE_INVALID":
+        // Not found, someone else's, deleted, or still being virus-scanned.
+        return this.message || "That image can't be used. Upload it again in a moment.";
+      case "ARTIST_IMAGES_UNAVAILABLE":
+        return "Image uploads aren't configured on this server. The rest of your profile still saves.";
+      case "UNSUPPORTED_MIME_TYPE":
+        return "Use a JPEG, PNG, WebP or GIF image.";
+      case "FILE_TOO_LARGE":
+        return "That image is over 15 MB.";
+      case "ARTIST_PROFILE_NOT_FOUND":
+        return "This account isn't linked to an artist profile. Profiles are created when HitBox invites you as an artist.";
+      case "ARTIST_SLUG_TAKEN":
+        return "Another artist already uses that handle.";
+      case "ARTIST_PROFILE_LOCKED":
+        return "HitBox has archived or deactivated this profile, so it can't be edited. Contact support.";
+
+      /* Artist administration (artist-admin-api.md §11). */
+      case "ARTIST_NOT_FOUND":
+        return "That artist doesn't exist.";
+      // The 409s on artist actions are shown exactly as the server words them.
+      case "ARTIST_ARCHIVED":
+        return this.message || "This artist is archived. Restore them first.";
+      case "ARTIST_NOT_ARCHIVED":
+        return this.message || "This artist isn't archived.";
+      case "ARTIST_INACTIVE":
+        return this.message || "This artist is inactive. Activate them before publishing.";
+      case "ARTIST_STATE_UNCHANGED":
+        return this.message || "Nothing to change — the artist is already in that state.";
+      case "ARTIST_CHANGED":
+        return this.message || "Someone else changed this artist a moment ago. Reload and try again.";
+      case "ARTIST_STATS_UNAVAILABLE":
+        return "Artist statistics aren't available on this server yet.";
+
+      /* Audit trail (audit-logging.md). */
+      case "AUDIT_CROSS_TENANT_READ":
+        return "You can only read your own organization's audit trail.";
+      case "AUDIT_INVALID_CURSOR":
+        return "That page of the audit log is no longer valid. Reload to start again.";
+      case "AUDIT_RETENTION_POLICY_MISSING":
+        return "A retention policy is missing — the audit seed hasn't been run on this server.";
+      case "AUDIT_WRITE_FAILED":
+        return "The change was refused because its audit record couldn't be written. Nothing was changed — try again.";
+
+      /* Collection rewards (content/collection-rewards.md §7) — the server's
+         message is shown as returned; these are fallbacks for an empty one. */
+      case "CONTENT_REWARD_FILE_TYPE":
+        return this.message || "That file type or size isn't allowed for a reward.";
+      case "CONTENT_REWARD_FILE_INVALID":
+        return this.message || "That file can't be used — it isn't uploaded yet, was removed, or failed the virus scan.";
+      case "CONTENT_REWARD_TOO_MANY_ITEMS":
+        return this.message || "A reward can hold at most 20 files.";
+      case "CONTENT_REWARD_FILE_DUPLICATE":
+        return this.message || "That file is already in the reward.";
+      case "CONTENT_REWARD_ORDER_MISMATCH":
+        return this.message || "The files changed in another tab. The list was refreshed — try again.";
+      case "CONTENT_REWARD_NOT_FOUND":
+        return this.message || "This collection has no reward yet.";
+      case "CONTENT_REWARD_ITEM_NOT_FOUND":
+        return this.message || "That file isn't in the reward any more.";
+      case "CONTENT_REWARD_STATE_UNCHANGED":
+        return this.message || "Nothing to change — the reward is already in that state.";
+      case "CONTENT_REWARD_NOT_MODERATED":
+        return this.message || "The artist did this themselves, so it's theirs to undo.";
+      case "CONTENT_REWARD_MODERATION_LOCKED":
+        return this.message || "HitBox has locked this reward. Contact support to have it switched back on.";
+      case "CONTENT_REWARD_ARCHIVED":
+        return this.message || "The reward is removed. Restore it first.";
+      case "CONTENT_REWARD_MEDIA_UNAVAILABLE":
+        return this.message || "File storage isn't configured on this server.";
+      case "ARTIST_COLLECTION_REWARDS_UNAVAILABLE":
+        return this.message || "Rewards aren't available on this server yet.";
+
+      /* Artist collections (artist-collection-api.md). */
+      case "ARTIST_COLLECTION_NOT_FOUND":
+        return "That collection doesn't exist, or it isn't yours.";
+      case "ARTIST_COLLECTION_NAME_TAKEN":
+        return "You already have a collection with that name.";
+      case "ARTIST_COLLECTION_SLUG_TAKEN":
+        return "That web address is already used by another collection.";
+      case "ARTIST_COLLECTION_ARCHIVED":
+        return this.message || "This collection is deleted. Restore it before changing it.";
+      case "ARTIST_COLLECTION_NOT_ARCHIVED":
+        return "This collection isn't deleted — it may have just been restored.";
+      case "ARTIST_COLLECTION_HAS_DROPS":
+        return this.message || "This collection still has drops. Remove your on-sale drops first; drafts and drops in review are moved by your brand team or HitBox.";
+      case "ARTIST_COLLECTION_LIMIT_REACHED":
+        return "You already have 50 collections. Delete one before adding another.";
+      case "ARTIST_COLLECTION_DROPS_INVALID":
+        return "Some of those drops can't be added. They're marked in the list.";
+      case "ARTIST_COLLECTION_DROPS_UNAVAILABLE":
+        return "Adding drops isn't available on this server yet.";
+      case "ARTIST_COLLECTION_DROP_NOT_IN_COLLECTION":
+        return "That drop isn't in this collection any more.";
+      case "ARTIST_COLLECTION_DROPS_CHANGED":
+        return "One of those drops changed a moment ago, so nothing was added. The list was refreshed — try again.";
+      case "ARTIST_COLLECTION_ORDER_MISMATCH":
+        return "Your collections changed in another tab. The list was reloaded — try the move again.";
+
+      /* Drop types and variants (drop-types-and-variants.md §11). */
+      case "PRODUCTS_DROP_TYPE_INVALID":
+        return this.message || "That drop-type definition is not valid.";
+      case "PRODUCTS_DROP_TYPE_REQUIRED":
+        return "This drop has no type. Set one under Edit details before adding variants.";
+      case "PRODUCTS_VARIANT_INVALID_OPTIONS":
+        return this.message || "One or more variants break the rules of this drop type.";
+      case "PRODUCTS_VARIANTS_NOT_ALLOWED":
+        return "This drop's type has no variants — units are minted against the drop itself.";
+      case "PRODUCTS_VARIANTS_REQUIRED":
+        // One code, three triggers: submit with none, mint without one, or
+        // a `skus` block on create.
+        return "This drop type needs variants: add at least one, and mint every unit against a variant.";
+      case "PRODUCTS_VARIANT_SUPPLY_EXCEEDED":
+      case "SKUS_VARIANT_SUPPLY_EXCEEDED":
+        // Every mint path (add SKUs, drop creation, supply accept) can hit a
+        // variant's own cap; details name the variant and the numbers.
+        return (
+          variantCapMessage(this.details) ??
+          (this.message || "That goes past a variant's supply cap or the drop's total supply.")
+        );
+      case "PRODUCTS_VARIANT_INACTIVE":
+        return "That variant is inactive or archived, so no units can be minted for it.";
+      case "PRODUCTS_VARIANT_GENERATE_TOO_LARGE":
+        return "More than 200 combinations. Split the selection — for example one colour group per run.";
+      case "PRODUCTS_DROP_TYPE_NOT_FOUND":
+        return "That drop type does not exist or is inactive.";
+      case "PRODUCTS_DIMENSION_NOT_FOUND":
+        return "That dimension is not on this drop type.";
+      case "PRODUCTS_DIMENSION_VALUE_NOT_FOUND":
+        return "That value is not on this dimension.";
+      case "PRODUCTS_VARIANT_NOT_FOUND":
+        return "That variant is not on this drop — it may already have been removed.";
+      case "PRODUCTS_DROP_TYPE_CODE_TAKEN":
+        return "A drop type with that code already exists.";
+      case "PRODUCTS_DROP_TYPE_LOCKED":
+        return this.message || "Locked: the type is in use, or this drop already has variants.";
+      case "PRODUCTS_DROP_NOT_EDITABLE":
+        return "Variants can be added or removed only while the drop is Draft or Rejected.";
+      case "PRODUCTS_VARIANT_DUPLICATE":
+        return this.message || "This drop already has that combination.";
+
+      /* Product upload and the image gallery. */
+      case "BODY_REQUIRED":
+        // Express 5 leaves req.body undefined when no parser matched. This
+        // used to surface as a 422 pointing at no field at all.
+        return "The request reached the server without a JSON body. This is a client bug, not a permissions problem.";
+      case "PRODUCTS_IMAGE_ASSET_INVALID":
+        // The server names EVERY bad asset at once, so a twelve-image gallery
+        // does not need twelve submissions to surface twelve problems.
+        return this.message;
+      case "PRODUCTS_IMAGE_DUPLICATE":
+        return "That image is already in this gallery.";
+      case "PRODUCTS_IMAGE_NOT_FOUND":
+        return "That image is not on this drop — it may already have been removed.";
+      case "PRODUCTS_MEDIA_UNAVAILABLE":
+        return "No storage bucket is configured on this deployment, so images cannot be attached.";
+      case "PRODUCTS_MARKETS_UNAVAILABLE":
+        return "Market lookup is not wired up on this deployment, so a drop cannot be priced.";
+      case "PRODUCTS_PRICE_MARKET_INVALID":
+        // The server names EVERY bad market at once — a pricing table is
+        // filled in for several markets in one sitting, and one error per
+        // submission is a poor way to find three typos.
+        return this.message;
+      case "PRODUCTS_PRICE_NOT_FOUND":
+        return "That price is not on this drop — it may already have been removed.";
+      case "PRODUCTS_PRICE_REQUIRED":
+        return "A drop must keep at least one market price. Set this one to Disabled instead of deleting it.";
+      case "PRODUCTS_CODE_TAKEN":
+        return "Could not allocate a unique product code. Try again.";
+      case "PRODUCTS_NOT_FOUND":
+        return "Drop not found — or outside your scope.";
+
+      /* Tag manifests. The server names the offending rows; show them. */
+      case "SKUS_UNIT_NOT_IN_PRODUCT":
+      case "SKUS_TAG_ALREADY_BOUND":
+      case "SKUS_TAG_REPLACE_REFUSED":
+        return this.message;
+
+      /* Serialized units. */
+      case "SKUS_FORBIDDEN":
+        return "Reading serialized units needs an operator-grade collectible-instance grant.";
+      case "SKUS_SUPPLY_EXCEEDED":
+        return "That would mint past the edition's declared supply.";
+      case "PRODUCTS_SUPPLY_EXCEEDED":
+        return "The requested unit count is larger than the drop's own total supply.";
+      case "SKUS_TAG_TAKEN":
+        // The server names the conflicting tag and the unit holding it, which
+        // is the only way an operator can go and find it.
+        return this.message;
+      case "SKUS_SERIAL_TAKEN":
+        return "Serial numbers collided repeatedly — another operator is minting this edition. Try again.";
+      case "SKUS_VARIANT_MISMATCH":
+        return "That variant belongs to a different product.";
+      case "PRODUCTS_MINTING_UNAVAILABLE":
+        return "Minting is not wired up on this deployment.";
+      case "SKUS_NOT_FOUND":
+        return "Unit not found — or outside your scope.";
+      case "SKUS_PRODUCT_NOT_FOUND":
+        return "Drop not found — or outside your scope.";
+
+      /* Finance — the refusals that protect money already posted. */
+      case "FINANCE_FORBIDDEN":
+        return "Your role does not reach payment and royalty records.";
+      case "FINANCE_NOT_FOUND":
+        return "Not found — or outside the scope your grant covers.";
+      case "FINANCE_NO_RULE":
+        return "No royalty rule covers this drop at the time of the accrual.";
+      case "FINANCE_NOT_ACCRUABLE":
+        return "The order behind this claim is missing, unpaid, or already reversed.";
+      case "FINANCE_INVALID_RULE":
+        // The server names the offending total, which is the whole point of
+        // the refusal — a 105% split is a typo worth seeing in full.
+        return this.message;
+      case "FINANCE_IMMUTABLE":
+        return "Ledger rows are never edited. Post an adjustment against this instead.";
+      case "FINANCE_INVALID_TRANSITION":
+        return "That step is not available from where this record is now.";
+      case "FINANCE_NOTHING_TO_PAY":
+        return "Nothing was eligible — every balance is below its threshold or already batched.";
+      case "FINANCE_ALREADY_REVERSED":
+        return "This entry has already been reversed. Reversing twice would double-credit it.";
+
+      /* Payments. */
+      case "PAYMENTS_FORBIDDEN":
+        return "Your role does not reach payment records.";
+      case "PAYMENTS_NOT_FOUND":
+        return "Not found — or outside the scope your grant covers.";
+      case "PAYMENTS_INVALID_TRANSITION":
+        return "That step is not available from this refund's current status.";
+      case "PAYMENTS_RETURN_NOT_CONFIRMED":
+        return "Money does not move before the item is back. Confirm the physical return first, or approve with an explicit override and a reason.";
+      case "PAYMENTS_NOT_REFUNDABLE":
+        return "This order cannot be refunded in its current state.";
+      case "PAYMENTS_AMOUNT_EXCEEDS_CAPTURE":
+        return "The refund is larger than what was actually captured on this order.";
+      case "PAYMENTS_GATEWAY_UNAVAILABLE":
+        return "No payment provider adapter is wired on this deployment. Supply the provider's own refund id to record it manually.";
+      case "PAYMENTS_NO_GATEWAY":
+        return "No active gateway configuration covers this scope.";
+      case "PAYMENTS_NO_PRICE":
+        return "No price is configured for that market.";
+      case "PAYMENTS_OUT_OF_STOCK":
+        return "No unreserved unit is left to hold.";
+      case "PAYMENTS_NOT_PURCHASABLE":
+        return "This drop is not buyable — it is inactive, sold out, or age-gated.";
+      case "PAYMENTS_RESERVATION_EXPIRED":
+        return "The stock hold expired before payment settled.";
+      case "PAYMENTS_INVALID_SIGNATURE":
+        return "The provider's webhook signature could not be verified.";
+
+      /* Role assignment. */
+      case "ACCESS_CONTROL_ASSIGNMENT_EXISTS":
+        return "This person already holds that role at that scope.";
+      case "ACCESS_CONTROL_MISSING_ORG_SCOPE":
+        return "This role is organization-scoped — choose an organization.";
+      case "ACCESS_CONTROL_ROLE_NOT_FOUND":
+        return "That role no longer exists, or has been deactivated.";
+
+      /* Staff invitations (admin-provisioning.md §6).
+       *
+       * AUTHZ_FORBIDDEN is deliberately absent from this block. The invitation
+       * route emits it for two different refusals and the server's own message
+       * is the only thing that separates them: a 403 names the permissions the
+       * granter does not hold (the escalation check), and a 400 carries the
+       * identity provider's refusal with `details.invitationId` pointing at the
+       * FAILED row. Replacing either with "your role does not include this
+       * capability" would throw away the only actionable part, so the invite
+       * form shows `message` verbatim instead.
+       */
+      case "AUTHZ_ROLE_NOT_FOUND":
+        return "That role no longer exists, or has been deactivated.";
+      case "AUTHZ_MISSING_ORG_SCOPE":
+        return "This role is organization-scoped — choose an organization.";
+      case "AUTHZ_ASSIGNMENT_EXISTS":
+        return "An open invitation for that person and role already exists. Revoke it before sending another.";
       case "NETWORK_ERROR":
         return this.message;
       default:
@@ -75,18 +616,6 @@ function buildUrl(path: string, query?: Record<string, QueryValue>): string {
   return url.pathname + url.search;
 }
 
-/** Storage key backing the demo role switcher; sent as the x-demo-role header. */
-export const PREVIEW_ROLE_KEY = "hitbox.demoRole";
-
-function getPreviewRole(): string | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return window.localStorage.getItem(PREVIEW_ROLE_KEY);
-  } catch {
-    return null;
-  }
-}
-
 async function request<T>(
   method: string,
   path: string,
@@ -94,8 +623,6 @@ async function request<T>(
 ): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
-  const preview = getPreviewRole();
-  if (preview) headers["x-demo-role"] = preview;
 
   let res: Response;
   try {
@@ -145,10 +672,34 @@ export const api = {
   post: <T>(path: string, body?: unknown, query?: Record<string, QueryValue>) =>
     request<T>("POST", path, { body, query }),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, { body }),
+  /** Wholesale replace — the product gallery's reorder path. */
+  put: <T>(path: string, body?: unknown) => request<T>("PUT", path, { body }),
   delete: <T>(path: string) => request<T>("DELETE", path),
 };
 
 /** Many endpoints wrap their payload in `{ data: ... }`; some do not. */
+/** "Variant TEE-RED-S cap reached — 100 of 100 minted, 3 more requested." */
+function variantCapMessage(details: unknown): string | null {
+  if (!details || typeof details !== "object") return null;
+  const d = details as Record<string, unknown>;
+  const name =
+    typeof d.variantCode === "string"
+      ? d.variantCode
+      : typeof d.label === "string"
+        ? d.label
+        : null;
+  if (!name) return null;
+  const cap = typeof d.variantTotalSupply === "number" ? d.variantTotalSupply : null;
+  const minted = typeof d.minted === "number" ? d.minted : null;
+  const requested = typeof d.requested === "number" ? d.requested : null;
+  return (
+    `Variant ${name} cap reached` +
+    (cap !== null && minted !== null ? ` — ${minted} of ${cap} minted` : "") +
+    (requested !== null ? `, ${requested} more requested` : "") +
+    ". Raise the variant's supply first."
+  );
+}
+
 export function unwrap<T>(payload: unknown): T {
   if (payload && typeof payload === "object" && "data" in payload) {
     return (payload as { data: T }).data;

@@ -6,19 +6,31 @@ import { usePathname } from "next/navigation";
 import {
   BadgeCheck,
   Banknote,
+  CreditCard,
+  Factory,
   Globe,
   Image as ImageIcon,
   KeyRound,
   LayoutDashboard,
+  LibraryBig,
+  MicVocal,
+  Gift,
   Package,
+  Palette,
   Repeat,
   Rocket,
   ScrollText,
+  Shapes,
   ShieldCheck,
   ShoppingCart,
   Sparkles,
   TrendingUp,
+  Boxes,
+  Cpu,
+  Gauge,
+  PackageCheck,
   Truck,
+  Undo2,
   UserCog,
   Users,
   type LucideIcon,
@@ -28,17 +40,31 @@ import { NAV_GROUP_ORDER, visibleNav, type NavItem } from "@/lib/authz";
 import { Skeleton } from "@/components/ui/primitives";
 import { Wordmark } from "@/components/brand";
 import { useAuthz } from "./authz-provider";
+import {
+  useFulfilmentQueue,
+  useOpenRefunds,
+  useLockedRewardCount,
+  usePendingApprovalCount,
+  usePendingConsignmentCount,
+} from "@/lib/api/hooks";
 
 const ICONS: Record<string, LucideIcon> = {
   LayoutDashboard,
   Globe,
   ShoppingCart,
   Banknote,
+  CreditCard,
   Repeat,
   Users,
   Package,
+  Palette,
+  Factory,
   BadgeCheck,
   Truck,
+  Boxes,
+  Cpu,
+  Gauge,
+  PackageCheck,
   TrendingUp,
   Sparkles,
   Image: ImageIcon,
@@ -47,6 +73,11 @@ const ICONS: Record<string, LucideIcon> = {
   KeyRound,
   UserCog,
   Rocket,
+  Shapes,
+  Undo2,
+  LibraryBig,
+  MicVocal,
+  Gift,
 };
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
@@ -54,6 +85,17 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { perms, loading } = useAuthz();
 
   const items = React.useMemo(() => visibleNav(perms), [perms]);
+
+  // The most specific match wins, so /products/types lights "Drop types"
+  // and not "Drops" as well.
+  const activeHref = React.useMemo(() => {
+    let best: string | null = null;
+    for (const item of items) {
+      const hit = pathname === item.href || pathname.startsWith(`${item.href}/`);
+      if (hit && (!best || item.href.length > best.length)) best = item.href;
+    }
+    return best;
+  }, [items, pathname]);
 
   const grouped = React.useMemo(() => {
     const map = new Map<string, NavItem[]>();
@@ -95,9 +137,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
               <ul className="space-y-px">
                 {groupItems.map((item) => {
                   const Icon = ICONS[item.icon] ?? LayoutDashboard;
-                  const active =
-                    pathname === item.href ||
-                    pathname.startsWith(`${item.href}/`);
+                  const active = item.href === activeHref;
                   return (
                     <li key={item.href}>
                       <Link
@@ -125,6 +165,11 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                           )}
                         />
                         <span className="truncate">{item.label}</span>
+                        {item.href === "/returns" ? <OpenRefundsCount /> : null}
+                        {item.href === "/packing" ? <ToPackCount /> : null}
+                        {item.href === "/supply/consignments" ? <NewConsignmentsCount /> : null}
+                        {item.href === "/release-approvals" ? <PendingApprovalsCount /> : null}
+                        {item.href === "/rewards" ? <LockedRewardsCount /> : null}
                       </Link>
                     </li>
                   );
@@ -143,4 +188,79 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       </div>
     </nav>
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Queue counts on nav entries — each rendered only on its own entry,  */
+/* which is itself only shown to callers who can open that screen.     */
+/* ------------------------------------------------------------------ */
+
+const COUNT_TONE = {
+  accent: "bg-[var(--accent)] text-white",
+  info: "bg-[var(--info)] text-white",
+  warning: "bg-[var(--warning)] text-black",
+  danger: "bg-[var(--danger)] text-white",
+} as const;
+
+function NavCount({
+  n,
+  tone,
+  label,
+  capped,
+}: {
+  n: number;
+  tone: keyof typeof COUNT_TONE;
+  /** Read aloud and shown on hover, e.g. "3 orders to pack". */
+  label: string;
+  /** The source stopped counting early — show "99+" whatever n is. */
+  capped?: boolean;
+}) {
+  if (!n) return null;
+  return (
+    <span
+      className={cn("ml-auto rounded-full px-1.5 text-[10.5px] font-semibold leading-[18px]", COUNT_TONE[tone])}
+      aria-label={label}
+      title={label}
+    >
+      {capped || n > 99 ? "99+" : n}
+    </span>
+  );
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** Paid orders waiting for a unit — the packing queue's total (re-read every 30 s). */
+function ToPackCount() {
+  const q = useFulfilmentQueue({ page: 1, limit: 1 });
+  const n = q.data?.total ?? 0;
+  return <NavCount n={n} tone="accent" label={`${plural(n, "order")} waiting to be packed`} />;
+}
+
+/** Consignments still needing an accept / reject decision (UPLOADED or VALIDATED). */
+function NewConsignmentsCount() {
+  const n = usePendingConsignmentCount().data ?? 0;
+  return <NavCount n={n} tone="info" label={`${plural(n, "new consignment")} awaiting a decision`} />;
+}
+
+/**
+ * Drops waiting for an approve / reject decision — the review queue's
+ * default view (PENDING, latest version per drop), narrowed server-side to
+ * the reviews the caller can see.
+ */
+function PendingApprovalsCount() {
+  const n = usePendingApprovalCount().data ?? 0;
+  return <NavCount n={n} tone="warning" label={`${plural(n, "drop")} waiting for approval`} />;
+}
+
+/** Rewards HitBox has switched off or removed — content staff are keeping an eye on. */
+function LockedRewardsCount() {
+  const n = useLockedRewardCount().data ?? 0;
+  return <NavCount n={n} tone="danger" label={`${plural(n, "reward")} locked by HitBox`} />;
+}
+
+/** Refunds waiting on someone — an initiated refund is seen without anyone looking for it. */
+function OpenRefundsCount() {
+  const q = useOpenRefunds();
+  const n = q.data?.items.length ?? 0;
+  return <NavCount n={n} tone="warning" label={`${plural(n, "open refund")}`} capped={q.data?.truncated} />;
 }
