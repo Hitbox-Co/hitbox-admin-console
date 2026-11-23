@@ -19,6 +19,15 @@ import type {
   ArtistCollectionDetail,
   ArtistCollectionHeroUploadUrl,
   AdminArtistFilters,
+  CollectionReward,
+  AdminReward,
+  AdminRewardDetail,
+  AdminRewardFilters,
+  AdminRewardSummary,
+  RewardModerationAction,
+  RewardUnlockRow,
+  RewardUploadUrl,
+  SaveCollectionRewardInput,
   UpdateRewardPointsInput,
   ArtistDirectorySummary,
   ArtistStaffProfile,
@@ -148,6 +157,14 @@ import type {
   VendorFilters,
   VendorInput,
   VendorAllotmentInput,
+  AdminDropContent,
+  AdminDropUnit,
+  AdminDropUnitFilters,
+  ArtistDropContent,
+  CreateDropContentTierInput,
+  DropContentTier,
+  ExclusiveUnitsResult,
+  UpdateDropContentTierInput,
   VendorBatchFilters,
   VendorBatchInput,
   VendorDropAssignment,
@@ -3460,6 +3477,193 @@ export function useCorrectShipment(orderId: string) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Optimistic toggles                                                  */
+/*                                                                      */
+/* A switch should answer the click, not the network:                   */
+/*   - every click changes the cache at once;                           */
+/*   - the request waits until the clicks stop (DEBOUNCE_MS) and sends   */
+/*     only the final value — and nothing at all when the final value   */
+/*     is where it started, so on → off → on is zero requests;          */
+/*   - the server's answer replaces the guess; a failure puts back the  */
+/*     value from before the burst, unless newer clicks have followed.  */
+/* Clicks collapse per SLOT — one record's one field — so two different */
+/* switches on the same record never swallow each other.               */
+/* Pending sends are flushed on unmount, so leaving the page right      */
+/* after a click doesn't lose it.                                       */
+/* ------------------------------------------------------------------ */
+
+type QueryClient = ReturnType<typeof useQueryClient>;
+
+const DEBOUNCE_MS = 400;
+
+interface ToggleOptions<TCache, V, R> {
+  queryKey: (vars: V) => readonly unknown[];
+  /** The guessed cache value after the click. */
+  apply: (prev: TCache, vars: V) => TCache;
+  /** What the cache holds now for this toggle, as vars — the "from" value. */
+  read: (cache: TCache, vars: V) => V;
+  request: (vars: V) => Promise<R>;
+  /** Write the server's answer (and refresh anything derived from it). */
+  settle: (qc: QueryClient, result: R, vars: V) => void;
+  /** Which clicks collapse together. Defaults to the record (its query key). */
+  slot?: (vars: V) => string;
+  delayMs?: number;
+}
+
+type PendingToggle<V> = {
+  timer: ReturnType<typeof setTimeout>;
+  /** The value before the first click of this burst. */
+  original: V | undefined;
+  vars: V;
+  onError?: (err: unknown) => void;
+};
+
+export function useOptimisticToggle<TCache, V, R>(options: ToggleOptions<TCache, V, R>) {
+  const qc = useQueryClient();
+  // The latest options without re-creating `mutate` every render.
+  const optsRef = React.useRef(options);
+  React.useEffect(() => {
+    optsRef.current = options;
+  });
+  const pending = React.useRef(new Map<string, PendingToggle<V>>());
+  const latestSent = React.useRef(new Map<string, number>());
+  const counter = React.useRef(0);
+
+  const send = React.useCallback(
+    (slot: string) => {
+      const entry = pending.current.get(slot);
+      if (!entry) return;
+      pending.current.delete(slot);
+      const opts = optsRef.current;
+      const { vars, original, onError } = entry;
+      // Clicked back to where it started: nothing to tell the server.
+      if (original !== undefined && JSON.stringify(original) === JSON.stringify(vars)) return;
+
+      const seq = ++counter.current;
+      latestSent.current.set(slot, seq);
+      const key = opts.queryKey(vars);
+      // Newer clicks on this slot since this send decide instead.
+      const superseded = () => latestSent.current.get(slot) !== seq || pending.current.has(slot);
+
+      opts.request(vars).then(
+        (result) => {
+          if (!superseded()) opts.settle(qc, result, vars);
+        },
+        (err: unknown) => {
+          // A newer click is already on its way and will decide — nothing to undo or report.
+          if (superseded()) return;
+          if (original !== undefined) {
+            qc.setQueryData<TCache>(key, (cur) => (cur === undefined ? cur : opts.apply(cur, original)));
+          }
+          onError?.(err);
+        }
+      );
+    },
+    [qc]
+  );
+
+  const mutate = React.useCallback(
+    (vars: V, callbacks?: { onError?: (err: unknown) => void }) => {
+      const opts = optsRef.current;
+      const key = opts.queryKey(vars);
+      const slot = opts.slot ? opts.slot(vars) : JSON.stringify(key);
+      const current = qc.getQueryData<TCache>(key);
+      const existing = pending.current.get(slot);
+      if (existing) clearTimeout(existing.timer);
+
+      // Hold any refetch back so it can't paint the old value over the click.
+      void qc.cancelQueries({ queryKey: key });
+      if (current !== undefined) qc.setQueryData<TCache>(key, opts.apply(current, vars));
+
+      pending.current.set(slot, {
+        timer: setTimeout(() => send(slot), opts.delayMs ?? DEBOUNCE_MS),
+        original: existing ? existing.original : current !== undefined ? opts.read(current, vars) : undefined,
+        vars,
+        onError: callbacks?.onError ?? existing?.onError,
+      });
+    },
+    [qc, send]
+  );
+
+  // Leaving the page mid-burst sends what was clicked rather than dropping it.
+  React.useEffect(() => {
+    const map = pending.current;
+    return () => {
+      for (const [slot, entry] of [...map.entries()]) {
+        clearTimeout(entry.timer);
+        send(slot);
+      }
+    };
+  }, [send]);
+
+  return { mutate };
+}
+
+/** "Show on my page" / "Hide from my page" on the artist's own collection. */
+export function useToggleCollectionPublic(collectionId: string) {
+  return useOptimisticToggle<ArtistCollectionDetail | undefined, { isPublic: boolean }, ArtistCollection>({
+    queryKey: () => ["artist-collection", collectionId],
+    apply: (prev, { isPublic }) => (prev ? { ...prev, isPublic } : prev),
+    read: (c) => ({ isPublic: Boolean(c?.isPublic) }),
+    request: ({ isPublic }) =>
+      api.patch<unknown>(`artist/collections/${collectionId}`, { isPublic }).then(unwrap<ArtistCollection>),
+    settle: (qc, c) => {
+      qc.setQueryData<ArtistCollectionDetail>(["artist-collection", c.id], (prev) => (prev ? { ...prev, ...c } : prev));
+      qc.invalidateQueries({ queryKey: ["artist-collections"] });
+    },
+  });
+}
+
+function settleDropType(qc: QueryClient, type: DropType) {
+  qc.setQueryData(["drop-type", type.code], (prev: DropType | undefined) => ({
+    ...type,
+    dropCount: type.dropCount ?? prev?.dropCount,
+  }));
+  qc.invalidateQueries({ queryKey: ["drop-types"] });
+}
+
+/** Deactivate / re-activate a drop type. */
+export function useToggleDropTypeActive(code: string) {
+  return useOptimisticToggle<DropType | undefined, { isActive: boolean }, DropType>({
+    queryKey: () => ["drop-type", code],
+    apply: (prev, { isActive }) => (prev ? { ...prev, isActive } : prev),
+    read: (t) => ({ isActive: Boolean(t?.isActive) }),
+    request: ({ isActive }) => api.patch<unknown>(`admin/drop-types/${code}`, { isActive }).then(unwrap<DropType>),
+    settle: settleDropType,
+  });
+}
+
+/** A dimension's Required / Custom values checkbox. */
+export function useToggleDimensionFlag(code: string) {
+  return useOptimisticToggle<
+    DropType | undefined,
+    { dimension: string; field: "required" | "allowCustomValues"; value: boolean },
+    DropType
+  >({
+    queryKey: () => ["drop-type", code],
+    apply: (prev, { dimension, field, value }) =>
+      prev
+        ? {
+            ...prev,
+            dimensions: prev.dimensions.map((d) => (d.code === dimension ? { ...d, [field]: value } : d)),
+          }
+        : prev,
+    read: (t, { dimension, field }) => ({
+      dimension,
+      field,
+      value: Boolean(t?.dimensions.find((d) => d.code === dimension)?.[field]),
+    }),
+    // Required and Custom values on each dimension are separate switches.
+    slot: ({ dimension, field }) => `drop-type:${code}:${dimension}:${field}`,
+    request: ({ dimension, field, value }) =>
+      api
+        .patch<unknown>(`admin/drop-types/${code}/dimensions/${dimension}`, { [field]: value })
+        .then(unwrap<DropType>),
+    settle: settleDropType,
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Artist collections — the artist's own (artist-collection-api.md)    */
 /*                                                                      */
 /* /artist/collections is always the signed-in artist — no artist id   */
@@ -3894,4 +4098,404 @@ export function useArtistStateAction(artistId: string) {
   return useArtistStaffWrite(artistId, ({ action, reason }: { action: ArtistStateAction; reason?: string }) =>
     api.post<unknown>(`admin/artists/${artistId}/${action}`, reason ? { reason } : {})
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Collection rewards — the artist's own (content/collection-rewards.md) */
+/*                                                                      */
+/* Every write answers with the whole reward; it replaces the cache.    */
+/* ------------------------------------------------------------------ */
+
+const rewardKey = (collectionId: string) => ["collection-reward", collectionId] as const;
+const rewardBase = (collectionId: string) => `artist/collections/${collectionId}/reward`;
+
+/** `null` when the collection has no reward yet. */
+export function useCollectionReward(collectionId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: rewardKey(collectionId ?? ""),
+    enabled: Boolean(collectionId),
+    queryFn: () =>
+      api.get<unknown>(rewardBase(collectionId!)).then(unwrap<CollectionReward | null>),
+  });
+}
+
+function useRewardWrite<V>(collectionId: string, request: (vars: V) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: V) => request(vars).then(unwrap<CollectionReward>),
+    onSuccess: (reward) => qc.setQueryData(rewardKey(collectionId), reward),
+    onError: (err) => {
+      // The list changed under us — show the current one.
+      if (err instanceof ApiError && err.code === "CONTENT_REWARD_ORDER_MISMATCH") {
+        qc.invalidateQueries({ queryKey: rewardKey(collectionId) });
+      }
+    },
+  });
+}
+
+/** Create, edit, pause / switch on, or restore a removed reward. */
+export function useSaveCollectionReward(collectionId: string) {
+  return useRewardWrite(collectionId, (body: SaveCollectionRewardInput) =>
+    api.put<unknown>(rewardBase(collectionId), body)
+  );
+}
+
+/** On / off for a reward — optimistic (see useOptimisticToggle). */
+export function useToggleCollectionReward(collectionId: string) {
+  return useOptimisticToggle<CollectionReward | null, { name: string; isActive: boolean }, CollectionReward>({
+    queryKey: () => rewardKey(collectionId),
+    apply: (prev, { isActive }) =>
+      prev ? { ...prev, isActive, status: prev.status === "REMOVED" ? "REMOVED" : isActive ? "ON" : "OFF" } : prev,
+    read: (r, { name }) => ({ name, isActive: Boolean(r?.isActive) }),
+    request: ({ name, isActive }) =>
+      api.put<unknown>(rewardBase(collectionId), { name, isActive }).then(unwrap<CollectionReward>),
+    settle: (qc, reward) => qc.setQueryData(rewardKey(collectionId), reward),
+  });
+}
+
+export function useRemoveCollectionReward(collectionId: string) {
+  return useRewardWrite(collectionId, () => api.delete<unknown>(rewardBase(collectionId)));
+}
+
+/**
+ * Where a set of reward files lives, and how a write lands in the cache.
+ * Collection rewards and a drop's content tiers share the same file routes
+ * under different bases (`…/items/upload-url`, `…/items`, `…/items/order`,
+ * `…/items/:itemId`), so the file UI is written once against this.
+ */
+export interface RewardFilesTarget {
+  /** e.g. `artist/collections/:id/reward` or `artist/drops/:id/content/:bundleId`. */
+  base: string;
+  /** Apply a write's response to the cache; `undefined` means "re-read it". */
+  settle: (qc: ReturnType<typeof useQueryClient>, data: unknown) => void;
+}
+
+export function collectionFilesTarget(collectionId: string): RewardFilesTarget {
+  return {
+    base: rewardBase(collectionId),
+    settle: (qc, data) =>
+      data === undefined
+        ? void qc.invalidateQueries({ queryKey: rewardKey(collectionId) })
+        : qc.setQueryData(rewardKey(collectionId), data as CollectionReward),
+  };
+}
+
+function useFilesWrite<V>(target: RewardFilesTarget, request: (vars: V) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: V) => request(vars).then(unwrap<unknown>),
+    onSuccess: (data) => target.settle(qc, data),
+  });
+}
+
+/**
+ * Adding a file, all three steps:
+ *   1. POST …/items/upload-url  — presign for this type and exact size
+ *   2. PUT  <uploadUrl>          — the bytes straight to S3, with exactly
+ *      `requiredHeaders`; XHR rather than fetch, for upload progress
+ *   3. POST …/items { assetId }  — only after S3 answered 2xx
+ */
+export function useAddRewardItem(target: RewardFilesTarget) {
+  return useFilesWrite(
+    target,
+    async ({
+      file,
+      title,
+      onProgress,
+    }: {
+      file: File;
+      title?: string;
+      onProgress?: (fraction: number) => void;
+    }) => {
+      const presigned = await api
+        .post<unknown>(`${target.base}/items/upload-url`, {
+          fileName: file.name,
+          mimeType: file.type,
+          sizeBytes: file.size,
+        })
+        .then(unwrap<RewardUploadUrl>);
+
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", presigned.uploadUrl);
+        for (const [k, v] of Object.entries(presigned.requiredHeaders ?? {})) xhr.setRequestHeader(k, v);
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) onProgress?.(e.loaded / e.total);
+        };
+        xhr.onload = () =>
+          xhr.status >= 200 && xhr.status < 300
+            ? resolve()
+            : reject(
+                new ApiError(
+                  xhr.status,
+                  "STORAGE_UPLOAD_FAILED",
+                  xhr.status === 403
+                    ? "Storage rejected the upload — the link expired or the file changed. Try again."
+                    : `The storage service rejected the upload (${xhr.status}).`,
+                  null
+                )
+              );
+        xhr.onerror = () =>
+          reject(new ApiError(0, "STORAGE_UPLOAD_FAILED", "The upload didn't reach storage. Check the connection and try again.", null));
+        xhr.send(file);
+      });
+      onProgress?.(1);
+
+      return api.post<unknown>(`${target.base}/items`, {
+        assetId: presigned.assetId,
+        ...(title?.trim() ? { title: title.trim() } : {}),
+      });
+    }
+  );
+}
+
+/** `title: null` falls back to the file name. */
+export function useRenameRewardItem(target: RewardFilesTarget) {
+  return useFilesWrite(target, ({ itemId, title }: { itemId: string; title: string | null }) =>
+    api.patch<unknown>(`${target.base}/items/${itemId}`, { title })
+  );
+}
+
+/** Every item id, once, in the new order. */
+export function useReorderRewardItems(target: RewardFilesTarget) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (itemIds: string[]) =>
+      api.put<unknown>(`${target.base}/items/order`, { itemIds }).then(unwrap<unknown>),
+    onSuccess: (data) => target.settle(qc, data),
+    // The list changed under us — re-read it.
+    onError: (err) => {
+      if (err instanceof ApiError && err.code === "CONTENT_REWARD_ORDER_MISMATCH") {
+        target.settle(qc, undefined);
+      }
+    },
+  });
+}
+
+export function useRemoveRewardItem(target: RewardFilesTarget) {
+  return useFilesWrite(target, (itemId: string) =>
+    api.delete<unknown>(`${target.base}/items/${itemId}`)
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Rewards — admin monitoring and moderation (admin-rewards-api.md)    */
+/*                                                                      */
+/* content-unlock:manage at GLOBAL scope. Moderation actions answer     */
+/* with the detail, which replaces the cache.                           */
+/* ------------------------------------------------------------------ */
+
+const adminRewardKey = (id: string) => ["admin-reward", id] as const;
+
+export function useAdminRewards(params: AdminRewardFilters) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-rewards", params],
+    placeholderData: (prev) => prev,
+    queryFn: () => api.get<Paginated<AdminReward>>("admin/rewards", { ...params }),
+  });
+}
+
+/**
+ * Rewards HitBox has switched off or removed — the sidebar badge. One row of
+ * the LOCKED filter, total read; re-read every 60 s. Shares the
+ * "admin-rewards" prefix, so every moderation action refreshes it.
+ */
+export function useLockedRewardCount(enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-rewards", "locked-count"],
+    enabled,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    queryFn: () =>
+      api
+        .get<Paginated<AdminReward>>("admin/rewards", { status: "LOCKED", page: 1, limit: 1 })
+        .then((r) => r.total),
+  });
+}
+
+export function useAdminRewardSummary() {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-rewards-summary"],
+    queryFn: () => api.get<unknown>("admin/rewards/summary").then(unwrap<AdminRewardSummary>),
+  });
+}
+
+/**
+ * The detail carries signed file links that expire after `expiresIn`
+ * seconds (an hour). They're never kept: the query is dropped as soon as
+ * nobody shows it, and re-read a minute before the links run out.
+ */
+export function useAdminReward(rewardId: string | undefined) {
+  return useQuery({
+    queryKey: adminRewardKey(rewardId ?? ""),
+    enabled: Boolean(rewardId),
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+    refetchInterval: (q) => {
+      const items = (q.state.data as AdminRewardDetail | undefined)?.items ?? [];
+      const ttl = Math.min(...items.map((i) => i.expiresIn || 3600), 3600);
+      return Math.max(60, ttl - 60) * 1000;
+    },
+    queryFn: () => api.get<unknown>(`admin/rewards/${rewardId}`).then(unwrap<AdminRewardDetail>),
+  });
+}
+
+export function useRewardUnlocks(
+  rewardId: string | undefined,
+  params: { status?: "LIVE" | "ENDED"; page?: number; limit?: number }
+) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-reward-unlocks", rewardId, params],
+    enabled: Boolean(rewardId),
+    placeholderData: (prev) => prev,
+    queryFn: () =>
+      api.get<Paginated<RewardUnlockRow>>(`admin/rewards/${rewardId}/unlocks`, { ...params }),
+  });
+}
+
+/** switch-off / remove need a reason (shown to the artist); switch-on / restore take one optionally. */
+export function useModerateReward(rewardId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ action, reason }: { action: RewardModerationAction; reason?: string }) =>
+      api
+        .post<unknown>(`admin/rewards/${rewardId}/${action}`, reason ? { reason } : {})
+        .then(unwrap<AdminRewardDetail>),
+    onSuccess: (detail) => {
+      qc.setQueryData(adminRewardKey(rewardId), detail);
+      qc.invalidateQueries({ queryKey: ["admin-rewards"] });
+      qc.invalidateQueries({ queryKey: ["admin-rewards-summary"] });
+      qc.invalidateQueries({ queryKey: ["audit-trail"] });
+    },
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Drop content — the artist's tiers (drop-content.md §3)               */
+/*                                                                      */
+/* Every write answers with ONE tier; the drop's whole content is       */
+/* re-read rather than spliced, since a write can move counts on others.*/
+/* ------------------------------------------------------------------ */
+
+const dropContentKey = (dropId: string) => ["artist-drop-content", dropId] as const;
+const dropContentBase = (dropId: string) => `artist/drops/${dropId}/content`;
+
+export function useArtistDropContent(dropId: string | undefined) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: dropContentKey(dropId ?? ""),
+    enabled: Boolean(dropId),
+    queryFn: () => api.get<unknown>(dropContentBase(dropId!)).then(unwrap<ArtistDropContent>),
+  });
+}
+
+function useDropContentWrite<V>(dropId: string, request: (vars: V) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: V) => request(vars).then(unwrap<DropContentTier>),
+    onSuccess: () => qc.invalidateQueries({ queryKey: dropContentKey(dropId) }),
+  });
+}
+
+export function useCreateDropContentTier(dropId: string) {
+  return useDropContentWrite(dropId, (body: CreateDropContentTierInput) =>
+    api.post<unknown>(dropContentBase(dropId), body)
+  );
+}
+
+export function useUpdateDropContentTier(dropId: string) {
+  return useDropContentWrite(
+    dropId,
+    ({ bundleId, ...body }: UpdateDropContentTierInput & { bundleId: string }) =>
+      api.patch<unknown>(`${dropContentBase(dropId)}/${bundleId}`, body)
+  );
+}
+
+/** Removed tiers are kept with their files and serials, so they can be restored. */
+export function useRemoveDropContentTier(dropId: string) {
+  return useDropContentWrite(dropId, (bundleId: string) =>
+    api.delete<unknown>(`${dropContentBase(dropId)}/${bundleId}`)
+  );
+}
+
+export function useRestoreDropContentTier(dropId: string) {
+  return useDropContentWrite(dropId, (bundleId: string) =>
+    api.post<unknown>(`${dropContentBase(dropId)}/${bundleId}/restore`, {})
+  );
+}
+
+/** The shared file UI, pointed at one tier. */
+export function dropTierFilesTarget(dropId: string, bundleId: string): RewardFilesTarget {
+  return {
+    base: `${dropContentBase(dropId)}/${bundleId}`,
+    settle: (qc) => void qc.invalidateQueries({ queryKey: dropContentKey(dropId) }),
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Drop content — HitBox choosing exclusive SKUs (drop-content.md §4A) */
+/*                                                                      */
+/* content-unlock:manage at GLOBAL scope. Unit by unit, on minted SKUs, */
+/* and only while each is UNCLAIMED with no owner.                      */
+/* ------------------------------------------------------------------ */
+
+const adminDropContentBase = (dropId: string) => `admin/rewards/drops/${dropId}`;
+
+export function useAdminDropContent(dropId: string | undefined, enabled = true) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-drop-content", dropId],
+    enabled: Boolean(dropId) && enabled,
+    queryFn: () =>
+      api.get<unknown>(`${adminDropContentBase(dropId!)}/content`).then(unwrap<AdminDropContent>),
+  });
+}
+
+export function useAdminDropUnits(
+  dropId: string | undefined,
+  params: AdminDropUnitFilters,
+  enabled = true
+) {
+  return useQuery({
+    ...baseOptions,
+    queryKey: ["admin-drop-units", dropId, params],
+    enabled: Boolean(dropId) && enabled,
+    queryFn: () =>
+      api.get<MetaPaginated<AdminDropUnit>>(`${adminDropContentBase(dropId!)}/units`, { ...params }),
+    placeholderData: (prev) => prev,
+  });
+}
+
+/** Adds or removes SKUs on an exclusive tier — both all-or-nothing and idempotent. */
+export function useChangeExclusiveUnits(dropId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      bundleId,
+      skuIds,
+      action,
+    }: {
+      bundleId: string;
+      skuIds: string[];
+      action: "add" | "remove";
+    }) =>
+      api
+        .post<unknown>(
+          `${adminDropContentBase(dropId)}/content/${bundleId}/units${action === "remove" ? "/remove" : ""}`,
+          { skuIds }
+        )
+        .then(unwrap<ExclusiveUnitsResult>),
+    // Refresh on failure too: a 409 means a unit's claim state moved.
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["admin-drop-content", dropId] });
+      qc.invalidateQueries({ queryKey: ["admin-drop-units", dropId] });
+      qc.invalidateQueries({ queryKey: dropContentKey(dropId) });
+    },
+  });
 }
