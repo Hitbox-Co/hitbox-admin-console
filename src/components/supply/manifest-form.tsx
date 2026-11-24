@@ -12,13 +12,12 @@ import {
   entriesFromRows,
   entriesToCsv,
   entryIndexes,
-  formatManifest,
   parseManifest,
   type ManifestEntry,
 } from "@/lib/manifest";
 import { chipProgressText } from "@/components/supply/consignment-lifecycle";
 import { ManifestRows } from "@/components/supply/manifest-rows";
-import { Badge, Button, Field, Mono, Panel, Segmented, Textarea } from "@/components/ui/primitives";
+import { Badge, Button, Field, Mono, Panel } from "@/components/ui/primitives";
 import {
   SUPPLY_MANIFEST_MAX,
   type SupplyBatch,
@@ -78,11 +77,9 @@ export function ManifestForm({
   commitBlockedReason?: string;
   onCommitted?: (registered: number) => void;
 }) {
-  // Two ways in: one chip per row (UID + its three keys), or pasted text / a
-  // CSV. Both end up as the same manifest text and the same checks.
-  const [mode, setMode] = React.useState<"rows" | "text">("rows");
+  // One way in: the chip table (UID + its three keys). A CSV is loaded INTO the
+  // table — so there is one place to read, check and fix every row.
   const [entries, setEntries] = React.useState<ManifestEntry[]>(() => [emptyEntry()]);
-  const [raw, setRaw] = React.useState("");
   const [pending, setPending] = React.useState(false);
   const [outcome, setOutcome] = React.useState<ManifestOutcome | null>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
@@ -94,10 +91,7 @@ export function ManifestForm({
     batchLines.length === 1 ? batchLines[0].variantId : ""
   );
 
-  const source = React.useMemo(
-    () => (mode === "rows" ? entriesToCsv(entries) : raw),
-    [mode, entries, raw]
-  );
+  const source = React.useMemo(() => entriesToCsv(entries), [entries]);
   const parsed = React.useMemo(
     () =>
       parseManifest(source, {
@@ -109,7 +103,6 @@ export function ManifestForm({
   // Manifest row N is the N-th non-blank editor row.
   const rowProblems = React.useMemo(() => {
     const out = new Map<number, string[]>();
-    if (mode !== "rows") return out;
     const indexes = entryIndexes(entries);
     for (const p of parsed.problems) {
       const at = indexes[p.row - 1];
@@ -117,27 +110,10 @@ export function ManifestForm({
       out.set(at, [...(out.get(at) ?? []), p.message]);
     }
     return out;
-  }, [mode, entries, parsed.problems]);
+  }, [entries, parsed.problems]);
 
-  const switchMode = (next: "rows" | "text") => {
-    if (next === mode) return;
-    if (next === "text") {
-      setRaw(entriesToCsv(entries));
-    } else {
-      // Text with problems would lose the cells it could not read.
-      if (parsed.problems.length > 0) {
-        toast.error("Fix the rows listed below first, then switch to rows.");
-        return;
-      }
-      setEntries(parsed.rows.length > 0 ? entriesFromRows(parsed.rows) : [emptyEntry()]);
-    }
-    setMode(next);
-    setOutcome(null);
-  };
-  const resetInput = (rows: typeof parsed.rows = []) => {
-    if (mode === "rows") setEntries(rows.length > 0 ? entriesFromRows(rows) : [emptyEntry()]);
-    else setRaw(rows.length > 0 ? formatManifest(rows, batchLines) : "");
-  };
+  const resetInput = (rows: typeof parsed.rows = []) =>
+    setEntries(rows.length > 0 ? entriesFromRows(rows) : [emptyEntry()]);
   // Lines this manifest would overfill — refused with SUPPLY_LINE_QUANTITY_EXCEEDED.
   const overfull = React.useMemo(() => {
     const counts = countByVariant(parsed.rows);
@@ -160,22 +136,20 @@ export function ManifestForm({
     overDeclared ||
     pending;
 
-  // A clean file opens as rows; one with problems opens as text, so nothing
-  // the parser could not read is dropped before the person sees it.
+  // The file's rows land in the table; anything wrong is shown under its row.
   const loadFile = async (file: File) => {
     const text = await file.text();
     const check = parseManifest(text, {
       lines: batchLines,
       defaultVariantId: defaultVariantId || undefined,
     });
-    if (check.problems.length === 0 && check.rows.length > 0) {
-      setEntries(entriesFromRows(check.rows));
-      setMode("rows");
-    } else {
-      setRaw(text);
-      setMode("text");
+    if (check.rows.length === 0) {
+      toast.error("No chip rows found in that file. It needs a header line with a uid column.");
+      return;
     }
+    setEntries(entriesFromRows(check.rows));
     setOutcome(null);
+    toast.success(`${formatNumber(check.rows.length)} rows loaded${check.problems.length ? ` — ${check.problems.length} to fix` : ""}`);
   };
 
   const run = async (dryRun: boolean) => {
@@ -247,6 +221,18 @@ export function ManifestForm({
         <span>
           {disabledReason ??
             "This consignment has been decided, and a decided consignment takes no more rows. Appending would change counts somebody has already signed off."}
+        </span>
+      </p>
+    );
+  }
+
+  if (remaining === 0 && batch.rowsReceived > 0 && !outcome) {
+    return (
+      <p className="flex items-start gap-2 rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--surface-2)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--text-2)]">
+        <Lock className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span>
+          All {formatNumber(batch.quantity)} declared chips are registered, so there&rsquo;s nothing left to add. The
+          declared quantity is a ceiling — a carton that holds more needs a new consignment.
         </span>
       </p>
     );
@@ -327,21 +313,8 @@ export function ManifestForm({
         </>
       ) : null}
 
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-[12px] font-medium text-[var(--text-2)]">Chips</span>
-        <Segmented
-          size="sm"
-          value={mode}
-          onChange={switchMode}
-          options={[
-            { value: "rows", label: "Row by row" },
-            { value: "text", label: "Paste text" },
-          ]}
-        />
-      </div>
       <Field
-        label={mode === "rows" ? "One chip per row: UID and its Key 00 / 01 / 02" : "Chip UIDs"}
-        htmlFor={mode === "rows" ? undefined : "manifest"}
+        label="New chips — one per row: UID and its Key 00 / 01 / 02"
         hint={`${formatNumber(count)} read · ${formatNumber(
           remaining
         )} still declared on this consignment · ${
@@ -350,29 +323,15 @@ export function ManifestForm({
             : `at most ${formatNumber(SUPPLY_MANIFEST_MAX)} per call`
         }`}
       >
-        {mode === "rows" ? (
-          <ManifestRows
-            entries={entries}
-            onChange={(next) => {
-              setEntries(next);
-              setOutcome(null);
-            }}
-            lines={batchLines}
-            problems={rowProblems}
-          />
-        ) : (
-          <Textarea
-            id="manifest"
-            rows={10}
-            value={raw}
-            onChange={(e) => {
-              setRaw(e.target.value);
-              setOutcome(null);
-            }}
-            placeholder={"04:A3:9B:2C:5D:6E:80\n04A39B2C5D6E81\n04-a3-9b-2c-5d-6e-82"}
-            className="font-mono text-[12px]"
-          />
-        )}
+        <ManifestRows
+          entries={entries}
+          onChange={(next) => {
+            setEntries(next);
+            setOutcome(null);
+          }}
+          lines={batchLines}
+          problems={rowProblems}
+        />
       </Field>
 
       <input
@@ -395,9 +354,7 @@ export function ManifestForm({
             fix before sending
           </p>
           <p className="mt-0.5 text-[11px] text-[var(--text-3)]">
-            {mode === "rows"
-              ? "Each problem is also shown under its row. Empty rows are skipped and not counted."
-              : "Rows count from the first line under the header."}
+            Each problem is also shown under its row. Empty rows are skipped and not counted.
           </p>
           <ul className="mt-1.5 max-h-32 space-y-0.5 overflow-y-auto">
             {parsed.problems.slice(0, 50).map((p, i) => (

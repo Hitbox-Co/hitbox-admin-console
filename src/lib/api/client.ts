@@ -206,7 +206,13 @@ export class ApiError extends Error {
       case "SUPPLY_VARIANT_NOT_IN_BATCH":
         return "A row names a variant that isn't one of this consignment's lines. Nothing was written.";
       case "SUPPLY_LINE_QUANTITY_EXCEEDED":
-        return "That would put more chips on a variant than its line declares. Nothing was written.";
+        return this.message || "That would put more chips on a variant than its line declares. Nothing was written.";
+      case "SUPPLY_LINES_QUANTITY_MISMATCH":
+        return this.message || "The variant lines must add up to the consignment's declared quantity.";
+      case "SUPPLY_LINES_LOCKED":
+        return this.message || "A registered chip is on a variant those lines would drop. Keep that variant on a line.";
+      case "SUPPLY_VARIANT_LINES_REQUIRED":
+        return this.message || "This drop's type needs variants, so the consignment must be booked per variant.";
 
       /* Unit inventory. */
       case "SKUS_BATCH_REJECTED":

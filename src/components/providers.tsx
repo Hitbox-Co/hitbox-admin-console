@@ -43,15 +43,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <Toaster
           position="bottom-right"
           theme="dark"
-          toastOptions={{
-            style: {
-              background: "var(--surface-3)",
-              border: "1px solid var(--hairline-strong)",
-              color: "var(--text-1)",
-              borderRadius: "8px",
-              fontSize: "13px",
-            },
-          }}
+          // Colours per kind (success green, warning yellow, error red) live in
+          // globals.css under [data-sonner-toast] — inline styles would beat them.
+          toastOptions={{ className: "hb-toast" }}
         />
       </TooltipPrimitive.Provider>
     </QueryClientProvider>

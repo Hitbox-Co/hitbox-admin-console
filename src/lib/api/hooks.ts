@@ -176,13 +176,10 @@ import type {
   ReleaseReopenInput,
   ResaleListResponse,
   AssetType,
-  BindTagsInput,
-  BindTagsResult,
   ProductGallery,
   ProductImageInput,
   ProductPrice,
   ProductPriceInput,
-  RetagUnitInput,
   UploadUrlResponse,
   MintResult,
   MintSkusInput,
@@ -1825,47 +1822,12 @@ export function useUploadAsset() {
 /* NFC tag manifests — sku-api.md §3a                                   */
 /* ------------------------------------------------------------------ */
 
-/**
- * Bind tags to already-minted units from a vendor manifest.
- *
- * This is the NORMAL path for any real edition: units are minted when the drop
- * is planned, and the physical tags arrive weeks later in boxes with a CSV.
- * Passing 500 UIDs to the mint call would mean knowing all 500 before a single
- * unit exists.
- *
- * Capability is `nfc-tag-claim:manage`, deliberately NOT the minting one — a
- * Drop Manager mints the edition; whoever holds tag custody binds the tags.
+/*
+ * No hooks for POST /admin/products/:id/skus/tags (bind tags) or
+ * PATCH /admin/skus/:id/tag (re-tag): those routes take a bare UID with no
+ * NTAG 424 DNA keys. Chips enter the platform only through a consignment —
+ * its manifest carries the keys, and accepting it mints the chipped units.
  */
-export function useBindTags(productId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (payload: BindTagsInput) =>
-      api
-        .post<unknown>(`admin/products/${productId}/skus/tags`, payload)
-        .then(unwrap<BindTagsResult>),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["product-skus", productId] });
-      qc.invalidateQueries({ queryKey: ["product-sku-summary", productId] });
-      qc.invalidateQueries({ queryKey: ["admin-product", productId] });
-    },
-  });
-}
-
-/** One unit, same rules — a chip failed, or an item was re-tagged after repair. */
-export function useRetagUnit(skuId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (payload: RetagUnitInput) =>
-      api
-        .patch<unknown>(`admin/skus/${skuId}/tag`, payload)
-        .then(unwrap<SkuUnitDetail>),
-    onSuccess: (unit) => {
-      qc.setQueryData(["sku", skuId], unit);
-      qc.invalidateQueries({ queryKey: ["product-skus"] });
-      qc.invalidateQueries({ queryKey: ["product-sku-summary"] });
-    },
-  });
-}
 
 /* ------------------------------------------------------------------ */
 /* Finance — royalties, payouts, adjustments, the platform ledger      */
@@ -2830,6 +2792,25 @@ export function usePendingConsignmentCount(enabled = true) {
 }
 
 /** One consignment, live — carries `lines` and the `allotment` coverage block. */
+/**
+ * PATCH /admin/supply/batches/:batchId/lines — correct a consignment's variant
+ * lines while it is still open (UPLOADED / VALIDATED), instead of rejecting it
+ * and booking again. Lines replace the old ones and must add up to the
+ * declared quantity; chips registered without a variant are assigned to the
+ * lines oldest first. Answers with the consignment.
+ */
+export function useUpdateBatchLines(batchId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (lines: { variantId: string; quantity: number }[]) =>
+      api.patch<unknown>(`admin/supply/batches/${batchId}/lines`, { lines }).then(unwrap<SupplyBatch>),
+    onSuccess: (batch) => {
+      qc.setQueryData(["supply-batch", batchId], batch);
+      invalidateSupply(qc);
+    },
+  });
+}
+
 export function useSupplyBatch(batchId: string | undefined) {
   return useQuery({
     ...baseOptions,
