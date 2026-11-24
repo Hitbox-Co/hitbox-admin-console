@@ -9,14 +9,14 @@ import {
  * Client-side parsing of a vendor's chip manifest.
  *
  * Nothing parses spreadsheets server-side, so turning the vendor's file into
- * `tags[]` is the console's job. Two shapes are accepted:
- *
- *  - a bare list, one UID per line (commas and semicolons also split), and
- *  - a CSV whose first line is a header naming a `uid` column, with optional
- *    `qcStatus` and `qcNotes` columns — the vendor's own factory QC — a
- *    `variant` (or `variantCode`) column, and `key0`, `key1`, `key2` columns:
- *    the keys the vendor wrote onto each chip (all three or none per row).
- *    Keys are sent once and wrapped by the API; nothing here keeps them.
+ * `tags[]` is the console's job. The file is a CSV whose first line is a
+ * header naming a `uid` column and `key0`, `key1`, `key2` columns — the keys
+ * the vendor wrote onto each chip, REQUIRED on every row: a chip without them
+ * can never be verified, so the unit minted around it could never be claimed.
+ * Optional `qcStatus` / `qcNotes` (the vendor's own factory QC) and `variant`
+ * (or `variantCode`) columns may follow. A bare list of UIDs is still parsed,
+ * but every row is reported as missing its keys.
+ * Keys are sent once and wrapped by the API; nothing here keeps them.
  *
  * A consignment split into lines (a by-variant drop) needs every row to name
  * its variant. The file names it by variantCode — what is on the vendor's
@@ -112,6 +112,8 @@ export function parseManifest(raw: string, opts: ManifestOptions = {}): ParsedMa
   if (uidCol === -1) {
     for (const uid of raw.split(/[\r\n,;]+/).map((l) => l.trim()).filter(Boolean)) {
       rows.push({ uid });
+      // A bare list has no key columns, and every chip needs its keys.
+      problems.push({ row: rows.length, message: "no keys — use a CSV with uid, key0, key1, key2 columns" });
     }
   } else {
     const qcCol = header.findIndex((h) => h === "qcstatus" || h === "qc_status" || h === "qc");
@@ -160,7 +162,12 @@ export function parseManifest(raw: string, opts: ManifestOptions = {}): ParsedMa
         }
         [row.key0, row.key1, row.key2] = keys;
       } else if (given > 0) {
-        problems.push({ row: n, message: "give all three keys (key0, key1, key2) or none" });
+        problems.push({ row: n, message: "give all three keys (key0, key1, key2)" });
+      } else {
+        // Every new chip arrives with its keys. Without them the server has
+        // nothing to check a tap against, so the unit minted around it on
+        // accept could never be claimed in the app.
+        problems.push({ row: n, message: "no keys — every chip needs key0, key1 and key2" });
       }
       rows.push(row);
     });
@@ -182,6 +189,14 @@ export function parseManifest(raw: string, opts: ManifestOptions = {}): ParsedMa
     const key = normalizeUid(r.uid);
     if (!/^[0-9A-F]{8,64}$/.test(key)) {
       problems.push({ row: n, message: "not a hex chip UID of 8–64 characters" });
+      return;
+    }
+    // A row with keys is an NTAG 424 DNA chip, whose UID is 7 bytes. The app
+    // sends it as `u` (14 hex) and the server only verifies a tap whose UID is
+    // exactly that length, so any other length would register a chip that can
+    // never be claimed.
+    if (r.key0 && key.length !== 14) {
+      problems.push({ row: n, message: "an NTAG 424 DNA UID is 14 hex characters (7 bytes) — check this one" });
       return;
     }
     const first = seen.get(key);

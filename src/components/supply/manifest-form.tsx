@@ -267,11 +267,13 @@ export function ManifestForm({
           , <Mono className="text-[10px]">qc_status</Mono>,{" "}
           <Mono className="text-[10px]">qc_notes</Mono>
           {split ? "" : " (no variant column — this consignment has no variants)"}, and
-          optionally the keys written onto each chip:{" "}
+          the keys written onto each chip, required on every row:{" "}
           <Mono className="text-[10px]">key0</Mono>,{" "}
           <Mono className="text-[10px]">key1</Mono>,{" "}
-          <Mono className="text-[10px]">key2</Mono> (32 hex each, all three or
-          none — stored encrypted, never shown again). A
+          <Mono className="text-[10px]">key2</Mono> (32 hex each — stored
+          encrypted, never shown again). The UID is the chip&rsquo;s 14-hex UID.
+          Once the consignment is accepted, each chip becomes an unclaimed unit
+          that can be claimed in the app. A
           UID may contain <Mono className="text-[10px]">:</Mono>,{" "}
           <Mono className="text-[10px]">-</Mono> or spaces; an empty qc_status
           means PENDING. Dry run first — it checks everything and writes
@@ -587,6 +589,21 @@ function ManifestResult({
           <Figure label="Passed / pending QC" value={outcome.batch.rowsAccepted} />
           <Figure label="Failed QC" value={outcome.batch.rowsRejected} />
         </div>
+      ) : null}
+
+      {/* A chip registered without keys gets no NfcTagKey row, so every tap of
+          it is refused (NO_KEYS) and it can never be claimed in the app.
+          This console has no screen to add keys afterwards. */}
+      {outcome.registered > outcome.withKeys ? (
+        <p className="flex items-start gap-2 border-t border-[var(--hairline)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-1)]">
+          <AlertTriangle className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--warning)]" aria-hidden />
+          <span>
+            {formatNumber(outcome.registered - outcome.withKeys)}{" "}
+            {outcome.registered - outcome.withKeys === 1 ? "chip has" : "chips have"} no keys
+            {outcome.dryRun ? " in this file" : ""}. The app can&rsquo;t verify or claim a chip
+            until its key0, key1 and key2 are on record — include them in the manifest.
+          </span>
+        </p>
       ) : null}
 
       {outcome.batch && !outcome.dryRun ? (
