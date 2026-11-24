@@ -24,17 +24,18 @@ import {
   useMyCollection,
   useRemoveCollectionDrop,
   useRemoveCollectionHero,
-  useUpdateCollection,
+  useToggleCollectionPublic,
   useUploadCollectionHero,
 } from "@/lib/api/hooks";
 import { ARTIST_IMAGE_MAX_BYTES, ARTIST_IMAGE_TYPES, prepareImage } from "@/lib/image-prep";
 import { formatDate, formatNumber } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
-import { Badge, Button, Mono, Panel, Skeleton, Tooltip } from "@/components/ui/primitives";
+import { Badge, Button, Mono, Panel, Segmented, Skeleton, Tooltip } from "@/components/ui/primitives";
 import { ErrorState } from "@/components/ui/states";
 import { ConfirmDialog } from "@/components/packing/packing-ui";
 import { CollectionFormDialog, useRestoreFlow } from "./collection-dialogs";
 import { AddDropsDialog } from "./add-drops-dialog";
+import { CollectionRewardTab } from "./collection-reward-tab";
 import { DropMonogram } from "./drop-tile";
 import { RewardPointsBadge } from "@/components/products/reward-points";
 import { BackToCollections, blockedDeleteCopy, useCollectionsLocked } from "./my-collections";
@@ -49,8 +50,9 @@ export function MyCollectionDetailView({ collectionId }: { collectionId: string 
   const profileLocked = useCollectionsLocked();
   const [editing, setEditing] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
+  const [tab, setTab] = React.useState<"drops" | "reward">("drops");
   const archive = useArchiveCollection();
-  const update = useUpdateCollection(collectionId);
+  const publicToggle = useToggleCollectionPublic(collectionId);
   const restoreFlow = useRestoreFlow();
 
   usePageChrome({
@@ -82,14 +84,19 @@ export function MyCollectionDetailView({ collectionId }: { collectionId: string 
   const canEdit = !profileLocked && (c.actions?.canEdit ?? !archived);
   const blocked = blockedDeleteCopy(c);
 
-  const togglePublic = () =>
-    update.mutate(
-      { isPublic: !c.isPublic },
+  // Flips at once; the save runs behind it and is undone if it fails.
+  const togglePublic = () => {
+    const next = !c.isPublic;
+    publicToggle.mutate(
+      { isPublic: next },
       {
-        onSuccess: (r) => toast.success(r.isPublic ? "Now on your page" : "Hidden from your page — it's a draft again"),
-        onError: (err) => toast.error(err instanceof ApiError ? err.friendly : "Could not change visibility."),
+        onError: (err) =>
+          toast.error(
+            `${next ? "Couldn't show it on your page" : "Couldn't hide it"} — ${err instanceof ApiError ? err.friendly : "the change was undone."}`
+          ),
       }
     );
+  };
 
   return (
     <div className="space-y-4">
@@ -133,7 +140,7 @@ export function MyCollectionDetailView({ collectionId }: { collectionId: string 
           </div>
           {canEdit ? (
             <div className="flex flex-wrap gap-2">
-              <Button variant={c.isPublic ? "secondary" : "primary"} size="sm" loading={update.isPending} onClick={togglePublic}>
+              <Button variant={c.isPublic ? "secondary" : "primary"} size="sm" onClick={togglePublic}>
                 {c.isPublic ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                 {c.isPublic ? "Hide from my page" : "Show on my page"}
               </Button>
@@ -152,7 +159,20 @@ export function MyCollectionDetailView({ collectionId }: { collectionId: string 
         </div>
       </Panel>
 
-      <DropsSection c={c} editable={canEdit} />
+      <Segmented
+        value={tab}
+        onChange={setTab}
+        options={[
+          { value: "drops", label: `Drops · ${formatNumber(c.counts.activeDrops)}` },
+          { value: "reward", label: "Reward" },
+        ]}
+      />
+
+      {tab === "reward" ? (
+        <CollectionRewardTab collectionId={c.id} collectionName={c.name} editable={canEdit} />
+      ) : (
+        <DropsSection c={c} editable={canEdit} />
+      )}
 
       {editing ? <CollectionFormDialog collection={c} onClose={() => setEditing(false)} /> : null}
       <ConfirmDialog

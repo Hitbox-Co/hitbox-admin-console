@@ -3980,3 +3980,263 @@ export interface UpdateRewardPointsInput {
   /** Up to 500 characters, kept in the audit trail. */
   reason?: string;
 }
+
+/* ------------------------------------------------------------------ */
+/* Collection rewards (content/collection-rewards.md §3)               */
+/* ------------------------------------------------------------------ */
+
+export type RewardItemKind = "VIDEO" | "AUDIO" | "GIF" | "IMAGE";
+export type CollectionRewardStatus = "ON" | "OFF" | "REMOVED";
+
+export interface CollectionRewardItem {
+  id: string;
+  publicCode: string;
+  assetId: string;
+  kind: RewardItemKind;
+  /** The artist's title, or the file name when none was given. */
+  title: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  position: number;
+  /** Signed preview link, valid for expiresIn seconds. Never stored. */
+  url: string | null;
+  expiresIn: number;
+}
+
+/** GET …/reward — and what every write answers with. */
+export interface CollectionReward {
+  id: string;
+  publicCode: string;
+  collectionId: string;
+  name: string;
+  description: string | null;
+  status: CollectionRewardStatus;
+  isActive: boolean;
+  archivedAt: string | null;
+  items: CollectionRewardItem[];
+  itemCounts: Record<RewardItemKind, number>;
+  /** Buyers who have it unlocked right now. */
+  unlockedCount: number;
+  /** Released drops a buyer must collect. */
+  requiredDrops: number;
+  /** Set while a HitBox switch-off or removal stands. */
+  moderation?: RewardModeration;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RewardModeration {
+  locked: boolean;
+  reason: string | null;
+  lockedAt: string | null;
+  /** Admin views only — the staff member behind the last moderation change. */
+  byId?: string | null;
+}
+
+export interface SaveCollectionRewardInput {
+  name: string;
+  description?: string | null;
+  isActive?: boolean;
+}
+
+/** POST …/reward/items/upload-url */
+export interface RewardUploadUrl {
+  assetId: string;
+  uploadUrl: string;
+  expiresIn: number;
+  /** Send exactly these with the PUT. */
+  requiredHeaders: Record<string, string>;
+  kind: RewardItemKind;
+}
+
+/* Admin monitoring and moderation (content/admin-rewards-api.md) */
+
+export type AdminRewardStatusFilter = "ON" | "OFF" | "REMOVED" | "LOCKED";
+
+/** GET /admin/rewards — one row. */
+export interface AdminReward {
+  id: string;
+  publicCode: string;
+  name: string;
+  status: CollectionRewardStatus;
+  isActive: boolean;
+  archivedAt: string | null;
+  collection: {
+    id: string;
+    name: string;
+    slug: string;
+    heroImageUrl: string | null;
+    artist: { id: string; name: string; slug: string };
+    /** The artist deleted the collection — the reward can't be opened. */
+    deleted: boolean;
+  };
+  itemCounts: Record<RewardItemKind, number>;
+  itemTotal: number;
+  /** Buyers who can open it right now. */
+  unlockedCount: number;
+  moderation: RewardModeration;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /admin/rewards/:id — and what every moderation action answers with. */
+export interface AdminRewardDetail extends AdminReward {
+  description: string | null;
+  items: CollectionRewardItem[];
+  requiredDrops: number;
+  auditTrail: { resourceType: string; resourceId: string };
+}
+
+export interface AdminRewardFilters {
+  status?: AdminRewardStatusFilter;
+  artistId?: string;
+  collectionId?: string;
+  q?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface AdminRewardSummary {
+  rewards: { total: number; on: number; off: number; removed: number; lockedByHitbox: number };
+  unlocks: { live: number; thisMonth: number; buyersWithRewards: number };
+  topRewards: {
+    id: string;
+    name: string;
+    unlockedCount: number;
+    collection: { id: string; name: string };
+    artist: { id: string; name: string };
+  }[];
+}
+
+/** GET /admin/rewards/:id/unlocks — one buyer's unlock. */
+export interface RewardUnlockRow {
+  id: string;
+  publicCode: string;
+  buyer: { userId: string; handle: string | null; fullName: string | null };
+  status: "LIVE" | "ENDED";
+  unlockedAt: string;
+  endedAt: string | null;
+  firstOpenedAt: string | null;
+  lastOpenedAt: string | null;
+  timesOpened: number;
+}
+
+export type RewardModerationAction = "switch-off" | "switch-on" | "remove" | "restore";
+
+/* ------------------------------------------------------------------ */
+/* Drop content — regular and SKU-exclusive tiers (drop-content.md)    */
+/*                                                                      */
+/* REGULAR (≤1 per drop): the owner of ANY unit opens it.               */
+/* EXCLUSIVE (≤10): only the owner of a unit whose serial it lists.     */
+/* "Owner" = owns it now AND has claimed it (NFC tap); access is live.  */
+/*                                                                      */
+/* Lock rule: a serial can be added to or removed from an exclusive     */
+/* tier only while its unit is UNCLAIMED with no owner (or not minted   */
+/* yet) — 409 DROP_CONTENT_UNIT_CLAIMED otherwise, for artist and admin */
+/* alike. Serials that stay listed are not checked.                     */
+/* ------------------------------------------------------------------ */
+
+export type DropContentTierKind = "REGULAR" | "EXCLUSIVE";
+
+/** One tier as the artist panel sees it — every artist write answers with this. */
+export interface DropContentTier {
+  id: string;
+  publicCode: string;
+  dropId: string;
+  tier: DropContentTierKind;
+  name: string;
+  description: string | null;
+  /** ON: owners open it. OFF: paused, hidden. REMOVED: deleted; restore it. */
+  status: CollectionRewardStatus;
+  isActive: boolean;
+  archivedAt: string | null;
+  /** EXCLUSIVE: ascending. REGULAR: always []. */
+  serialNumbers: number[];
+  items: CollectionRewardItem[];
+  itemCounts: Record<RewardItemKind, number>;
+  /** Buyers who own a unit that opens it right now. */
+  holders: number;
+  /** Buyers who have opened it at least once. */
+  openedBy: number;
+  moderation?: RewardModeration;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /artist/drops/:dropId/content. Removed tiers are included. */
+export interface ArtistDropContent {
+  drop: { id: string; publicCode: string; name: string; totalSupply: number };
+  regular: DropContentTier | null;
+  exclusive: DropContentTier[];
+  limits: { maxExclusiveTiers: number; maxSerialsPerTier: number; maxItemsPerTier: number };
+}
+
+export interface CreateDropContentTierInput {
+  tier: DropContentTierKind;
+  name: string;
+  description?: string | null;
+  isActive?: boolean;
+  /** EXCLUSIVE only: 1–1000 serials within 1…totalSupply. */
+  serialNumbers?: number[];
+}
+
+/** Any subset, at least one. `serialNumbers` REPLACES the whole list. */
+export type UpdateDropContentTierInput = Partial<
+  Pick<CreateDropContentTierInput, "name" | "description" | "isActive" | "serialNumbers">
+>;
+
+/** `details.units[]` of 409 DROP_CONTENT_UNIT_CLAIMED — nothing was saved. */
+export interface DropContentClaimedUnit {
+  skuId: string;
+  serialNumber: number;
+  claimedStatus: string;
+  owned: boolean;
+}
+
+/** GET /admin/rewards/drops/:dropId/content. */
+export interface AdminDropContent {
+  drop: { id: string; name: string; totalSupply: number };
+  tiers: {
+    bundleId: string;
+    name: string;
+    tier: DropContentTierKind;
+    isActive: boolean;
+    removed: boolean;
+    serialNumbers: number[];
+  }[];
+}
+
+/** One minted unit in the admin exclusive-SKU picker. */
+export interface AdminDropUnit {
+  skuId: string;
+  publicCode: string | null;
+  skuCode: string;
+  serialNumber: number;
+  variantId: string | null;
+  variant: { variantCode: string; label: string } | null;
+  claimedStatus: string;
+  owned: boolean;
+  /** False once claimed or owned: its exclusivity is settled. */
+  selectable: boolean;
+  /** Live (non-removed) exclusive tiers this unit opens. */
+  exclusiveTiers: { bundleId: string; name: string }[];
+}
+
+export interface AdminDropUnitFilters {
+  claimed?: boolean;
+  variantId?: string;
+  serialFrom?: number;
+  serialTo?: number;
+  page?: number;
+  limit?: number;
+}
+
+/** POST …/content/:bundleId/units[/remove] — all-or-nothing, idempotent. */
+export interface ExclusiveUnitsResult {
+  bundleId: string;
+  name: string;
+  serialNumbers: number[];
+  /** Serials actually added or removed; 0 when nothing changed. */
+  changed: number;
+}

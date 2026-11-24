@@ -163,6 +163,29 @@ export class ApiError extends Error {
       case "SUPPLY_BATCH_NOT_FOUND":
         return "Consignment not found.";
 
+      /* Drop content — regular and SKU-exclusive tiers. */
+      case "DROP_CONTENT_UNIT_CLAIMED":
+        // The server's message names the units ("Unit #7 is already claimed…").
+        return this.message || "A unit here is already claimed or owned, so its exclusive content is settled. Nothing was saved.";
+      case "DROP_CONTENT_UNIT_NOT_IN_DROP":
+        return "A selected unit isn't part of this drop. Reload and try again.";
+      case "DROP_CONTENT_NOT_EXCLUSIVE":
+        return "The regular tier opens for every owner — it has no unit list to edit.";
+      case "DROP_CONTENT_ARCHIVED":
+        return "This tier is removed. Restore it first.";
+      case "DROP_CONTENT_NOT_ARCHIVED":
+        return "This tier isn't removed.";
+      case "DROP_CONTENT_SERIALS_INVALID":
+        return "That serial list isn't allowed — a tier needs at least one unit, at most 1,000, each within the drop's supply.";
+      case "DROP_CONTENT_REGULAR_EXISTS":
+        return "This drop already has regular content. Edit (or restore) that one instead.";
+      case "DROP_CONTENT_TOO_MANY_TIERS":
+        return "A drop can have at most 10 exclusive tiers, removed ones included. Restore and reuse one instead.";
+      case "DROP_CONTENT_NOT_FOUND":
+        return "That tier no longer exists on this drop.";
+      case "ARTIST_DROP_NOT_FOUND":
+        return "That drop isn't one of yours, or no longer exists.";
+
       /* Variant allotments. */
       case "SUPPLY_ALLOTMENT_SHAPE_INVALID":
         return "This drop's allotment is the other shape — per-variant quantities for a drop with variants, a single quantity for one without. Reload and try again.";
@@ -340,6 +363,35 @@ export class ApiError extends Error {
       case "AUDIT_WRITE_FAILED":
         return "The change was refused because its audit record couldn't be written. Nothing was changed — try again.";
 
+      /* Collection rewards (content/collection-rewards.md §7) — the server's
+         message is shown as returned; these are fallbacks for an empty one. */
+      case "CONTENT_REWARD_FILE_TYPE":
+        return this.message || "That file type or size isn't allowed for a reward.";
+      case "CONTENT_REWARD_FILE_INVALID":
+        return this.message || "That file can't be used — it isn't uploaded yet, was removed, or failed the virus scan.";
+      case "CONTENT_REWARD_TOO_MANY_ITEMS":
+        return this.message || "A reward can hold at most 20 files.";
+      case "CONTENT_REWARD_FILE_DUPLICATE":
+        return this.message || "That file is already in the reward.";
+      case "CONTENT_REWARD_ORDER_MISMATCH":
+        return this.message || "The files changed in another tab. The list was refreshed — try again.";
+      case "CONTENT_REWARD_NOT_FOUND":
+        return this.message || "This collection has no reward yet.";
+      case "CONTENT_REWARD_ITEM_NOT_FOUND":
+        return this.message || "That file isn't in the reward any more.";
+      case "CONTENT_REWARD_STATE_UNCHANGED":
+        return this.message || "Nothing to change — the reward is already in that state.";
+      case "CONTENT_REWARD_NOT_MODERATED":
+        return this.message || "The artist did this themselves, so it's theirs to undo.";
+      case "CONTENT_REWARD_MODERATION_LOCKED":
+        return this.message || "HitBox has locked this reward. Contact support to have it switched back on.";
+      case "CONTENT_REWARD_ARCHIVED":
+        return this.message || "The reward is removed. Restore it first.";
+      case "CONTENT_REWARD_MEDIA_UNAVAILABLE":
+        return this.message || "File storage isn't configured on this server.";
+      case "ARTIST_COLLECTION_REWARDS_UNAVAILABLE":
+        return this.message || "Rewards aren't available on this server yet.";
+
       /* Artist collections (artist-collection-api.md). */
       case "ARTIST_COLLECTION_NOT_FOUND":
         return "That collection doesn't exist, or it isn't yours.";
@@ -348,7 +400,7 @@ export class ApiError extends Error {
       case "ARTIST_COLLECTION_SLUG_TAKEN":
         return "That web address is already used by another collection.";
       case "ARTIST_COLLECTION_ARCHIVED":
-        return "This collection is deleted. Restore it before changing it.";
+        return this.message || "This collection is deleted. Restore it before changing it.";
       case "ARTIST_COLLECTION_NOT_ARCHIVED":
         return "This collection isn't deleted — it may have just been restored.";
       case "ARTIST_COLLECTION_HAS_DROPS":
