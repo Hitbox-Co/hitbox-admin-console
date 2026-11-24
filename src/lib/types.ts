@@ -1147,6 +1147,11 @@ export interface ProductSkuUnit {
 export interface AdminProductDetail {
   id: string;
   groupCode: string;
+  /**
+   * Not sent by the backend yet — requested as the explicit "this drop's
+   * products carry no chip" flag. Absent → treated as chip-bearing.
+   */
+  carriesChips?: boolean | null;
   name: string;
   description: string | null;
   vertical: string | null;
@@ -2892,6 +2897,21 @@ export const SUPPLY_ITEM_TYPES: SupplyItemType[] = VENDOR_TYPES;
  */
 export const CHIP_BEARING_ITEM_TYPES: SupplyItemType[] = VENDOR_TYPES;
 
+/**
+ * Do this drop's products carry an NFC chip? Then units are only ever minted
+ * by accepting a consignment (chips arrive with their 424 DNA keys), never by
+ * Add SKUs or the create form's units step, which would mint chipless units
+ * that can't be given a chip later.
+ *
+ * Every drop does, until the backend says otherwise with an explicit flag
+ * (`carriesChips: false`). Guessing from `category` was tried and failed: it
+ * is free text, so "CARD" (not TRADING_CARD) read as chip-free and Add SKUs
+ * came back on a trading-card drop.
+ */
+export function isChipBearingDrop(drop: { carriesChips?: boolean | null }): boolean {
+  return drop.carriesChips !== false;
+}
+
 export interface SupplyBatch {
   id: string;
   vendorId: string;
@@ -3068,6 +3088,12 @@ export interface NfcTagRow {
   qcStatus: TagQcStatus;
   qcReportedAt: string | null;
   qcNotes: string | null;
+  /** The variant of the goods the chip is embedded in, when the manifest said. */
+  variantId?: string | null;
+  /** ACTIVE keys on file — never the keys themselves. */
+  hasActiveKeys?: boolean;
+  /** A tap can be verified: BOUND or ACTIVE, with ACTIVE keys. */
+  verifiable?: boolean;
   lifecycleState: TagLifecycleState;
   lastTapCounter: number;
   tamperStatus: string | null;

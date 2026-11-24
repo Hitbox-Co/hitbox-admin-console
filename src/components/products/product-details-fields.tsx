@@ -6,6 +6,7 @@ import { useAdminArtists, useAdminOrganizations } from "@/lib/api/hooks";
 import { requiredKeys } from "@/lib/required-fields";
 import { Field, Input, Textarea } from "@/components/ui/primitives";
 import type { AdminProductDetail, ProductInput } from "@/lib/types";
+import { VENDOR_TYPES } from "@/lib/types";
 
 /**
  * The catalog fields of a drop — shared by the Add drop page and the Edit
@@ -40,7 +41,9 @@ const detailsSchema = z.object({
 const REQUIRED_DETAILS = requiredKeys(detailsSchema);
 
 /** Free-form `String?` columns, not enums — suggestions only. */
-const CATEGORY_HINTS = ["JERSEY", "FIGURE", "APPAREL", "PRINT", "CARD"];
+// The same words as a consignment's item type (VENDOR_TYPES), so "which drops
+// are trading cards" and "which cartons hold trading cards" match.
+const CATEGORY_HINTS: string[] = VENDOR_TYPES;
 const RARITY_HINTS = ["COMMON", "LIMITED", "RARE", "LEGENDARY"];
 
 export interface ProductDetailsDraft {

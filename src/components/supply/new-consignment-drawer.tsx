@@ -3,9 +3,10 @@
 import * as React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { toast } from "sonner";
-import { Info, X } from "lucide-react";
+import { AlertTriangle, Info, X } from "lucide-react";
+import Link from "next/link";
 import { ApiError } from "@/lib/api/client";
-import { useCreateSupplyBatch, useProductVariants, useVendors } from "@/lib/api/hooks";
+import { useAdminProduct, useCreateSupplyBatch, useProductVariants, useVendors } from "@/lib/api/hooks";
 import { formatNumber, humanize } from "@/lib/format";
 import { DropPicker } from "@/components/finance/entity-pickers";
 import { Button, Field, Input, Mono, Textarea } from "@/components/ui/primitives";
@@ -31,9 +32,26 @@ export function NewConsignmentDrawer({ onClose }: { onClose: () => void }) {
      does. Optional for staff, and staff bookings are not capped by allotments. */
   const variantsQuery = useProductVariants(dropId);
   const liveVariants = (variantsQuery.data ?? []).filter((v) => v.isActive && !v.archived);
-  const [split, setSplit] = React.useState(false);
+  /*
+   * A drop whose TYPE requires variants mints every unit against one, and
+   * accepting a consignment mints its chips — so a carton booked without
+   * variant lines can never be accepted (409 PRODUCTS_VARIANTS_REQUIRED at
+   * accept, and there is no route to add lines afterwards). Split is
+   * therefore forced for such a drop, and booking is blocked until the drop
+   * has a live variant.
+   */
+  const dropQuery = useAdminProduct(dropId, { skuLimit: 1 });
+  const variantMode = dropQuery.data?.dropType?.variantMode ?? null;
+  const requiresVariants = variantMode === "REQUIRED";
+  const noVariantsYet = requiresVariants && !variantsQuery.isLoading && liveVariants.length === 0;
+  /*
+   * A drop with live variants is ALWAYS booked per variant: every chip sits
+   * in one physical variant (a size, a colour), and a carton booked as one
+   * lump can't say which — its chips couldn't be minted against a variant
+   * later. Only a drop with no variants books a single quantity.
+   */
+  const splitting = liveVariants.length > 0;
   const [lineQty, setLineQty] = React.useState<Record<string, string>>({});
-  const splitting = split && liveVariants.length > 0;
   const lines = liveVariants
     .map((v) => ({ variantId: v.id, quantity: Number(lineQty[v.id] || 0) }))
     .filter((l) => l.quantity > 0);
@@ -53,6 +71,8 @@ export function NewConsignmentDrawer({ onClose }: { onClose: () => void }) {
 
     const next: Record<string, string> = {};
     if (!vendorId) next.vendorId = "Required.";
+    if (noVariantsYet) next.lines = "This drop needs a live variant before a carton can be booked against it.";
+    if (dropId && dropQuery.isLoading) next.lines = "Still reading the drop — try again in a moment.";
     const qty = Number(quantity);
     if (splitting) {
       if (lines.length === 0) next.lines = "Enter at least one variant's quantity.";
@@ -144,27 +164,40 @@ export function NewConsignmentDrawer({ onClose }: { onClose: () => void }) {
                 value={dropId}
                 onChange={(v) => {
                   setDropId(v);
-                  setSplit(false);
                   setLineQty({});
                 }}
               />
             </Field>
 
+            {noVariantsYet ? (
+              <p
+                role="alert"
+                className="flex items-start gap-2 rounded-[8px] border border-[rgba(204,92,92,0.35)] bg-[var(--danger-dim)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--text-1)]"
+              >
+                <AlertTriangle className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--danger)]" aria-hidden />
+                <span>
+                  <strong>This drop&rsquo;s type requires variants, and it has none live.</strong> Every unit is minted
+                  against a variant, so a carton can&rsquo;t be booked for it yet.{" "}
+                  {dropId ? (
+                    <Link href={`/products/${dropId}`} className="underline underline-offset-2">
+                      Add variants on the drop
+                    </Link>
+                  ) : null}{" "}
+                  first, then book the consignment per variant.
+                </span>
+              </p>
+            ) : null}
+
             {dropId && liveVariants.length > 0 ? (
               <div className="space-y-1.5">
-                <label className="flex items-center gap-2 text-[12.5px] text-[var(--text-2)]">
-                  <input
-                    type="checkbox"
-                    checked={split}
-                    onChange={(e) => setSplit(e.target.checked)}
-                    className="h-3.5 w-3.5 accent-[var(--accent)]"
-                  />
-                  Split by variant
-                  <span className="text-[11px] text-[var(--text-3)]">
-                    — each chip row will then name its variant
+                <p className="flex items-start gap-1.5 text-[12px] text-[var(--text-2)]">
+                  <Info className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--text-3)]" aria-hidden />
+                  <span>
+                    <strong className="text-[var(--text-1)]">Booked per variant</strong> — this drop has variants, so
+                    each line is a variant and each chip row will name one. Enter how many of each are in the carton.
                   </span>
-                </label>
-                {split ? (
+                </p>
+                {splitting ? (
                   <>
                     <ul className="divide-y divide-[var(--hairline)] rounded-[8px] border border-[var(--hairline)]">
                       {liveVariants.map((v) => (
@@ -304,6 +337,7 @@ export function NewConsignmentDrawer({ onClose }: { onClose: () => void }) {
               variant="primary"
               size="sm"
               loading={create.isPending}
+              disabled={noVariantsYet}
             >
               Book in
             </Button>

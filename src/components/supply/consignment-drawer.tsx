@@ -3,14 +3,21 @@
 import * as React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { toast } from "sonner";
-import { AlertTriangle, Check, Lock, ScanLine, TrendingUp, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  ListOrdered,
+  Lock,
+  ScanLine,
+  TrendingUp,
+  X,
+} from "lucide-react";
 import { ApiError } from "@/lib/api/client";
 import {
   usePatchVendorAllotment,
   useRegisterTagManifest,
   useSupplyBatch,
-  useSupplyBatchDecision,
-} from "@/lib/api/hooks";
+  useSupplyBatchDecision, useProductVariants } from "@/lib/api/hooks";
 import {
   AllotmentCoverageBanner,
   isAllotmentBlock,
@@ -19,6 +26,8 @@ import { variantName } from "@/components/supply/allotment-summary";
 import { formatDate, formatDateTime, formatNumber, humanize } from "@/lib/format";
 import { usePermissions } from "@/components/layout/authz-provider";
 import { Figure, ManifestForm, lineName } from "@/components/supply/manifest-form";
+import { RegisteredChips } from "@/components/supply/registered-chips";
+import { EditLinesDialog } from "@/components/supply/edit-lines-dialog";
 import { AcceptRefusal, AcceptedStock } from "@/components/supply/accept-outcome";
 import {
   ConsignmentStepper,
@@ -273,13 +282,17 @@ export function ConsignmentDrawer({
 
           <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
             {tab === "manifest" ? (
-              <ManifestForm
-                batch={batch}
-                disabled={!acceptsRows}
-                submit={register.mutateAsync}
-                allowChunking
-                onCommitted={() => void live.refetch()}
-              />
+              <>
+                {/* What is already on the consignment — the vendor's uploads included. */}
+                {canReadChips ? <RegisteredChips batch={batch} /> : null}
+                <ManifestForm
+                  batch={batch}
+                  disabled={!acceptsRows}
+                  submit={register.mutateAsync}
+                  allowChunking
+                  onCommitted={() => void live.refetch()}
+                />
+              </>
             ) : (
               <>
                 {stock ? <AcceptedStock stock={stock} batch={batch} /> : null}
@@ -289,6 +302,7 @@ export function ConsignmentDrawer({
 
                 <Reconciliation batch={batch} canReadChips={canReadChips} />
 
+                {undecided && canWrite && batch.dropId ? <LinesAction batch={batch} /> : null}
                 <BatchLines batch={batch} />
 
                 <Panel>
@@ -573,6 +587,48 @@ export function Reconciliation({
  * The consignment's variant lines — present when it was booked against a
  * drop allotted by variant. Each line is a ceiling for that variant's chips.
  */
+/**
+ * Variant lines can be corrected while the consignment is open
+ * (PATCH …/lines). A consignment with no lines on a drop that has variants
+ * can't be accepted, so that case is called out, not just offered.
+ */
+function LinesAction({ batch }: { batch: SupplyBatch }) {
+  const [open, setOpen] = React.useState(false);
+  const variants = useProductVariants(batch.dropId ?? undefined);
+  const liveCount = (variants.data ?? []).filter((v) => v.isActive && !v.archived).length;
+  const hasLines = (batch.lines ?? []).length > 0;
+  if (variants.isLoading || liveCount === 0) return null;
+  return (
+    <>
+      {hasLines ? (
+        <div className="flex justify-end">
+          <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
+            <ListOrdered className="h-3.5 w-3.5" /> Edit variant lines
+          </Button>
+        </div>
+      ) : (
+        <div
+          role="alert"
+          className="flex flex-wrap items-start gap-3 rounded-[10px] border border-[var(--warning)] bg-[var(--warning-dim)] px-3 py-2.5"
+        >
+          <AlertTriangle className="mt-[1px] h-4 w-4 shrink-0 text-[var(--warning)]" aria-hidden />
+          <p className="min-w-[220px] flex-1 text-[12px] leading-relaxed text-[var(--text-1)]">
+            <strong>No variant lines.</strong> This drop has variants, so each chip has to belong to one before the
+            consignment can be accepted. Split the {formatNumber(batch.quantity)} declared across its variants —{" "}
+            {batch.rowsReceived > 0
+              ? `the ${formatNumber(batch.rowsReceived)} chip${batch.rowsReceived === 1 ? "" : "s"} already registered are assigned oldest first.`
+              : "then register the chips per variant."}
+          </p>
+          <Button variant="primary" size="sm" onClick={() => setOpen(true)}>
+            <ListOrdered className="h-3.5 w-3.5" /> Set variant lines
+          </Button>
+        </div>
+      )}
+      {open ? <EditLinesDialog batch={batch} onClose={() => setOpen(false)} /> : null}
+    </>
+  );
+}
+
 export function BatchLines({ batch }: { batch: SupplyBatch }) {
   const lines = batch.lines ?? [];
   if (lines.length === 0) return null;

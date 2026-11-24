@@ -41,7 +41,7 @@ import { DropTypeBadge } from "./variant-bits";
 import { SkuUnitsPanel } from "./sku-units-panel";
 import { RewardPointsBadge, RewardPointsPanel } from "./reward-points";
 import { ExclusiveUnitsPanel } from "./exclusive-units-panel";
-import type { AdminProductDetail, ProductSkuUnit } from "@/lib/types";
+import { isChipBearingDrop, type AdminProductDetail, type ProductSkuUnit } from "@/lib/types";
 
 /**
  * The drop, as a page: catalog record, lifecycle, SKU allotment, pricing,
@@ -172,6 +172,7 @@ export function ProductDetailView({ productId }: { productId: string }) {
               variants={product.variants ?? []}
               variantMode={product.dropType?.variantMode ?? null}
               mintGate={gate}
+              chipBearing={isChipBearingDrop(product)}
             />
           ) : (
             <FlatUnits

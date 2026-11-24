@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { Boxes, Plus, ScanLine } from "lucide-react";
 import { useProductSkuSummary, useProductSkus } from "@/lib/api/hooks";
 import { formatNumber, humanize } from "@/lib/format";
@@ -9,7 +10,6 @@ import { Badge, Button, Mono, Panel, Tooltip, toneForStatus } from "@/components
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterSelect, SearchInput } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
-import { BindTagsDialog } from "./bind-tags-dialog";
 import { MintUnitsDialog } from "./mint-units-dialog";
 import type { MintGate } from "@/lib/mint-gate";
 import type { ProductVariantRef, SkuListParams, SkuUnit, VariantMode } from "@/lib/types";
@@ -45,6 +45,7 @@ export function SkuUnitsPanel({
   variants,
   variantMode = null,
   mintGate,
+  chipBearing = true,
 }: {
   productId: string;
   totalSupply: number;
@@ -58,6 +59,11 @@ export function SkuUnitsPanel({
   variants: ProductVariantRef[];
   /** The drop type's mode — REQUIRED makes the mint's variant mandatory. */
   variantMode?: VariantMode | null;
+  /**
+   * The drop's products carry chips: units come only from accepting a
+   * consignment, so Add SKUs (which mints chipless units) is not offered.
+   */
+  chipBearing?: boolean;
 }) {
   const perms = usePermissions();
   const [params, setParams] = React.useState<SkuListParams>({
@@ -66,7 +72,6 @@ export function SkuUnitsPanel({
     sort: "serial_asc",
   });
   const [minting, setMinting] = React.useState(false);
-  const [binding, setBinding] = React.useState(false);
 
   const list = useProductSkus(productId, params);
   const summary = useProductSkuSummary(productId);
@@ -200,18 +205,22 @@ export function SkuUnitsPanel({
           </p>
           <div className="flex items-center gap-2">
             {/*
-              Binding is a different capability from minting — a Drop Manager
-              mints the edition, whoever holds tag custody binds the tags — so
-              the two actions are gated separately rather than as one "manage
-              units" button.
+              Chips enter ONLY through a consignment (UID + NTAG 424 DNA keys);
+              accepting it mints units already bound to their chips. There is
+              no binding chips onto units from here.
             */}
-            {perms.canBindTags() ? (
-              <Button variant="ghost" size="sm" onClick={() => setBinding(true)}>
-                <ScanLine className="h-3.5 w-3.5" />
-                Bind tags
-              </Button>
+            {chipBearing && (perms.canBindTags() || perms.canMintUnits()) && perms.canOpen("/supply/consignments") ? (
+              <Tooltip content="Chips come in with their keys through a consignment; accepting it mints the chipped units.">
+                <Link
+                  href="/supply/consignments"
+                  className="inline-flex h-7 items-center gap-1.5 rounded-[6px] px-2.5 text-[12px] font-medium text-[var(--text-2)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text-1)]"
+                >
+                  <ScanLine className="h-3.5 w-3.5" />
+                  Add chipped units
+                </Link>
+              </Tooltip>
             ) : null}
-            {perms.canMintUnits() ? (
+            {perms.canMintUnits() && !chipBearing ? (
               mintGate?.state === "blocked" ? (
                 <Tooltip content={mintGate.reason ?? "Waiting on the owner's approval."}>
                   <span>
@@ -352,14 +361,6 @@ export function SkuUnitsPanel({
           </>
         )}
       </Panel>
-
-      {binding ? (
-        <BindTagsDialog
-          productId={productId}
-          untagged={s?.untagged}
-          onClose={() => setBinding(false)}
-        />
-      ) : null}
 
       {minting ? (
         <MintUnitsDialog

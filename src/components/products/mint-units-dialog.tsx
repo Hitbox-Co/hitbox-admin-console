@@ -4,18 +4,18 @@ import * as React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { z } from "zod";
 import { toast } from "sonner";
+import Link from "next/link";
 import { Info, ScanLine, X } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
 import { useMintSkus, useProductVariants } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/format";
 import { requiredKeys } from "@/lib/required-fields";
 import { usePermissions } from "@/components/layout/authz-provider";
-import { Button, Field, Input, Textarea, Tooltip } from "@/components/ui/primitives";
+import { Button, Field, Input, Tooltip } from "@/components/ui/primitives";
 import type { ProductVariantRef, VariantMode } from "@/lib/types";
 
 /** `count` is the only field POST /admin/products/:id/skus rejects a request
- *  for omitting (sku-api.md §3) — vendorId, provisioningBatchId and tagIds
- *  are all optional, and variantId depends on the drop having any. */
+ *  for omitting (sku-api.md §3); variantId depends on the drop having any. */
 const mintSchema = z.object({ count: z.string().min(1) });
 const REQUIRED_MINT = requiredKeys(mintSchema);
 
@@ -38,9 +38,12 @@ const REQUIRED_MINT = requiredKeys(mintSchema);
  * Inactive and archived variants are not offered — minting for one is a 400
  * PRODUCTS_VARIANT_INACTIVE — and a capped variant shows how many are left.
  *
- * Tag binding is a separate capability (`nfc-tag-claim:manage`) from minting
- * (`collectible-instance:manage`), so the tag field is absent — not disabled —
- * for a Brand Admin or Drop Manager who can mint but may not bind.
+ * No chips here. Chips enter the platform ONLY through a consignment: its
+ * manifest carries each chip's UID and NTAG 424 DNA keys, and accepting it
+ * mints the units already bound to their chips — the only path whose units
+ * a secure tap can verify. A unit minted here has no chip and can't be given
+ * one later (accepting a consignment mints new units, it doesn't bind to
+ * existing ones), so this is for stock that ships without a chip.
  */
 
 const MAX_BATCH = 1000;
@@ -63,7 +66,6 @@ export function MintUnitsDialog({
 }) {
   const perms = usePermissions();
   const mint = useMintSkus(productId);
-  const canBindTags = perms.canBindTags();
 
   // The variants endpoint carries mintedUnits; the product read does not.
   const variantsQuery = useProductVariants(productId, false, variantMode !== "NONE");
@@ -94,21 +96,11 @@ export function MintUnitsDialog({
   const offerVariant = variantMode !== "NONE" && variants.length > 0;
 
   const [count, setCount] = React.useState("");
-  const [tagsRaw, setTagsRaw] = React.useState("");
-  const [vendorId, setVendorId] = React.useState("");
-  const [batchRef, setBatchRef] = React.useState("");
+
   const [isActive, setIsActive] = React.useState(true);
   const [variantId, setVariantId] = React.useState("");
   const [errors, setErrors] = React.useState<Record<string, string>>({});
 
-  const tagIds = React.useMemo(
-    () =>
-      tagsRaw
-        .split(/[\s,]+/)
-        .map((t) => t.trim())
-        .filter(Boolean),
-    [tagsRaw]
-  );
 
   const n = Number(count);
   const chosen = variants.find((v) => v.id === variantId);
@@ -131,9 +123,6 @@ export function MintUnitsDialog({
     } else if (variantLeft !== null && n > variantLeft) {
       next.count = `Only ${formatNumber(variantLeft)} left under ${chosen?.label}'s cap.`;
     }
-    if (tagIds.length && tagIds.length !== n) {
-      next.tagIds = `Exactly ${Number.isFinite(n) ? n : "count"} tags, or none at all — ${tagIds.length} given.`;
-    }
     setErrors(next);
     return Object.keys(next).length === 0;
   };
@@ -146,16 +135,12 @@ export function MintUnitsDialog({
       {
         count: n,
         variantId: variantId || undefined,
-        tagIds: tagIds.length ? tagIds : undefined,
-        vendorId: vendorId.trim() || undefined,
-        provisioningBatchId: batchRef.trim() || undefined,
         isActive,
       },
       {
         onSuccess: (r) => {
           toast.success(
-            `Minted ${formatNumber(r.minted)} units — #${r.firstSerial}–${r.lastSerial}` +
-              (r.tagsBound ? `, ${formatNumber(r.tagsBound)} tagged` : "")
+            `Minted ${formatNumber(r.minted)} units — #${r.firstSerial}–${r.lastSerial}`
           );
           onClose();
         },
@@ -189,11 +174,6 @@ export function MintUnitsDialog({
             setErrors({ count: err.friendly });
             return;
           }
-          if (err instanceof ApiError && err.code === "SKUS_TAG_TAKEN") {
-            // The message names the conflicting tag and the unit holding it.
-            setErrors({ tagIds: err.message });
-            return;
-          }
           toast.error(err instanceof ApiError ? err.friendly : "Could not mint the units.");
         },
       }
@@ -204,7 +184,7 @@ export function MintUnitsDialog({
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="rx-overlay fixed inset-0 z-[60] bg-[rgba(0,0,0,0.5)]" />
-        <Dialog.Content className="rx-content rx-anchored fixed left-1/2 top-1/2 z-[60] w-[min(520px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 rounded-[12px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] shadow-[var(--shadow-3)]">
+        <Dialog.Content className="rx-content rx-anchored fixed left-1/2 top-1/2 z-[60] flex max-h-[min(90dvh,860px)] w-[min(520px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-[12px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] shadow-[var(--shadow-3)]">
           <div className="flex items-start justify-between gap-3 border-b border-[var(--hairline)] px-4 py-3.5">
             <div>
               <Dialog.Title className="text-[14px] font-semibold tracking-[-0.01em] text-[var(--text-1)]">
@@ -221,7 +201,7 @@ export function MintUnitsDialog({
             </Dialog.Close>
           </div>
 
-          <form onSubmit={submit} className="space-y-4 px-4 py-4">
+          <form onSubmit={submit} className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
             <Field
               label="How many"
               htmlFor="mint-count"
@@ -293,53 +273,22 @@ export function MintUnitsDialog({
               </Field>
             ) : null}
 
-            {canBindTags ? (
-              <Field
-                label="NFC tag UIDs"
-                htmlFor="mint-tags"
-                error={errors.tagIds}
-                hint={`Optional. One per line or comma separated — and then exactly as many as the count. Separators are stripped, so 04:A3:9B… and 04a39b… are the same tag.`}
-              >
-                <Textarea
-                  id="mint-tags"
-                  rows={3}
-                  value={tagsRaw}
-                  onChange={(e) => setTagsRaw(e.target.value)}
-                  placeholder={"04:A3:9B:2C:5D:6E:80\n04A39B2C5D6E81"}
-                />
-              </Field>
-            ) : (
-              <p className="flex items-start gap-2 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2.5 text-[11.5px] leading-relaxed text-[var(--text-3)]">
-                <ScanLine className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
-                Units will be minted untagged. Binding a physical tag UID needs{" "}
-                <span className="text-[var(--text-2)]">nfc-tag-claim:manage</span>, which
-                your role does not hold — the edition is yours, the
-                anti-counterfeiting material is not.
-              </p>
-            )}
-
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Vendor id" htmlFor="mint-vendor" hint="Who provisioned the tags.">
-                <Input
-                  id="mint-vendor"
-                  value={vendorId}
-                  onChange={(e) => setVendorId(e.target.value)}
-                  placeholder="optional"
-                />
-              </Field>
-              <Field
-                label="Batch reference"
-                htmlFor="mint-batch"
-                hint="Recorded, not verified."
-              >
-                <Input
-                  id="mint-batch"
-                  value={batchRef}
-                  onChange={(e) => setBatchRef(e.target.value)}
-                  placeholder="BATCH-2026-09-41"
-                />
-              </Field>
-            </div>
+            <p className="flex items-start gap-2 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2.5 text-[11.5px] leading-relaxed text-[var(--text-2)]">
+              <ScanLine className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[var(--text-3)]" aria-hidden />
+              <span>
+                <strong className="text-[var(--text-1)]">These units get no NFC chip.</strong> Chips only come in
+                through a{" "}
+                {perms.canOpen("/supply/consignments") ? (
+                  <Link href="/supply/consignments" className="underline underline-offset-2">
+                    consignment
+                  </Link>
+                ) : (
+                  "consignment"
+                )}{" "}
+                — book the carton, register its chips with their keys, and accepting it mints the units bound to them. A
+                unit minted here can&rsquo;t be given a chip later, so use this only for stock that ships without one.
+              </span>
+            </p>
 
             <Tooltip content="Mint inactive to stage an edition ahead of its release.">
               <label className="flex w-fit items-center gap-2 text-[12.5px] text-[var(--text-2)]">
@@ -356,9 +305,8 @@ export function MintUnitsDialog({
             {n > 0 && n <= MAX_BATCH ? (
               <p className="flex items-start gap-2 text-[11px] leading-relaxed text-[var(--text-3)]">
                 <Info className="mt-[1px] h-3 w-3 shrink-0" aria-hidden />
-                Minting {formatNumber(n)} unit{n === 1 ? "" : "s"}
-                {tagIds.length ? `, binding ${formatNumber(tagIds.length)} tags` : ""}. Units
-                are created unclaimed; a unit becomes active on first claim, never here.
+                Minting {formatNumber(n)} unit{n === 1 ? "" : "s"} without chips. Units are created
+                unclaimed.
               </p>
             ) : null}
 

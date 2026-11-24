@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { AlertTriangle, ArrowLeft, ArrowRight, Boxes, Coins, Info, ShieldAlert } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
+import { isChipBearingDrop } from "@/lib/types";
 import {
   RewardPointsFormSection,
   rewardPointsError,
@@ -122,7 +123,11 @@ export function ProductCreateForm() {
     organizationId: details.organizationId || null,
   });
   // Units at creation: unowned only, and never for a REQUIRED type.
-  const withUnits = !owned && mode !== "REQUIRED";
+  // Never for a chip-bearing drop: its units come only from a consignment,
+  // which brings each chip's keys. Units minted here would be chipless forever.
+  // A new drop has no explicit "no chip" flag, so it is chip-bearing (see
+  // isChipBearingDrop) and the inline units step is never offered.
+  const withUnits = !owned && mode !== "REQUIRED" && !isChipBearingDrop({});
   const mintAtCreate = mintNow && withUnits;
 
   const leave = () => router.push("/products");

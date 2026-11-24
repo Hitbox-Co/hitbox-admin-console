@@ -123,8 +123,9 @@ export function AcceptRefusal({
       body = (
         <p>
           The drop&rsquo;s type mints every unit against a variant, but this
-          consignment has no variant lines. Reject it and have it rebooked per
-          variant.
+          consignment has no variant lines. Use <strong>Set variant lines</strong>{" "}
+          above to split it across the drop&rsquo;s variants (chips already
+          registered are assigned oldest first), then accept again.
         </p>
       );
       break;
