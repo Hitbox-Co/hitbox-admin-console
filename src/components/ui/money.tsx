@@ -176,6 +176,52 @@ export function CurrencyPicker({ available }: { available: string[] }) {
   );
 }
 
+/**
+ * A single `amount` + `currency` pair, as the finance and payments modules
+ * return them — one string, one currency code, no Money map.
+ *
+ * `signed` colours a negative value and keeps its explicit minus. Adjustments
+ * are signed on purpose ("-11.25" reverses, "5.00" posts a make-good) and an
+ * adjustments table where the two read identically is worse than useless.
+ */
+export function Amount({
+  amount,
+  currency,
+  signed,
+  className,
+}: {
+  amount: string | null | undefined;
+  currency: string | null | undefined;
+  signed?: boolean;
+  className?: string;
+}) {
+  if (amount === null || amount === undefined || !currency) {
+    return <span className={cn("tnum text-[var(--text-3)]", className)}>—</span>;
+  }
+
+  const negative = amount.trim().startsWith("-");
+  // Intl renders a negative as "-$11.25"; formatting the absolute value and
+  // prefixing the sign keeps the currency symbol next to the digits.
+  const text = formatCurrency(negative ? amount.replace("-", "") : amount, currency);
+
+  return (
+    <span
+      className={cn(
+        "tnum",
+        signed && negative
+          ? "text-[var(--danger)]"
+          : signed
+            ? "text-[var(--positive)]"
+            : "text-[var(--text-1)]",
+        className
+      )}
+    >
+      {signed ? (negative ? "−" : "+") : negative ? "−" : ""}
+      {text}
+    </span>
+  );
+}
+
 /** Collects every currency present across a set of money objects. */
 export function currenciesIn(...monies: (Money | undefined)[]): string[] {
   const set = new Set<string>();

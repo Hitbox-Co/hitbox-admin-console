@@ -24,18 +24,28 @@ export function DataTable<T>({
   rows,
   getRowKey,
   onRowClick,
+  onRowIntent,
   emptyState,
   className,
   dimmed,
+  rowClassName,
 }: {
   columns: Column<T>[];
   rows: T[];
   getRowKey: (row: T, index: number) => string;
   onRowClick?: (row: T) => void;
+  /**
+   * Fired on hover or keyboard focus, before any click. Used to prefetch the
+   * row's detail so opening it paints from cache. Must be cheap and
+   * idempotent — it runs every time the pointer crosses a row.
+   */
+  onRowIntent?: (row: T) => void;
   emptyState?: React.ReactNode;
   className?: string;
   /** True while a background refetch is in flight — keeps the old rows readable. */
   dimmed?: boolean;
+  /** Extra classes for a row — e.g. to highlight one that needs attention. */
+  rowClassName?: (row: T) => string | undefined;
 }) {
   if (rows.length === 0 && emptyState) return <>{emptyState}</>;
 
@@ -69,9 +79,12 @@ export function DataTable<T>({
             <tr
               key={getRowKey(row, i)}
               onClick={onRowClick ? () => onRowClick(row) : undefined}
+              onPointerEnter={onRowIntent ? () => onRowIntent(row) : undefined}
+              onFocusCapture={onRowIntent ? () => onRowIntent(row) : undefined}
               className={cn(
                 "transition-colors duration-150",
-                onRowClick && "cursor-pointer hover:bg-[var(--surface-2)]"
+                onRowClick && "cursor-pointer hover:bg-[var(--surface-2)]",
+                rowClassName?.(row)
               )}
             >
               {columns.map((col) => (

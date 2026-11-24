@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowRight,
   CircleAlert,
@@ -14,6 +15,7 @@ import { cn } from "@/lib/cn";
 import { useDashboard } from "@/lib/api/hooks";
 import { formatCompact, formatNumber, humanize } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
+import { IfCanOpen } from "@/components/layout/if-can-open";
 import { useAuthz } from "@/components/layout/authz-provider";
 import { FilterBar, type PeriodState } from "@/components/dashboard/filter-bar";
 import { StatCard } from "@/components/dashboard/stat-card";
@@ -43,6 +45,21 @@ import { SERIES, STATUS } from "@/components/charts/palette";
 import { ActivityFeed } from "@/components/dashboard/activity-feed";
 
 export default function DashboardPage() {
+  const { perms, loading } = useAuthz();
+  const router = useRouter();
+  // A vendor's own staff hold nothing the dashboard is built from; their
+  // whole console is the vendor portal, so land them there.
+  const vendorOnly = !loading && perms.isVendorOnly;
+
+  React.useEffect(() => {
+    if (vendorOnly) router.replace("/vendor");
+  }, [vendorOnly, router]);
+
+  if (vendorOnly) return <GridSkeleton count={2} />;
+  return <DashboardView />;
+}
+
+function DashboardView() {
   const [filters, setFilters] = React.useState<PeriodState>({ period: "month" });
   const { perms, loading: authzLoading } = useAuthz();
 
@@ -109,12 +126,14 @@ export default function DashboardPage() {
                 title="Recent activity"
                 description="The 20 most recent audit events."
                 action={
+                  <IfCanOpen href="/activity">
                   <Button variant="ghost" size="sm" asChild>
                     <Link href="/activity">
                       Full audit log
                       <ArrowRight className="h-3 w-3" />
                     </Link>
                   </Button>
+                  </IfCanOpen>
                 }
               />
               <ActivityFeed events={d!.activity} />
@@ -272,7 +291,7 @@ function SummaryRow({ data }: { data: NonNullable<ReturnType<typeof useDashboard
     cards.push(
       <StatCard
         key="products"
-        label="Products"
+        label="Drops"
         value={formatNumber(s.totalProducts)}
         hint={`${formatNumber(data.products?.active)} active drops`}
       />
@@ -389,12 +408,14 @@ function OperationsPanel({ data }: { data: NonNullable<ReturnType<typeof useDash
         title="Operations queue"
         description="What needs a human right now."
         action={
+          <IfCanOpen href="/orders">
           <Button variant="ghost" size="sm" asChild>
             <Link href="/orders">
               Orders
               <ArrowRight className="h-3 w-3" />
             </Link>
           </Button>
+          </IfCanOpen>
         }
       />
 
@@ -523,12 +544,14 @@ function FinancePanel({ data }: { data: NonNullable<ReturnType<typeof useDashboa
         title="Finance"
         description="Per currency — figures are never summed across them."
         action={
+          <IfCanOpen href="/finance">
           <Button variant="ghost" size="sm" asChild>
             <Link href="/finance">
               Detail
               <ArrowRight className="h-3 w-3" />
             </Link>
           </Button>
+          </IfCanOpen>
         }
       />
       <div className="divide-y divide-[var(--hairline)]">
@@ -605,12 +628,14 @@ function MarketsPanel({ data }: { data: NonNullable<ReturnType<typeof useDashboa
         title="Markets"
         description={hasOrders ? "Orders by market" : "Buyers by market"}
         action={
+          <IfCanOpen href="/markets">
           <Button variant="ghost" size="sm" asChild>
             <Link href="/markets">
               All markets
               <ArrowRight className="h-3 w-3" />
             </Link>
           </Button>
+          </IfCanOpen>
         }
       />
       <div className="p-3">
@@ -650,12 +675,14 @@ function ProductsPanel({ data }: { data: NonNullable<ReturnType<typeof useDashbo
         title="Drops"
         description={`${formatNumber(p.total)} products · ${formatNumber(p.new)} new this period`}
         action={
+          <IfCanOpen href="/products">
           <Button variant="ghost" size="sm" asChild>
             <Link href="/products">
               Catalog
               <ArrowRight className="h-3 w-3" />
             </Link>
           </Button>
+          </IfCanOpen>
         }
       />
 
@@ -676,7 +703,7 @@ function ProductsPanel({ data }: { data: NonNullable<ReturnType<typeof useDashbo
           <table className="w-full text-[12px]">
             <thead>
               <tr className="border-b border-[var(--hairline)] text-[10px] uppercase tracking-[0.04em] text-[var(--text-3)]">
-                <th className="py-1.5 text-left font-medium">Product</th>
+                <th className="py-1.5 text-left font-medium">Drop</th>
                 <th className="py-1.5 text-right font-medium">Supply</th>
                 <th className="py-1.5 text-right font-medium">Sold</th>
                 <th className="py-1.5 text-right font-medium">Reserved</th>
@@ -733,12 +760,14 @@ function ProvenancePanel({ data }: { data: NonNullable<ReturnType<typeof useDash
         title="Provenance"
         description="Tag claims and open cases."
         action={
+          <IfCanOpen href="/provenance">
           <Button variant="ghost" size="sm" asChild>
             <Link href="/provenance">
               Cases
               <ArrowRight className="h-3 w-3" />
             </Link>
           </Button>
+          </IfCanOpen>
         }
       />
       <div className="space-y-3.5 px-4 py-3.5">
@@ -896,7 +925,7 @@ const SECTION_LABELS: Record<string, { label: string; requires: string }> = {
   payments: { label: "Payments", requires: "payment-royalty:read" },
   refunds: { label: "Refunds", requires: "order:read" },
   markets: { label: "Markets", requires: "reports-dashboards:read" },
-  products: { label: "Products", requires: "drop:read" },
+  products: { label: "Drops", requires: "drop:read" },
   content: { label: "Content", requires: "content-unlock:read" },
   artists: { label: "Artists", requires: "brand-artist-record:read" },
   organizations: { label: "Organizations", requires: "brand-artist-record:read" },

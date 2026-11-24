@@ -11,7 +11,26 @@ export function Providers({ children }: { children: React.ReactNode }) {
     () =>
       new QueryClient({
         defaultOptions: {
-          queries: { refetchOnWindowFocus: false, staleTime: 30_000 },
+          queries: {
+            refetchOnWindowFocus: false,
+            staleTime: 30_000,
+            /**
+             * Keep answers in memory for 30 minutes after the last component
+             * unmounts (the default is 5). Navigating away from Orders and
+             * back is then an instant paint from cache with a quiet refetch
+             * behind it, rather than a skeleton. Nothing here is large enough
+             * for the memory to matter — these are pages of rows, not blobs.
+             */
+            gcTime: 30 * 60_000,
+            /**
+             * A laptop coming out of sleep has stale figures on screen. This
+             * refetches once on reconnect, which window-focus refetching
+             * would otherwise have covered — that is off deliberately,
+             * because an operator alt-tabbing between screens all day should
+             * not re-request every panel each time.
+             */
+            refetchOnReconnect: true,
+          },
         },
       })
   );

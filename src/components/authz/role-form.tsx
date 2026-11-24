@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
+import { z } from "zod";
 import { toast } from "sonner";
 import { ArrowLeft, Lock, Trash2 } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
@@ -12,6 +13,7 @@ import {
   useUpdateRole,
 } from "@/lib/api/hooks";
 import { humanize } from "@/lib/format";
+import { requiredKeys } from "@/lib/required-fields";
 import {
   Badge,
   Button,
@@ -27,6 +29,18 @@ import type { PermissionDomain, Role } from "@/lib/types";
 
 const ENTITY_GROUPS = ["hitbox", "brand_artist", "end_user"];
 
+/**
+ * `name` and `displayName` are the fields this form's own `validate()`
+ * actually refuses to submit without — `entityGroup`/`domain` are pickers
+ * that always carry a value, and `permissions` is validated separately (its
+ * own "select at least one" message) rather than through a text Field.
+ */
+const roleSchema = z.object({
+  name: z.string().trim().min(1),
+  displayName: z.string().trim().min(1),
+});
+const REQUIRED_ROLE = requiredKeys(roleSchema);
+
 export function RoleForm({ role }: { role?: Role }) {
   const router = useRouter();
   const isEdit = !!role;
@@ -36,13 +50,16 @@ export function RoleForm({ role }: { role?: Role }) {
   const [displayName, setDisplayName] = React.useState(role?.displayName ?? "");
   const [entityGroup, setEntityGroup] = React.useState(role?.entityGroup ?? "hitbox");
   const [domain, setDomain] = React.useState<PermissionDomain>(role?.domain ?? "BUSINESS");
-  const [permissions, setPermissions] = React.useState<string[]>(role?.permissions ?? []);
+  // The API returns {key, description} objects; the picker works in keys.
+  const [permissions, setPermissions] = React.useState<string[]>(() =>
+    (role?.permissions ?? []).map((p) => p.key)
+  );
   const [isActive, setIsActive] = React.useState(role?.isActive ?? true);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
 
   const catalog = usePermissionCatalog();
   const create = useCreateRole();
-  const update = useUpdateRole(role?.roleId ?? "");
+  const update = useUpdateRole(role?.id ?? "");
   const remove = useDeleteRole();
 
   // Switching domain drops any selection that no longer belongs, so the
@@ -92,8 +109,9 @@ export function RoleForm({ role }: { role?: Role }) {
     if (!validate()) return;
 
     if (isEdit) {
+      // `domain` is deliberately not sent — it is immutable server-side.
       update.mutate(
-        { displayName, entityGroup, domain, permissions, isActive },
+        { displayName, entityGroup, permissions, isActive },
         {
           onSuccess: () => {
             toast.success("Role updated");
@@ -141,6 +159,7 @@ export function RoleForm({ role }: { role?: Role }) {
               label="Name"
               htmlFor="role-name"
               error={errors.name}
+              required={REQUIRED_ROLE.has("name")}
               hint="SCREAMING_SNAKE_CASE. Cannot be changed after creation."
             >
               <Input
@@ -154,7 +173,12 @@ export function RoleForm({ role }: { role?: Role }) {
               />
             </Field>
 
-            <Field label="Display name" htmlFor="role-display" error={errors.displayName}>
+            <Field
+              label="Display name"
+              htmlFor="role-display"
+              error={errors.displayName}
+              required={REQUIRED_ROLE.has("displayName")}
+            >
               <Input
                 id="role-display"
                 value={displayName}
@@ -245,9 +269,8 @@ export function RoleForm({ role }: { role?: Role }) {
             {isEdit && !role?.isSystem ? (
               <Tooltip
                 content={
-                  (role?.assignmentCount ?? 0) > 0
-                    ? "Revoke every assignment before deleting this role."
-                    : "Delete this role permanently."
+                  "Deleting is refused while the role is still assigned " +
+                  "(409 AUTHZ_ROLE_IN_USE) - revoke every assignment first."
                 }
               >
                 <span className="ml-auto">
@@ -257,7 +280,7 @@ export function RoleForm({ role }: { role?: Role }) {
                     size="md"
                     loading={remove.isPending}
                     onClick={() => {
-                      remove.mutate(role!.roleId, {
+                      remove.mutate(role!.id, {
                         onSuccess: () => {
                           toast.success("Role deleted");
                           router.push("/roles");

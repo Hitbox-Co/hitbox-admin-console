@@ -82,7 +82,7 @@ export function Panel({
   return (
     <div
       className={cn(
-        "rounded-[12px] border border-[var(--hairline)] bg-[var(--surface-1)]",
+        "rounded-xl border border-hairline bg-surface-1",
         className
       )}
       {...props}
@@ -106,16 +106,16 @@ export function PanelHeader({
   return (
     <div
       className={cn(
-        "flex items-start justify-between gap-4 border-b border-[var(--hairline)] px-4 py-3",
+        "flex items-start justify-between gap-4 border-b border-hairline px-4 py-3",
         className
       )}
     >
       <div className="min-w-0">
-        <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-[var(--text-1)]">
+        <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-text-1">
           {title}
         </h3>
         {description ? (
-          <p className="mt-0.5 text-[12px] leading-relaxed text-[var(--text-3)]">
+          <p className="mt-0.5 text-[12px] leading-relaxed text-text-3">
             {description}
           </p>
         ) : null}
@@ -174,21 +174,34 @@ export function Badge({
   );
 }
 
-/** Maps the API's status vocabularies onto the semantic palette. */
+/**
+ * Maps the API's status vocabularies onto the semantic palette.
+ *
+ * The finance and payments modules add four more vocabularies to the ones
+ * already here — royalty entry, payout, refund and dispute status — and they
+ * do not agree with each other on what a word means. `ACCEPTED` on a dispute
+ * is a LOSS the platform chose not to fight; `PAID` on a payout is the good
+ * outcome; `REVERSED` is neither an error nor a success but a correction that
+ * happened. Each is placed on the tone an operator should read it as, not on
+ * the tone the word sounds like.
+ */
 export function toneForStatus(status: string): BadgeTone {
   const s = status.toUpperCase();
   if (
-    ["DELIVERED", "PAID", "SUCCESS", "CLEAN", "ACTIVE", "APPROVED", "RESOLVED", "CLAIMED", "CLEARED", "RECEIVED", "SUCCEEDED", "PROCESSED", "PUBLISHED"].includes(s)
+    ["DELIVERED", "PAID", "SUCCESS", "CLEAN", "ACTIVE", "APPROVED", "RESOLVED", "CLAIMED", "CLEARED", "RECEIVED", "SUCCEEDED", "PROCESSED", "PUBLISHED", "WON", "INTACT", "CREDIT"].includes(s)
   )
     return "positive";
   if (
-    ["PENDING", "PENDING_PAYMENT", "IN_REVIEW", "SUBMITTED", "INVESTIGATING", "AWAITING_RETURN", "PARTIAL", "IN_TRANSIT", "INITIATED", "PROCESSING", "REQUESTED"].includes(s)
+    ["PENDING", "PENDING_PAYMENT", "IN_REVIEW", "SUBMITTED", "INVESTIGATING", "AWAITING_RETURN", "PARTIAL", "IN_TRANSIT", "INITIATED", "PROCESSING", "REQUESTED", "NEEDS_REVIEW", "UNDER_REVIEW", "SCHEDULED", "PENDING_PAYOUT", "EVIDENCE_SUBMITTED"].includes(s)
   )
     return "warning";
-  if (["FAILED", "REJECTED", "CANCELLED", "INFECTED", "BLOCKED", "DISPUTED", "FLAGGED", "CRITICAL", "TAMPERED", "DELAYED"].includes(s))
+  if (
+    ["FAILED", "REJECTED", "CANCELLED", "INFECTED", "BLOCKED", "DISPUTED", "FLAGGED", "CRITICAL", "TAMPERED", "DELAYED", "LOST", "DAMAGED", "MISSING"].includes(s)
+  )
     return "danger";
-  if (["SHIPPED", "REFUNDED", "BOUND", "OPEN", "DRAFT", "WARNING"].includes(s)) return "info";
-  if (["ARCHIVED", "ENDED", "WITHDRAWN", "SKIPPED", "UNCLAIMED", "INACTIVE"].includes(s))
+  if (["SHIPPED", "REFUNDED", "BOUND", "OPEN", "DRAFT", "WARNING", "ACCRUED", "REVERSED", "DEBIT"].includes(s))
+    return "info";
+  if (["ARCHIVED", "ENDED", "WITHDRAWN", "SKIPPED", "UNCLAIMED", "INACTIVE", "ACCEPTED"].includes(s))
     return "neutral";
   return "neutral";
 }
@@ -218,7 +231,7 @@ export function Tooltip({
         <TooltipPrimitive.Content
           side={side}
           sideOffset={6}
-          className="rx-content rx-anchored z-[70] max-w-[280px] rounded-[6px] border border-[var(--hairline-strong)] bg-[var(--surface-3)] px-2 py-1.5 text-[12px] leading-snug text-[var(--text-1)] shadow-[var(--shadow-2)]"
+          className="rx-content rx-anchored z-70 max-w-70 rounded-[6px] border border-hairline-strong bg-surface-3 px-2 py-1.5 text-[12px] leading-snug text-text-1 shadow-e2"
         >
           {content}
         </TooltipPrimitive.Content>
@@ -283,6 +296,7 @@ export function Field({
   hint,
   error,
   htmlFor,
+  required,
   children,
   className,
 }: {
@@ -290,6 +304,13 @@ export function Field({
   hint?: string;
   error?: string;
   htmlFor?: string;
+  /**
+   * Marks the label with an asterisk. Pass the result of `isRequired()`
+   * (src/lib/required-fields.ts) rather than a hand-typed boolean, so the
+   * mark tracks the zod schema that actually validates the form instead of
+   * becoming a second, driftable copy of "which fields matter".
+   */
+  required?: boolean;
   children: React.ReactNode;
   className?: string;
 }) {
@@ -300,6 +321,12 @@ export function Field({
         className="block text-[12px] font-medium text-[var(--text-2)]"
       >
         {label}
+        {required ? (
+          <span className="ml-0.5 text-[var(--danger)]" aria-hidden>
+            *
+          </span>
+        ) : null}
+        {required ? <span className="sr-only"> (required)</span> : null}
       </label>
       {children}
       {error ? (

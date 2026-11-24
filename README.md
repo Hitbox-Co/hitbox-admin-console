@@ -14,13 +14,31 @@ TanStack Query.
 
 ## Running it
 
+**The backend must be running.** There is no mock and no offline mode — every
+screen reads live data. Start the API on port 8000 first, then:
+
 ```bash
 npm install
 npm run dev
 ```
 
-`.env.local` already carries the Clerk dev keys. Sign in at `/sign-in`; there is
-no local password store — Clerk holds identity, this app holds a projection.
+`.env` carries the Clerk keys and the backend origin:
+
+```bash
+HITBOX_API_URL=http://localhost:8000
+```
+
+Every request is proxied through `/api/hitbox/*` to
+`<HITBOX_API_URL>/api/v1/...` with the Clerk session JWT attached
+**server-side**, so the token never enters the browser bundle. `getToken()` is
+called per request, never cached — Clerk tokens live ~60s and the SDK refreshes
+them transparently.
+
+If `HITBOX_API_URL` is unset the proxy returns a `502` saying so, rather than
+failing in a way that looks like a backend outage.
+
+Sign in at `/sign-in`; there is no local password store — Clerk holds identity,
+this app holds a projection.
 
 | Script | What it does |
 |---|---|
@@ -28,23 +46,7 @@ no local password store — Clerk holds identity, this app holds a projection.
 | `npm run build` | Production build |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint |
-| `npm run verify:gating` | Asserts the permission-gating contract (see below) |
-
-### Pointing at the real backend
-
-```bash
-# .env.local
-HITBOX_API_URL=https://api.hitbox.example
-```
-
-With that set, every request is proxied to `<HITBOX_API_URL>/api/v1/...` with the
-Clerk session JWT attached **server-side** — the token never enters the browser
-bundle. Leave it blank and the console runs against built-in demo data instead,
-so the whole surface is usable with no backend at all.
-
-Demo mode adds a **View as** control in the header. It re-requests every
-endpoint as another role, which is the fastest way to confirm a section is being
-*omitted* rather than zeroed.
+| `npm run verify:gating` | Asserts the permission logic (see below) |
 
 ---
 
@@ -93,18 +95,31 @@ gives each currency its own column.
   the UI. A permission can never be typed by hand.
 - A person holds a **list** of roles — the assignment UI is additive with
   per-row revoke, not a single-select.
-- Media assets sit in a "processing" state until the scanner marks them `CLEAN`;
-  the list polls while any are pending. Signed URLs are fetched at render and
-  never cached (60s expiry). `storageRef` is an S3 key and is never turned into
-  a URL.
+- Media has no scan pipeline in this deployment — every asset is created
+  `SKIPPED` and is immediately servable, so the console never shows a
+  "processing" state or polls. `publicUrl` is permanent for `DROP_IMAGE`/
+  `PROFILE_IMAGE` and rendered directly; every other type fetches a signed URL
+  at render and never caches it (60s expiry). `storageRef` is an S3 key and is
+  never turned into a URL by hand.
 - `STORAGE_UNAVAILABLE` (503) is surfaced as a configuration fact, not a crash.
 
-### Verifying the contract
+### Verifying the permission logic
 
-`npm run verify:gating` exercises the gating rules end to end against the demo
-router — section presence per role, the Order-Manager-sees-counts-not-amounts
-case, per-row field redaction, role immutability, domain violations, range
-validation and the media 503. 32 assertions, all passing.
+`npm run verify:gating` pins down the part of the contract this console owns:
+how a permission key parses, how `manage` subsumes `read`, how scope width is
+compared (`own < organization < public < masked < masked-partial < global`),
+which navigation entries a given grant set produces, and which grants reach
+the serialized-unit surface. 49 assertions, all passing.
+
+Its grant fixtures are copied verbatim from the backend's
+`role-catalog.ts` — approximating them is how the masked-scope bug below went
+unnoticed.
+
+It deliberately does **not** assert endpoint response shapes. It used to — via
+an in-process mock of the backend — but that mock has been removed now that the
+console talks to the real API, so those assertions no longer had a subject.
+Shape conformance is the backend's contract to keep; verifying it from here
+would need the API running and is better done as an integration test against it.
 
 ---
 
@@ -192,13 +207,12 @@ src/
     ui/                 primitives, states, table, money, loading screen
   lib/
     api/                client + typed React Query hooks
-    demo/               in-process API stand-in (catalog, data, router)
     authz.ts            Permissions helper + permission-driven navigation
     format.ts           money, numbers, dates — the formatting contract
     types.ts            API shapes; every gated section is optional
 public/brand/           the source mark
 scripts/
-  verify-gating.ts      the contract test
+  verify-gating.ts      permission-logic assertions
   build-icons.mjs       composites the mark onto the brand ground for favicons
 ```
 
@@ -255,11 +269,346 @@ curl -s "https://sharing-kit-7.clerk.accounts.dev/v1/environment?__clerk_api_ver
    The documented API surface has no organization-list endpoint; swap in a live
    fetch as soon as one exists, or an `ORGANIZATION`-scoped assignment can be
    made against a stale id and 403 with `SCOPE_MISMATCH`.
-5. **Media upload is read-only in the UI.** The three-step presigned flow is
-   modelled and the 503 path is handled, but no upload form ships — the backend's
-   own presign calls are documented as never having run against a live bucket.
+5. **Media upload ships, against a presign path the backend documents as
+   never having run on a live bucket.** The two-step flow
+   (`POST /admin/media/upload-url` → `PUT` to S3) is wired from the media
+   screen and from a drop's gallery, and the 503 path is handled. A
+   `SignatureDoesNotMatch` from S3 is reported as such rather than as an API
+   error, because that is the failure this path is most likely to produce.
 6. **No CSV export.** `reports-dashboards:export:global` exists in the catalog
    and nothing consumes it yet.
 7. **`notifications` and `platformConfig`** are not implemented, by design —
    `PLATFORM_CONFIG` is TECHNICAL-domain and this dashboard is BUSINESS-domain.
    Technical-only roles get an explicit notice instead of an empty dashboard.
+8. **Publish drop still has no page — and the reason has narrowed to one
+   endpoint.** Three were missing when this was written; two now exist.
+   `ProductImage` placements are live and drive the drop's gallery, and
+   `ProductPrice` is live and drives its pricing table. What remains is the
+   publish step itself: there is no `APPROVED → PUBLISHED/ACTIVE` transition.
+   Submit / amend / approve / reject are driven from **Approvals**; a wizard
+   whose final button cannot publish is worse than no wizard, so the page
+   stays absent until that transition exists (admin-console-api.md §14).
+9. **Resale and Vendors show real gaps, not filled-in fakes.** Resale items
+   carry a SKU id only — no product name, no seller. Vendor supply items carry no
+   product name, no status enum, and no ordered-vs-received split; the
+   original four-state pipeline design cannot be built against this endpoint.
+   Both screens say so in-page rather than inventing the missing fields.
+10. **`follows` on Product demand counts the product's *artist*,** not the
+    product itself — the backend's own query does this, not a labelling
+    choice made here. The screen names it "Artist follows" and explains why.
+
+---
+
+## Aligning against the real backend docs
+
+This console was built once against inferred shapes, then re-verified against
+three backend docs handed off directly by the API team
+(`admin-api-reference.md`, `admin-console-api.md`, `authentication.md`). That
+pass changed real behaviour, not just types:
+
+- **Media's scan pipeline was removed entirely.** There is no virus scanner in
+  this deployment — no SQS, no worker, no callback. Every asset is created
+  `SKIPPED` and is immediately servable. The console no longer shows a
+  "processing" banner or polls the media list; both would have described a
+  pipeline that does not run.
+- **Team became a dedicated, server-searched endpoint** — `GET
+  /admin/authz/team` — rather than a client-side join of roles and
+  assignments. It returns "anyone holding at least one live role," one row
+  per person, roles nested as a union.
+- **Roles list ≠ roles detail.** `GET /admin/authz/roles` returns
+  `permissionCount`/`assignedCount`, not the full permission array; the full
+  list comes from `GET /admin/authz/roles/:roleId`. `RoleSummary` and `Role`
+  in `src/lib/types.ts` model that split.
+- **Revoking a role now disambiguates by organization.** A person can hold
+  the same role at several organizations at once, so `(roleId,
+  organizationId)` — not `roleId` alone — is the real uniqueness key. `DELETE
+  .../roles/:roleId` takes an optional `?organizationId=`.
+- **New `AUTH_*` error codes** from the `requireAuth` pipeline
+  (`authentication.md` §3) get distinct screens: `AUTH_ACCOUNT_NOT_FOUND` (the
+  Clerk↔local-user webhook hasn't landed yet — a real race right after
+  sign-up) shows a calm "still provisioning" wait with a bounded retry, never
+  a tight loop; `AUTH_ACCOUNT_SUSPENDED` is terminal and offers sign-out.
+
+### A real conflict between the two docs, resolved
+
+`admin-console-api.md`'s role-create example uses `permissionIds:
+["p-1…", "p-2…"]`. `admin-api-reference.md`'s uses `permissions:
+["content-unlock:manage:organization", …]` — permission **key** strings.
+These cannot both be literal: the permission catalog
+(`GET /admin/authz/permissions`) returns entries keyed by `key` only, with no
+separate `id` field anywhere in either doc. `permissionIds` has nothing to
+reference. This build uses `permissions: string[]`, documented at the top of
+`src/lib/types.ts` for whoever hits this next.
+
+---
+
+## The write surface
+
+Everything above reports. These screens change state, and all of them read
+live from the backend — there is no local fixture behind any of them.
+
+| Screen | Endpoints | Gate |
+|---|---|---|
+| Markets → Configuration | `GET/POST/PATCH/DELETE /admin/markets` | read `reports-dashboards:read`; **writes `drop:manage` at `:global`** |
+| Orders | `GET /admin/orders`, `GET /admin/orders/:id`, `PATCH /admin/orders/:id/status` | `order:read`; status change `order:manage` |
+| Products | `GET /admin/products/:id`, `POST/PATCH/DELETE /admin/products` | read `drop:read`; **writes `drop:manage` at `:global`** |
+| Products → Pricing | `GET /admin/products/:id/prices`, `PUT /admin/products/:id/prices` | read `drop:read`; **replace `drop:manage` at `:global`** |
+| Approvals | `GET /admin/releases`, `GET /admin/releases/:id`, `POST /admin/releases`, `PATCH /admin/releases/:id`, `POST /admin/releases/:id/decision` | read `release-approval:read`; decide `release-approval:manage` |
+| Media | `GET /admin/media?archived=live\|archived\|all` | `assets-documents-upload:read` |
+| Team | `GET /admin/authz/team?internalOnly=` | `employee-role-mgmt:read` |
+| Team → Invitations | `GET/POST /admin/authz/invitations`, `POST /admin/authz/invitations/:id/revoke` | read `employee-role-mgmt:read`; invite `:assign`; revoke `:delete` |
+
+Five behaviours worth knowing, because they are decisions rather than
+plumbing:
+
+- **Order actions come from `allowedTransitions`,** which the server computes
+  per order. The console never hardcodes the lifecycle graph, so it cannot
+  offer a button that 400s. `PAID` and `REFUNDED` never appear there — they
+  are written by the payment and refund pipelines, and an operator typing one
+  would decouple the order from the transaction that justifies it.
+- **A `409` on a status change means someone else moved it first.** The
+  drawer refetches and says so rather than retrying, which would fight the
+  other operator. A repeat of the *current* status is a `200` no-op, so a
+  double-clicked button never reads as a failure.
+- **`canDecide` / `blockedReason` drive the approve and reject buttons,** not
+  the approval's `status`. The real rule includes whether the caller holds
+  `release-approval:override:global`, which only the server knows.
+- **`globalOnly` gates hide rather than disable.** An org-scoped Brand Admin
+  can read the market list but every write 403s, so the buttons are not
+  rendered at all — offering an action that is certain to be refused is worse
+  than not offering it.
+- **An invitation has two outcomes, and the body says which.** `POST
+  /admin/authz/invitations` grants the role immediately when the address
+  already has a HitBox account — common, because staff buy things too and
+  Clerk refuses to invite an address it knows — and otherwise emails a
+  sign-up link with the role landing only on acceptance. The console reads
+  `outcome` rather than inferring it from the status, because "Priya has the
+  role now" and "Priya will have it when she accepts" are different
+  sentences. The `403` on that route is also shown verbatim: it names the
+  permissions the granter is short of, which a generic message would discard.
+
+### Where the docs and the backend disagreed
+
+The four handed-off docs are accurate for the newer modules (markets, orders,
+products, releases — the shapes were checked against each service's
+`toResponse`). Two older areas had drifted, and in both cases **the service
+mapper won**:
+
+- **Roles.** `admin-console-api.md` §15 shows `roleId`, `permissionCount` and
+  `assignedCount`. None of those three fields exist. `role.service.ts`
+  returns `{ id, name, displayName, entityGroup, domain, isSystem, isActive,
+  createdAt, permissions: [{key, description}] }` — the list already carries
+  every permission, so the edit screen needs no second call. The assignment
+  rows drifted the same way: they are `id` / `roleDisplayName` / `grantedAt`,
+  not `assignmentId` / `displayName` / `assignedAt`. The console had been
+  written against the documented shape, so the Roles, Team and role-assignment
+  screens were reading fields that are never sent.
+- **Products.** `admin-console-api.md` §7 says `/admin/dashboard/products`
+  returns "the same inventory shape the dashboard previews", with
+  `sold`/`available`/`claimed`. It does not — `listProducts()` selects the
+  catalog columns and no counts at all. The Sold, Available and Sell-through
+  columns were therefore rendering from fields that never arrive. Those
+  counts are real on `GET /admin/products/:id → performance`, one product at a
+  time, so they now live in the product drawer and the list links into it.
+
+There is no "Assigned to" column on Roles for the same reason: the endpoint
+carries no assignment count, and deriving one would need a paginated sweep of
+`/admin/authz/team` that undercounts past the first page. A number that is
+quietly wrong is worse than no column.
+
+---
+
+## Loading behaviour
+
+Every screen reads live data, so the work is in not making the operator wait
+for it twice. Four things do the lifting, all TanStack Query:
+
+**The sign-in waterfall is gone.** `AuthzGate` renders nothing until
+`/authz/me` answers — the navigation is derived from it, and flashing a menu
+the operator is not entitled to is worse than a brief wait. But that meant the
+landing page did not mount, so its own request queued *behind* authz.
+`BootstrapPrefetch` sits above the gate and starts the dashboard request while
+authz is still in flight, turning two serial round trips into one.
+
+**Rows warm on hover.** `DataTable` takes an `onRowIntent` callback that fires
+on pointer-enter and keyboard focus; Orders, Products and Approvals
+use it to `prefetchQuery` the row's detail. By the time the click lands the
+drawer usually paints from cache instead of a skeleton. `prefetchQuery` is a
+no-op while an entry is fresh, so crossing a row repeatedly costs one request.
+
+**The next page is already there.** `useNextPageWarm` fetches page N+1 as soon
+as page N lands, and stops at the last page — one spare request per list, not
+one per row.
+
+**Answers survive navigation.** `gcTime` is 30 minutes (the default is 5), so
+leaving Orders and coming back repaints instantly with a quiet refetch behind
+it. `refetchOnWindowFocus` stays off — an operator alt-tabbing all day should
+not re-request every panel — but `refetchOnReconnect` is on, so a laptop
+waking from sleep does not show stale figures.
+
+### Query keys are the whole trick
+
+A prefetch that writes to a key nobody reads is invisible waste: no error, no
+warning, just a duplicate request and a skeleton anyway. Two things keep that
+from happening.
+
+Each detail endpoint has **one** option factory — `orderDetailOptions`,
+`productDetailOptions`, `releaseDetailOptions` — used by both the hook and its
+prefetch, so the key and the fetcher cannot drift apart.
+
+Where a key still has to be built twice (the drawer's default SKU page versus
+what the list prefetches), the equality is *checked* rather than assumed:
+`hashKey` from `@tanstack/query-core` confirms that
+`{skuPage: 1, skuLimit: 50}` and
+`{skuPage: 1, skuLimit: 50, claimedStatus: undefined}` hash identically, that
+`{...params, page: page + 1}` matches what `useListState` produces on the next
+page, and that key order does not matter — against a control pair that must
+differ.
+
+### What is deliberately not done
+
+**The cache is not persisted to `localStorage`.** It is the obvious next
+"faster loading" step and it is the wrong one here: this cache holds
+permission-filtered admin data — order amounts, buyer emails, finance
+figures — and writing it to disk would outlive both the session and the
+grants that authorised it. A revoked Finance Admin would still have last
+week's revenue in their browser. Instant reloads are not worth that.
+
+---
+
+## Serialized units
+
+A drop is two records: the `Product` (the catalog entry — "this drop exists")
+and its `Sku` rows (the physical objects — "#14 of 500 exists, here is its tag
+and who holds it"). The product drawer carries both.
+
+| Surface | Endpoint | Gate |
+|---|---|---|
+| Unit list + filters | `GET /admin/products/:id/skus` | `collectible-instance:read` |
+| Header counts | `GET /admin/products/:id/skus/summary` | same |
+| Mint an edition | `POST /admin/products/:id/skus` | `collectible-instance:manage` |
+| Bind NFC tags | the `tagIds` field on that mint | **additionally** `nfc-tag-claim:manage` |
+| One unit | `GET /admin/skus/:id`, `/admin/skus/code/:skuCode` | `collectible-instance:read` |
+| Every unit | `GET /admin/skus` | global-breadth grant only |
+
+### Columns come from the response, never from the role
+
+A block the caller may not see is **absent from the JSON** — not `null`, not
+`{}`. A SKU row carries three secrets with three different audiences, each
+gated by its own resource: `tag` by `nfc-tag-claim`, `owner` by
+`buyer-profile`, `trust` by `collectible-instance` at full visibility, and any
+money inside by `payment-royalty` on top.
+
+So the units table builds its columns from `"tag" in unit`, and renders an
+absent block as *nothing* — no column, no label, no "—". Against the seeded
+catalog that means a Brand Admin sees every unit of their own edition and no
+tag column at all (brands own the edition; HitBox owns the anti-counterfeiting
+material), while Support sees real tag UIDs and server-masked owner emails.
+Neither is special-cased.
+
+The distinction the `—` would destroy: `owner` **absent** means "you may not
+see owners", while `owner: { ownerId: null }` means "this unit is genuinely
+unowned". Those are different facts and they look different.
+
+### Two refusals a capability check waves through
+
+`collectible-instance:read` alone is not enough to reach these screens, and
+`Permissions.canReadUnits()` mirrors the server's `buildSkuAccess()` rather
+than re-deriving the rule:
+
+- **`:public` is refused.** `BUYER_COLLECTOR` holds
+  `collectible-instance:read:public`, and PUBLIC scope has *all* breadth — so
+  a plain "do they hold a collectible-instance grant" test admits every
+  signed-in buyer on the platform.
+- **`:own` is refused.** An own-scoped grant is a collector looking at their
+  own shelf, not an operator.
+
+`HITBOX_CONTENT_MANAGER` is refused for a third reason: it holds
+`collectible-instance:**update**:global`, and `update` does not imply `read`
+(only `manage` does). It still holds `drop:read`, so the drawer falls back to
+the flat `skuUnits` page the product detail returns — rather than showing it a
+403.
+
+### The scope vocabulary had three values and needed six
+
+`parsePermission` accepted `own | organization | global` and returned `null`
+for anything else, silently dropping the grant. The seeded catalog uses
+**six** tokens — `own`, `organization`, `public`, `masked`, `masked-partial`,
+`global` — so this was discarding real grants:
+
+| Role | Grant that was being dropped | Consequence |
+|---|---|---|
+| `HITBOX_SUPPORT` | `buyer-profile:read:masked`, `collectible-instance:read:masked` | Appeared to hold neither; lost the Buyer column it is entitled to (masked) |
+| `HITBOX_ORDER_MANAGER` | `buyer-profile:read:masked-partial` | Lost its **Buyers** nav entry, which `admin-api-reference.md` §7 says it should have |
+
+The masking scopes reach *every* record and differ from `global` only in how
+much of each record comes back, so they rank above `organization` for breadth
+and carry a separate `Visibility` — `Permissions.visibility(resource)` reports
+`FULL | PARTIAL | MASKED | PUBLIC` alongside `widestScope()`.
+
+`verify:gating` now uses grant lists copied verbatim from
+`role-catalog.ts`. It previously listed Order Manager with
+`buyer-profile:read:global`, and that one substitution is exactly why these
+assertions never caught the bug.
+
+---
+
+## Creating a drop
+
+```
+Products → Add product → Product information → SKUs → Save
+                                                  ↓
+                                   opens the new drop, where
+                                   Add SKUs mints more units
+```
+
+**Add product** is the primary action on Products, gated on `drop:manage` at
+`:global` so an org-scoped Brand Admin browses the catalog without being
+offered a button that would 403.
+
+It is two steps and **one request**. `POST /admin/products` accepts an optional
+`skus` block and writes the drop and its opening edition in a single
+transaction, so the form either produces a drop with N units or produces
+nothing. Creating the product and then minting would leave a half-made drop on
+screen every time the second call failed.
+
+On success the new drop opens straight into its detail, where **Add SKUs**
+lives — the workflow continues instead of dumping the operator back on the
+list. Adding more units is deliberately not on the create form: it belongs
+where the existing edition is visible.
+
+### SKU means serialized unit here, not variation
+
+Worth being precise, because the words pull in different directions:
+
+| | `Product` | `ProductVariant` | `Sku` |
+|---|---|---|---|
+| Means | the drop | size / colour / material | one physical object |
+| Code | `groupCode` — `123456780042` | `variantCode` | `skuCode` — `123456780042-000014` |
+| Count | one per drop | a handful | one row per item, `#1…#totalSupply` |
+| Write API | ✅ `POST /admin/products` | ❌ **none** | ✅ `POST /admin/products/:id/skus` |
+
+So "add multiple SKUs under a product" is fully supported and each unit does
+get its own unique code — but they are *serial numbers*, not size/colour
+variations.
+
+**Variants have no create endpoint.** `ProductVariant` is a real table with
+`optionName`/`optionValue` (exactly "Size: L"), it comes back on every product
+read, and the product DTO states the reason outright: *"a drop being created
+right now has no variants yet"*. So the console can only **target** a variant
+when minting — the Add SKUs dialog shows a variant picker when the drop has
+any, and says nothing when it does not. It deliberately does not offer a
+variant field that would silently do nothing.
+
+Authoring variants needs one endpoint that does not exist yet
+(`POST /admin/products/:id/variants`). It sits alongside the three
+`admin-console-api.md` §14 already lists as missing before the publish wizard
+is buildable end to end.
+
+### Naming
+
+The sidebar says **Vendors**, **Approvals** and **Product demand** where it
+used to say Supply, Release approvals and Demand signals. Only the labels and
+page titles moved — the routes (`/supply`, `/release-approvals`, `/demand`)
+are unchanged, because they are the stable identity that guards, deep links
+from the dashboard, and the gating assertions all key on.

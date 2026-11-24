@@ -193,6 +193,41 @@ export function humanize(value: string): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
+/**
+ * What to call a person on screen. A team member can carry no name and no
+ * handle at all, so fall back through whatever else identifies them, ending at
+ * the local part of their email rather than at a blank cell.
+ */
+export function personLabel(person: {
+  fullName?: string | null;
+  handle?: string | null;
+  email?: string | null;
+}): string {
+  const name = person.fullName?.trim();
+  if (name) return name;
+  const handle = person.handle?.trim();
+  if (handle) return `@${handle}`;
+  const email = person.email?.trim();
+  if (email) return email.split("@")[0];
+  return "Unnamed";
+}
+
+/** Up to two initials for an avatar bubble, from whatever we can call them. */
+export function personInitials(person: {
+  fullName?: string | null;
+  handle?: string | null;
+  email?: string | null;
+}): string {
+  const initials = personLabel(person)
+    .replace(/^@/, "")
+    .split(/[\s._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0])
+    .join("");
+  return initials.toUpperCase() || "?";
+}
+
 /** Trim a uuid for display without losing its identity as a handle. */
 export function shortId(id: string | undefined | null, keep = 8): string {
   if (!id) return "—";

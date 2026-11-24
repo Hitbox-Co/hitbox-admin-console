@@ -120,7 +120,7 @@ const MODULES = [
   {
     icon: Package,
     title: "Drops & supply",
-    body: "Every product across nine lifecycle states, live inventory, vendor purchase orders and demand signals.",
+    body: "Every drop across nine lifecycle states, live inventory, vendor purchase orders and demand signals.",
     perm: "drop:read",
   },
   {

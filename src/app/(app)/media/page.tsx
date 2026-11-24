@@ -11,9 +11,10 @@ import {
   Loader2,
   ServerCrash,
   Sheet,
-  ShieldAlert,
+  Upload,
 } from "lucide-react";
 import { useArchiveAsset, useAssetUrl, useMedia } from "@/lib/api/hooks";
+import { UploadAssetDialog } from "@/components/media/upload-asset-dialog";
 import { ApiError } from "@/lib/api/client";
 import { formatBytes, formatDate, formatNumber, humanize } from "@/lib/format";
 import { usePageChrome } from "@/components/layout/app-shell";
@@ -24,13 +25,13 @@ import {
   Button,
   Mono,
   Panel,
+  Segmented,
   Tooltip,
-  toneForStatus,
 } from "@/components/ui/primitives";
 import { DataTable, Pagination, type Column } from "@/components/ui/table";
 import { FilterRow, FilterSelect, useListState } from "@/components/ui/filters";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/states";
-import type { AssetType, MediaAsset } from "@/lib/types";
+import type { ArchivedFilter, AssetType, MediaAsset } from "@/lib/types";
 
 const ASSET_TYPES: AssetType[] = [
   "DROP_IMAGE",
@@ -53,9 +54,9 @@ const TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
 export default function MediaPage() {
   return (
     <PageGuard
-      can={(p) => p.hasResource("assets-documents-upload")}
+      can={(p) => p.canOpen("/media")}
       what="The media registry"
-      requires="assets-documents-upload"
+      requires="assets-documents-upload:read (platform-wide)"
     >
       <MediaView />
     </PageGuard>
@@ -67,18 +68,24 @@ function MediaView() {
     assetType: undefined,
     virusScanStatus: undefined,
   });
+  /*
+   * `live` is the default deliberately: the media browser shows what is in
+   * use, and an archived asset reappearing in it reads as "the delete did not
+   * work" (admin-write-apis.md §5). `archived` is the recycle bin.
+   */
+  const [archived, setArchived] = React.useState<ArchivedFilter>("live");
   const perms = usePermissions();
-  const query = useMedia(list.params);
+  const query = useMedia({ ...list.params, archived });
   const archive = useArchiveAsset();
   const [preview, setPreview] = React.useState<MediaAsset | null>(null);
+  const [uploading, setUploading] = React.useState(false);
 
   usePageChrome({
-    title: "Media",
-    description: "Uploaded assets, and where they are in the scan pipeline.",
+    title: "Media management",
+    description: "The asset registry. Every upload is servable immediately.",
   });
 
   const canManage = perms.can("assets-documents-upload", "manage");
-  const pendingCount = query.data?.byScanStatus?.PENDING ?? 0;
 
   const columns: Column<MediaAsset>[] = [
     {
@@ -96,7 +103,7 @@ function MediaView() {
                 {r.fileName}
               </p>
               <p className="truncate font-mono text-[10px] text-[var(--text-3)]">
-                {/* An S3 key, not a URL — never build a link from it. */}
+                {/* An S3 key, not a URL — never build a link from it directly. */}
                 {r.storageRef}
               </p>
             </div>
@@ -110,9 +117,22 @@ function MediaView() {
       cell: (r) => <Badge tone="neutral">{humanize(r.assetType)}</Badge>,
     },
     {
-      key: "scan",
-      header: "Scan",
-      cell: (r) => <ScanBadge status={r.virusScanStatus} />,
+      key: "access",
+      header: "Access",
+      cell: (r) =>
+        r.publicUrl ? (
+          <Tooltip content="Anonymously readable — the object needs no signed URL.">
+            <span>
+              <Badge tone="positive">Public</Badge>
+            </span>
+          </Tooltip>
+        ) : (
+          <Tooltip content="Private prefix — a signed URL is fetched per view and expires in 60s.">
+            <span>
+              <Badge tone="neutral">Private</Badge>
+            </span>
+          </Tooltip>
+        ),
     },
     {
       key: "size",
@@ -134,19 +154,12 @@ function MediaView() {
       header: "",
       cell: (r) => (
         <div className="flex items-center justify-end gap-1">
-          <Tooltip
-            content={
-              r.virusScanStatus === "CLEAN"
-                ? "Fetch a fresh signed URL (expires in 60s)"
-                : "Only CLEAN assets are servable"
-            }
-          >
+          <Tooltip content="Preview">
             <span>
               <Button
                 variant="ghost"
                 size="icon-sm"
                 aria-label="Preview asset"
-                disabled={r.virusScanStatus !== "CLEAN"}
                 onClick={() => setPreview(r)}
               >
                 <Eye className="h-3.5 w-3.5" />
@@ -184,30 +197,24 @@ function MediaView() {
   return (
     <div className="space-y-4">
       {query.data ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {(["CLEAN", "PENDING", "INFECTED", "SKIPPED"] as const).map((status) => (
-            <Panel key={status} className="px-4 py-3">
-              <p className="text-[11px] text-[var(--text-3)]">{humanize(status)}</p>
-              <p className="tnum mt-1 text-[20px] font-semibold tracking-[-0.02em] text-[var(--text-1)]">
-                {formatNumber(query.data.byScanStatus?.[status] ?? 0)}
-              </p>
-            </Panel>
-          ))}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <Panel className="px-4 py-3">
+            <p className="text-[11px] text-[var(--text-3)]">Total assets</p>
+            <p className="tnum mt-1 text-[20px] font-semibold tracking-[-0.02em] text-[var(--text-1)]">
+              {formatNumber(query.data.total)}
+            </p>
+          </Panel>
+          {Object.entries(query.data.byType)
+            .slice(0, 2)
+            .map(([type, count]) => (
+              <Panel key={type} className="px-4 py-3">
+                <p className="text-[11px] text-[var(--text-3)]">{humanize(type)}</p>
+                <p className="tnum mt-1 text-[20px] font-semibold tracking-[-0.02em] text-[var(--text-1)]">
+                  {formatNumber(count)}
+                </p>
+              </Panel>
+            ))}
         </div>
-      ) : null}
-
-      {pendingCount > 0 ? (
-        <Panel className="flex items-center gap-2.5 border-[rgba(201,154,63,0.2)] bg-[var(--warning-dim)] px-4 py-2.5">
-          <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--warning)]" aria-hidden />
-          <p className="text-[12px] text-[var(--text-2)]">
-            <span className="font-medium text-[var(--text-1)]">
-              {formatNumber(pendingCount)}
-            </span>{" "}
-            asset{pendingCount === 1 ? " is" : "s are"} still processing. They are
-            not servable until the scanner marks them clean — this list refreshes
-            automatically.
-          </p>
-        </Panel>
       ) : null}
 
       <Panel className="overflow-hidden">
@@ -219,14 +226,37 @@ function MediaView() {
             options={ASSET_TYPES}
             allLabel="All types"
           />
-          <FilterSelect
-            label="Scan"
-            value={list.filters.virusScanStatus}
-            onChange={(v) => list.setFilter("virusScanStatus", v)}
-            options={["CLEAN", "PENDING", "INFECTED", "SKIPPED"]}
-            allLabel="Any status"
+          <Segmented
+            size="sm"
+            value={archived}
+            onChange={(v) => {
+              setArchived(v);
+              list.setPage(1);
+            }}
+            options={[
+              { value: "live" as ArchivedFilter, label: "Live" },
+              { value: "archived" as ArchivedFilter, label: "Archived" },
+              { value: "all" as ArchivedFilter, label: "All" },
+            ]}
           />
-          {canManage ? <UploadNotice /> : null}
+          {/*
+            The two-step presigned upload is live now. The notice stays for
+            callers who cannot upload — a 503 STORAGE_UNAVAILABLE on a deploy
+            with no bucket is still a configuration fact worth naming.
+          */}
+          {canManage ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              className="ml-auto"
+              onClick={() => setUploading(true)}
+            >
+              <Upload className="h-3.5 w-3.5" />
+              Upload asset
+            </Button>
+          ) : (
+            <UploadNotice />
+          )}
         </FilterRow>
 
         {query.isLoading ? (
@@ -244,7 +274,7 @@ function MediaView() {
                 <EmptyState
                   icon={ImageIcon}
                   title="No assets match these filters"
-                  description="Uploads appear here as soon as the presigned PUT completes."
+                  description="Uploads appear here as soon as the presigned PUT completes — there is no processing delay."
                 />
               }
             />
@@ -259,36 +289,12 @@ function MediaView() {
         )}
       </Panel>
 
+      {uploading ? <UploadAssetDialog onClose={() => setUploading(false)} /> : null}
+
       {preview ? (
         <PreviewDialog asset={preview} onClose={() => setPreview(null)} />
       ) : null}
     </div>
-  );
-}
-
-function ScanBadge({ status }: { status: MediaAsset["virusScanStatus"] }) {
-  if (status === "PENDING") {
-    return (
-      <Tooltip content="Uploaded, waiting on the scanner. Not servable yet.">
-        <span className="inline-flex cursor-help items-center gap-1.5 rounded-[6px] bg-[var(--warning-dim)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--warning)]">
-          <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
-          Processing
-        </span>
-      </Tooltip>
-    );
-  }
-  if (status === "INFECTED") {
-    return (
-      <Badge tone="danger" className="gap-1">
-        <ShieldAlert className="h-3 w-3" aria-hidden />
-        Infected
-      </Badge>
-    );
-  }
-  return (
-    <Badge tone={toneForStatus(status)} dot>
-      {humanize(status)}
-    </Badge>
   );
 }
 
@@ -305,9 +311,9 @@ function UploadNotice() {
 }
 
 /**
- * Signed URLs live 60 seconds, so one is fetched when the dialog opens and
- * never cached. A 404 covers four cases identically by design — missing, not
- * clean, archived, or out of scope — so ids from other orgs cannot be probed.
+ * `asset.publicUrl` is already permanent for DROP_IMAGE/PROFILE_IMAGE and is
+ * rendered directly — no call needed. Everything else fetches a short-lived
+ * URL here; that call is skipped for public assets entirely.
  */
 function PreviewDialog({
   asset,
@@ -316,7 +322,9 @@ function PreviewDialog({
   asset: MediaAsset;
   onClose: () => void;
 }) {
-  const { data, isLoading, isError, error } = useAssetUrl(asset.assetId, true);
+  const needsFetch = !asset.publicUrl;
+  const { data, isLoading, isError, error } = useAssetUrl(asset.assetId, needsFetch);
+  const url = asset.publicUrl ?? data?.url;
 
   return (
     <div
@@ -342,19 +350,19 @@ function PreviewDialog({
         </div>
 
         <div className="px-4 py-4">
-          {isLoading ? (
+          {needsFetch && isLoading ? (
             <div className="flex items-center gap-2 text-[13px] text-[var(--text-3)]">
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
               Requesting a signed URL…
             </div>
-          ) : isError ? (
+          ) : needsFetch && isError ? (
             <ErrorState error={error} />
-          ) : data ? (
+          ) : url ? (
             <div className="space-y-3">
               {asset.mimeType.startsWith("image/") ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={data.url}
+                  src={url}
                   alt={asset.fileName}
                   className="max-h-[320px] w-full rounded-[8px] border border-[var(--hairline)] object-contain"
                 />
@@ -364,8 +372,9 @@ function PreviewDialog({
                 </p>
               )}
               <p className="text-[11px] text-[var(--text-3)]">
-                The URL expires in {data.expiresIn}s. It is fetched on render and
-                never cached.
+                {asset.publicUrl
+                  ? "This is a permanent public URL — safe to store."
+                  : "This signed URL expires in 60s and is fetched fresh on every render."}
               </p>
             </div>
           ) : null}

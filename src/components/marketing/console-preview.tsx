@@ -23,7 +23,7 @@ const NAV = [
   { icon: LayoutDashboard, label: "Dashboard", active: true },
   { icon: ShoppingCart, label: "Orders" },
   { icon: Banknote, label: "Finance" },
-  { icon: Package, label: "Products" },
+  { icon: Package, label: "Drops" },
   { icon: ShieldCheck, label: "Provenance" },
   { icon: KeyRound, label: "Roles" },
 ];

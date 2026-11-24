@@ -47,7 +47,13 @@ export function ActivityFeed({ events }: { events: ActivityEvent[] }) {
                 a since-revoked Finance Admin's past approval must still read
                 as a Finance Admin action.
               */}
-              <Tooltip content="The role this actor held when the event occurred, not the roles they hold now.">
+              <Tooltip
+                content={
+                  e.actorRoleSnapshot
+                    ? "The role this actor held when the event occurred, not the roles they hold now."
+                    : "This event carries no role snapshot — typically a system-raised event rather than an operator action."
+                }
+              >
                 <span className="cursor-help text-[var(--text-2)]">
                   {roleLabel(e.actorRoleSnapshot)}
                 </span>

@@ -8,8 +8,6 @@ import { Sidebar } from "./sidebar";
 import { Topbar } from "./topbar";
 import { Button } from "@/components/ui/primitives";
 
-export const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE !== "false";
-
 /**
  * Only the title and description live in context — they are plain strings, so
  * storing them cannot loop. Page-level buttons arrive through a portal
@@ -73,7 +71,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             description={chrome.description}
             actionsSlotRef={setActionsSlot}
             onOpenSidebar={() => setMobileOpen(true)}
-            demoMode={DEMO_MODE}
           />
           <main className="flex-1 overflow-y-auto">
             <div className="mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6 sm:py-6">

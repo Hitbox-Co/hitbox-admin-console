@@ -1,34 +1,23 @@
 /**
- * Verifies the console's core contract: a section the caller cannot see is
- * OMITTED from the dashboard payload, not zeroed.
+ * Verifies the permission logic this console owns.
  *
- *   npx tsx scripts/verify-gating.ts
+ *   npm run verify:gating
  *
- * Runs against the in-process demo router, which mirrors the real service's
- * gating rules. Exits non-zero on any mismatch.
+ * Scope note: this used to also assert the response SHAPES of every endpoint,
+ * against an in-process mock of the backend. That mock is gone — the console
+ * now talks to the real API — so those assertions lost their subject and were
+ * removed rather than left testing a fiction.
+ *
+ * What remains is the part that is still genuinely ours: how a permission key
+ * is parsed, how `manage` subsumes `read`, how scope width is compared, and
+ * which navigation entries a given grant set produces. Those decisions live in
+ * src/lib/authz.ts and are what the whole UI keys off, so they are worth
+ * pinning down.
+ *
+ * Response-shape conformance is now the backend's contract to keep; this
+ * cannot verify it without the backend running.
  */
-import { handleDemo } from "../src/lib/demo/router";
 import { Permissions, visibleNav } from "../src/lib/authz";
-import { permissionsForRole } from "../src/lib/demo/catalog";
-import type { DashboardResponse } from "../src/lib/types";
-
-const EXPECTED: Record<string, string[]> = {
-  HITBOX_SYSTEM_ADMIN: [
-    "period", "summary", "users", "orders", "finance", "payments", "refunds",
-    "markets", "products", "content", "artists", "organizations", "operations",
-    "provenance", "paymentGatewayConfig", "activity",
-  ],
-  HITBOX_ORDER_MANAGER: [
-    "period", "summary", "users", "orders", "refunds", "markets",
-    "operations", "provenance",
-  ],
-  HITBOX_FINANCE_ADMIN: [
-    "period", "summary", "orders", "finance", "payments", "refunds",
-    "markets", "operations", "paymentGatewayConfig",
-  ],
-  HITBOX_PLATFORM_ENGINEER: ["period", "summary"],
-  HITBOX_FULL_STACK_ENGINEER: ["period", "summary"],
-};
 
 let failures = 0;
 
@@ -45,197 +34,644 @@ function check(label: string, actual: unknown, expected: unknown) {
   }
 }
 
-async function dashboardFor(role: string): Promise<DashboardResponse> {
-  const res = await handleDemo(
-    "admin/dashboard",
-    "GET",
-    new URLSearchParams({ period: "month" }),
-    undefined,
-    role
-  );
-  if (res.status !== 200) throw new Error(`status ${res.status} for ${role}`);
-  return res.body as DashboardResponse;
-}
+/** The seeded platform roles, as documented in admin-api-reference.md §7. */
+const ROLE_GRANTS: Record<string, string[]> = {
+  HITBOX_SYSTEM_ADMIN: [
+    "order:manage:global",
+    "order:refund:global",
+    // All THREE payment-royalty verbs, because the catalog grants all three
+    // explicitly. `manage` does not imply `configure` or `override` in
+    // buildFinanceAccess/buildPaymentAccess — each is matched by exact
+    // action — so listing only `manage` here would have made the finance
+    // assertions below pass against a role that does not exist.
+    "payment-royalty:manage:global",
+    "payment-royalty:configure:global",
+    "payment-royalty:override:global",
+    "buyer-profile:manage:global",
+    "drop:manage:global",
+    // manage + override, NOT approve — the catalog withholds approve on
+    // purpose: an administrator may never consent on an owner's behalf.
+    "release-approval:manage:global",
+    "release-approval:override:global",
+    "content-unlock:manage:global",
+    "brand-artist-record:manage:global",
+    "nfc-tag-claim:manage:global",
+    "collectible-instance:manage:global",
+    "employee-role-mgmt:manage:global",
+    "audit-log:read:global",
+    "reports-dashboards:read:global",
+    "assets-documents-upload:manage:global",
+  ],
+  // Copied verbatim from packages/access-control/src/domain/role-catalog.ts.
+  // These used to be hand-written approximations — Order Manager was listed
+  // with `buyer-profile:read:global` when the catalog actually grants
+  // `masked-partial`, and that substitution is precisely what stopped these
+  // assertions from catching a parser that dropped every masked scope.
+  HITBOX_ORDER_MANAGER: [
+    "order:manage:global",
+    "order:refund:global",
+    "buyer-profile:read:masked-partial",
+    "address:read:global",
+    "nfc-tag-claim:read:global",
+  ],
+  HITBOX_SUPPORT: [
+    "buyer-profile:read:masked",
+    "order:read:global",
+    "collectible-instance:read:masked",
+    "nfc-tag-claim:read:global",
+    "nfc-tag-claim:update:global",
+  ],
+  BUYER_COLLECTOR: ["collectible-instance:read:public"],
+  // READ, not manage. The catalog withholds `payment-royalty:manage` and
+  // `:configure` from this role on purpose — the comment beside it says so in
+  // as many words: "Gateway configuration and the royalty ledger are
+  // System-Admin-only, so this role reads but never configures." The console's
+  // copy said `manage:global`, which would have shown a finance operator a
+  // Schedule-payouts button that answers 403.
+  HITBOX_FINANCE_ADMIN: [
+    "payment-royalty:read:global",
+    "order:read:global",
+    "reports-dashboards:read:global",
+  ],
+  // Also copied verbatim from the catalog. This used to list six of the
+  // fifteen — no release-approval, no collectible-instance, no
+  // content-unlock, no brand-artist-record, no notification-config — which
+  // made every assertion about what a Brand Admin can reach weaker than it
+  // looked, because the fixture could not see the entries those grants open.
+  BRAND_ADMIN: [
+    "drop:manage:organization",
+    "release-approval:read:organization",
+    "release-approval:approve:organization",
+    "release-approval:reject:organization",
+    "collectible-instance:manage:organization",
+    "assets-documents-upload:manage:organization",
+    "content-unlock:manage:organization",
+    "reports-dashboards:read:organization",
+    "payment-royalty:read:organization",
+    "brand-artist-record:read:organization",
+    "brand-artist-record:update:organization",
+    "employee-role-mgmt:read:organization",
+    "employee-role-mgmt:assign:organization",
+    "notification-config:update:organization",
+    "order:read:organization",
+  ],
+  // The catalog's ARTIST is wider than this list used to claim. It holds
+  // `payment-royalty:read:own` and `reports-dashboards:read:own` — the whole
+  // point of the role is that a creator can see their own earnings — and it
+  // manages drops at ORGANIZATION scope, not own. Both omissions mattered:
+  // without the royalty grant the Finance and Payments entries looked
+  // unreachable to an artist, which is the opposite of what the finance API
+  // is built to do.
+  ARTIST: [
+    "drop:manage:organization",
+    "release-approval:read:organization",
+    "release-approval:approve:organization",
+    "release-approval:reject:organization",
+    "collectible-instance:manage:organization",
+    "assets-documents-upload:manage:organization",
+    "content-unlock:manage:organization",
+    "reports-dashboards:read:own",
+    "payment-royalty:read:own",
+    "brand-artist-record:read:own",
+    "brand-artist-record:update:own",
+    "notification-config:update:own",
+  ],
+  // Same authoring rights as Brand Admin, no approval authority.
+  BRAND_EMPLOYEE: [
+    "drop:manage:organization",
+    "release-approval:read:organization",
+    "collectible-instance:manage:organization",
+    "assets-documents-upload:manage:organization",
+    "content-unlock:manage:organization",
+    "reports-dashboards:read:organization",
+    "notification-config:update:organization",
+    "order:read:organization",
+  ],
+  // Manages every brand's drops; reads reviews, decides none.
+  HITBOX_DROP_MANAGER: [
+    "drop:manage:global",
+    "release-approval:read:global",
+    "collectible-instance:manage:global",
+    "assets-documents-upload:manage:global",
+    "general-location:read:masked",
+    "search-discover:manage:global",
+    "reports-dashboards:read:global",
+  ],
+  // A vendor's own staff (vendor-onboarding-flow.md §1) — exactly two
+  // own-scoped keys, and nothing else in the console.
+  VENDOR: ["vendor-supply:read:own", "vendor-supply:create:own"],
+  HITBOX_PLATFORM_ENGINEER: [
+    "platform-config:manage:global",
+    "service-health:manage:global",
+    "feature-flag:manage:global",
+  ],
+};
 
-async function main() {
-  console.log("\nSection presence per role\n");
-  for (const [role, expected] of Object.entries(EXPECTED)) {
-    const d = await dashboardFor(role);
-    check(`${role} keys`, Object.keys(d).sort(), [...expected].sort());
-  }
+const permsFor = (role: string) => new Permissions(ROLE_GRANTS[role]);
+const navFor = (role: string) => visibleNav(permsFor(role)).map((n) => n.href);
 
-  console.log("\nThe canonical case: Order Manager sees refund counts, not amounts\n");
-  const om = await dashboardFor("HITBOX_ORDER_MANAGER");
-  check("refunds.processed present", typeof om.refunds?.processed, "number");
-  check("refunds.amount absent", "amount" in (om.refunds ?? {}), false);
+function main() {
+  console.log("\nPermission keys parse as resource:action:scope\n");
+  const admin = permsFor("HITBOX_SYSTEM_ADMIN");
+  check("reads a granted resource", admin.canRead("order"), true);
+  check("rejects an ungranted resource", admin.canRead("platform-config"), false);
+  check("malformed keys are ignored", new Permissions(["nonsense"]).isEmpty, true);
   check(
-    "operations.paymentsNeedingReview absent",
-    "paymentsNeedingReview" in (om.operations ?? {}),
+    "an unknown scope word is not a valid grant",
+    new Permissions(["order:read:everywhere"]).canRead("order"),
     false
   );
-  check("summary has no revenue", "grossRevenue" in om.summary, false);
-  check("summary has no profit", "profit" in om.summary, false);
 
-  console.log("\nFinance Admin: money yes, buyers and products no\n");
-  const fa = await dashboardFor("HITBOX_FINANCE_ADMIN");
-  check("refunds.amount present", "amount" in (fa.refunds ?? {}), true);
+  console.log("\n`manage` subsumes the non-destructive actions, but not itself\n");
+  const dropManager = new Permissions(["drop:manage:global"]);
+  check("manage implies read", dropManager.canRead("drop"), true);
+  check("manage implies approve", dropManager.can("drop", "approve"), true);
   check(
-    "operations.paymentsNeedingReview present",
-    "paymentsNeedingReview" in (fa.operations ?? {}),
-    true
+    "read does NOT imply manage",
+    new Permissions(["drop:read:global"]).can("drop", "manage"),
+    false
   );
-  check("summary.totalUsers absent", "totalUsers" in fa.summary, false);
-  check("summary.totalProducts absent", "totalProducts" in fa.summary, false);
-  check("users section absent", "users" in fa, false);
 
-  console.log("\nMoney is never a bare number\n");
-  const sa = await dashboardFor("HITBOX_SYSTEM_ADMIN");
-  const gross = sa.finance!.grossRevenue;
-  check("grossRevenue is an object", typeof gross, "object");
+  console.log("\nScope width is ordered own < organization < global\n");
+  const orgScoped = new Permissions(["order:read:organization"]);
+  check("organization satisfies an own-scope need", orgScoped.can("order", "read", "own"), true);
+  check("organization satisfies organization", orgScoped.can("order", "read", "organization"), true);
+  check("organization does NOT satisfy global", orgScoped.can("order", "read", "global"), false);
+  check("widestScope reports the widest held", orgScoped.widestScope("order"), "organization");
   check(
-    "every value is a string",
-    Object.values(gross).every((v) => typeof v === "string"),
-    true
-  );
-  check("more than one currency", Object.keys(gross).length > 1, true);
-
-  console.log("\nTechnical roles get no business sections\n");
-  const pe = await dashboardFor("HITBOX_PLATFORM_ENGINEER");
-  check("summary is empty", Object.keys(pe.summary).length, 0);
-  check(
-    "Permissions.isTechnicalOnly",
-    new Permissions(permissionsForRole("HITBOX_PLATFORM_ENGINEER")).isTechnicalOnly,
-    true
+    "widestScope is null for an ungranted resource",
+    orgScoped.widestScope("drop"),
+    null
   );
   check(
-    "nav offers only the dashboard",
-    visibleNav(new Permissions(permissionsForRole("HITBOX_PLATFORM_ENGINEER"))).map(
-      (n) => n.href
-    ),
+    "the widest of several grants wins",
+    new Permissions(["order:read:own", "order:read:global"]).widestScope("order"),
+    "global"
+  );
+
+  console.log("\nTechnical-only roles hold nothing the dashboard is built from\n");
+  check(
+    "platform engineer is technical-only",
+    permsFor("HITBOX_PLATFORM_ENGINEER").isTechnicalOnly,
+    true
+  );
+  check("system admin is not", permsFor("HITBOX_SYSTEM_ADMIN").isTechnicalOnly, false);
+  check("artist is not", permsFor("ARTIST").isTechnicalOnly, false);
+
+  console.log("\nNavigation is derived from grants, never from a role name\n");
+  check(
+    "a technical role is offered only the dashboard",
+    navFor("HITBOX_PLATFORM_ENGINEER"),
     ["/dashboard"]
   );
 
-  console.log("\nSub-endpoints 403 instead of omitting\n");
-  const forbidden = await handleDemo(
-    "admin/dashboard/finance",
-    "GET",
-    new URLSearchParams(),
-    undefined,
-    "HITBOX_ORDER_MANAGER"
-  );
-  check("finance sub-endpoint status", forbidden.status, 403);
   check(
-    "finance sub-endpoint code",
-    (forbidden.body as { error: { code: string } }).error.code,
-    "AUTHZ_FORBIDDEN"
+    "a vendor is offered the dashboard and the vendor portal only",
+    navFor("VENDOR"),
+    ["/dashboard", "/vendor"]
   );
+  check("a vendor is vendor-only", permsFor("VENDOR").isVendorOnly, true);
+  check("a system admin is not vendor-only", permsFor("HITBOX_SYSTEM_ADMIN").isVendorOnly, false);
 
-  console.log("\nOrder rows drop fields the caller may not see\n");
-  const omOrders = await handleDemo(
-    "admin/dashboard/orders",
-    "GET",
-    new URLSearchParams({ limit: "1" }),
-    undefined,
-    "HITBOX_ORDER_MANAGER"
-  );
-  const omRow = (omOrders.body as { items: Record<string, unknown>[] }).items[0];
-  check("order.amount absent for Order Manager", "amount" in omRow, false);
-  check("order.buyerId present for Order Manager", "buyerId" in omRow, true);
+  const orderManagerNav = navFor("HITBOX_ORDER_MANAGER");
+  check("order manager gets Orders", orderManagerNav.includes("/orders"), true);
+  check("order manager gets Buyers", orderManagerNav.includes("/users"), true);
+  check("order manager does NOT get Finance", orderManagerNav.includes("/finance"), false);
+  check("order manager does NOT get Products", orderManagerNav.includes("/products"), false);
+  check("order manager does NOT get Media", orderManagerNav.includes("/media"), false);
 
-  const faOrders = await handleDemo(
-    "admin/dashboard/orders",
-    "GET",
-    new URLSearchParams({ limit: "1" }),
-    undefined,
-    "HITBOX_FINANCE_ADMIN"
-  );
-  const faRow = (faOrders.body as { items: Record<string, unknown>[] }).items[0];
-  check("order.amount present for Finance Admin", "amount" in faRow, true);
-  check("order.buyerId absent for Finance Admin", "buyerId" in faRow, false);
+  const financeNav = navFor("HITBOX_FINANCE_ADMIN");
+  check("finance admin gets Finance", financeNav.includes("/finance"), true);
+  check("finance admin gets Orders", financeNav.includes("/orders"), true);
+  check("finance admin does NOT get Buyers", financeNav.includes("/users"), false);
+  check("finance admin does NOT get Roles", financeNav.includes("/roles"), false);
 
-  console.log("\nRole immutability and domain rules\n");
-  const editSeeded = await handleDemo(
-    "admin/authz/roles/r-sys-01",
-    "PATCH",
-    new URLSearchParams(),
-    { permissions: ["order:read:global"] },
-    "HITBOX_SYSTEM_ADMIN"
-  );
-  check("editing a seeded role", editSeeded.status, 403);
+  const artistNav = navFor("ARTIST");
+  check("artist gets Products", artistNav.includes("/products"), true);
+  // admin/media carries no organization context, so the artist's
+  // organization-scoped upload grant is refused by the engine.
+  check("artist does NOT get Media (org grant, no-context route)", artistNav.includes("/media"), false);
+  // The finance guard supplies an OWNER context, so `payment-royalty:read:own`
+  // passes — an artist reaches their own earnings. Payments routes supply no
+  // context at all, so the same OWN grant is refused there.
+  check("artist gets Finance (own royalties)", artistNav.includes("/finance"), true);
+  check("artist does NOT get Payments (no-context routes)", artistNav.includes("/payments"), false);
+  check("artist does NOT get Supply overview", artistNav.includes("/supply"), false);
+  check("artist does NOT get Orders", artistNav.includes("/orders"), false);
+  check("artist does NOT get Team", artistNav.includes("/team"), false);
   check(
-    "immutable code",
-    (editSeeded.body as { error: { code: string } }).error.code,
-    "AUTHZ_ROLE_IMMUTABLE"
+    "artist does NOT get Markets (own-scoped reports, no order grant)",
+    artistNav.includes("/markets"),
+    false
   );
+  check("artist gets My workspace", artistNav.includes("/artist"), true);
 
-  const deactivate = await handleDemo(
-    "admin/authz/roles/r-sys-01",
-    "PATCH",
-    new URLSearchParams(),
-    { isActive: false },
-    "HITBOX_SYSTEM_ADMIN"
-  );
-  check("deactivating a seeded role is allowed", deactivate.status, 200);
-
-  const mixed = await handleDemo(
-    "admin/authz/roles",
-    "POST",
-    new URLSearchParams(),
-    {
-      name: "MIXED_DOMAIN_ROLE",
-      displayName: "Mixed",
-      entityGroup: "hitbox",
-      domain: "BUSINESS",
-      permissions: ["order:read:global", "feature-flag:manage:global"],
-    },
-    "HITBOX_SYSTEM_ADMIN"
-  );
-  check("mixing domains", mixed.status, 400);
+  const brandAdminNav = navFor("BRAND_ADMIN");
+  // The finance guard carries an owner context only; an ORGANIZATION grant
+  // has no organization to match and is refused (finance/src/module.ts).
+  check("brand admin does NOT get Finance (org grant refused)", brandAdminNav.includes("/finance"), false);
+  // Team and roles routes carry no organization context either.
+  check("brand admin does NOT get Team (org grant refused)", brandAdminNav.includes("/team"), false);
+  check("brand admin does NOT get Orders", brandAdminNav.includes("/orders"), false);
+  check("brand admin gets Resale (dashboard projection)", brandAdminNav.includes("/resale"), true);
   check(
-    "domain violation code",
-    (mixed.body as { error: { code: string } }).error.code,
-    "AUTHZ_DOMAIN_VIOLATION"
+    "brand admin does NOT get the audit log",
+    brandAdminNav.includes("/activity"),
+    false
+  );
+  check("brand admin gets My workspace", brandAdminNav.includes("/artist"), true);
+
+  // "Mine" filters nothing for a grant that reaches every record, so the
+  // workspace is withheld from staff rather than rendering the platform
+  // back to them under a personal heading.
+  check(
+    "system admin does NOT get My workspace (global scope)",
+    navFor("HITBOX_SYSTEM_ADMIN").includes("/artist"),
+    false
+  );
+  check(
+    "order manager does NOT get My workspace (no brand-artist grant)",
+    navFor("HITBOX_ORDER_MANAGER").includes("/artist"),
+    false
   );
 
-  console.log("\nCustom range validation\n");
-  const badRange = await handleDemo(
-    "admin/dashboard",
-    "GET",
-    new URLSearchParams({ period: "custom", from: "2026-09-10", to: "2026-09-01" }),
-    undefined,
-    "HITBOX_SYSTEM_ADMIN"
-  );
-  check("reversed range", badRange.status, 422);
+  // /artist/me checks brand-artist-record at OWN scope against the caller's
+  // own user id — an artist's grant and nobody else's (artist-profile-api.md §8).
+  check("artist gets My profile", artistNav.includes("/artist/profile"), true);
   check(
-    "reversed range code",
-    (badRange.body as { error: { code: string } }).error.code,
-    "INVALID_RANGE"
+    "brand admin does NOT get My profile (org scope is a 403)",
+    brandAdminNav.includes("/artist/profile"),
+    false
+  );
+  check(
+    "system admin does NOT get My profile (no profile of their own)",
+    navFor("HITBOX_SYSTEM_ADMIN").includes("/artist/profile"),
+    false
   );
 
-  console.log("\nMedia storage is reported unavailable, not broken\n");
-  const upload = await handleDemo(
-    "admin/media/upload-url",
-    "POST",
-    new URLSearchParams(),
-    {},
-    "HITBOX_SYSTEM_ADMIN"
-  );
-  check("upload-url status", upload.status, 503);
+  // Collections: the artist's own (OWN scope), and the platform-wide monitor
+  // (brand-artist-record:read at GLOBAL — globalOnly server-side).
+  check("artist gets My collections", artistNav.includes("/artist/collections"), true);
+  check("brand admin does NOT get My collections", brandAdminNav.includes("/artist/collections"), false);
   check(
-    "upload-url code",
-    (upload.body as { error: { code: string } }).error.code,
-    "STORAGE_UNAVAILABLE"
+    "system admin gets the Artist collections monitor",
+    navFor("HITBOX_SYSTEM_ADMIN").includes("/artist-collections"),
+    true
   );
+  check(
+    "brand admin does NOT get the monitor (organization scope is a 403)",
+    brandAdminNav.includes("/artist-collections"),
+    false
+  );
+  check("artist does NOT get the monitor", artistNav.includes("/artist-collections"), false);
+  // The artist directory (/admin/artists) takes drop:read with no organization context.
+  check("system admin gets Artists", navFor("HITBOX_SYSTEM_ADMIN").includes("/artists"), true);
+  check("brand admin does NOT get Artists (organization scope)", brandAdminNav.includes("/artists"), false);
+  check("artist does NOT get Artists", artistNav.includes("/artists"), false);
+  // Rewards moderation: content-unlock:manage platform-wide (admin-rewards-api.md §1).
+  check("system admin gets Rewards", navFor("HITBOX_SYSTEM_ADMIN").includes("/rewards"), true);
+  check("brand admin does NOT get Rewards (organization scope)", brandAdminNav.includes("/rewards"), false);
+  check("artist does NOT get Rewards", artistNav.includes("/rewards"), false);
+
+  console.log("\nMedia keys off a platform-wide read grant, which `manage` subsumes\n");
+  const hrefs = (keys: string[]) =>
+    visibleNav(new Permissions(keys)).map((n) => n.href);
+  check(
+    "a global manage grant yields Media",
+    hrefs(["assets-documents-upload:manage:global"]).includes("/media"),
+    true
+  );
+  check(
+    "a global read grant yields Media",
+    hrefs(["assets-documents-upload:read:global"]).includes("/media"),
+    true
+  );
+  check(
+    "an own-scoped grant does not (the route has no owner context)",
+    hrefs(["assets-documents-upload:manage:own"]).includes("/media"),
+    false
+  );
+  check(
+    "no media grant means no Media entry",
+    hrefs(["order:read:global"]).includes("/media"),
+    false
+  );
+
+  console.log("\nThe catalog has six scopes, not three\n");
+  check(
+    "a masked scope parses instead of being dropped",
+    permsFor("HITBOX_SUPPORT").canRead("buyer-profile"),
+    true
+  );
+  check(
+    "masked-partial parses too",
+    permsFor("HITBOX_ORDER_MANAGER").canRead("buyer-profile"),
+    true
+  );
+  check(
+    "Order Manager therefore keeps its Buyers entry",
+    navFor("HITBOX_ORDER_MANAGER").includes("/users"),
+    true
+  );
+  check(
+    "masked reaches every record, so it outranks organization",
+    new Permissions(["buyer-profile:read:masked"]).can(
+      "buyer-profile",
+      "read",
+      "organization"
+    ),
+    true
+  );
+  check(
+    "visibility is reported distinctly from breadth",
+    permsFor("HITBOX_SUPPORT").visibility("buyer-profile"),
+    "MASKED"
+  );
+
+  console.log("\nSerialized units refuse the two cases a capability check waves through\n");
+  check(
+    "Support reaches units (masked)",
+    permsFor("HITBOX_SUPPORT").canReadUnits(),
+    true
+  );
+  check(
+    "a buyer holding :public is refused",
+    permsFor("BUYER_COLLECTOR").canReadUnits(),
+    false
+  );
+  check(
+    "an own-scoped collector is refused",
+    new Permissions(["collectible-instance:read:own"]).canReadUnits(),
+    false
+  );
+  check(
+    "update does not imply read, so Content Manager is refused",
+    new Permissions([
+      "collectible-instance:update:global",
+      "drop:read:global",
+    ]).canReadUnits(),
+    false
+  );
+  check(
+    "System Admin may mint and bind tags",
+    permsFor("HITBOX_SYSTEM_ADMIN").canMintUnits() &&
+      permsFor("HITBOX_SYSTEM_ADMIN").canBindTags(),
+    true
+  );
+  check(
+    "Support may not mint",
+    permsFor("HITBOX_SUPPORT").canMintUnits(),
+    false
+  );
+
+  /* ---------------------------------------------------------------- */
+  /* Finance & payments                                                */
+  /* ---------------------------------------------------------------- */
+
+  console.log("\nFinance reads are scope-narrowed, never role-named\n");
+  check(
+    "system admin reads globally",
+    permsFor("HITBOX_SYSTEM_ADMIN").financeScope(),
+    "global"
+  );
+  check(
+    "finance admin reads globally",
+    permsFor("HITBOX_FINANCE_ADMIN").financeScope(),
+    "global"
+  );
+  check(
+    "brand admin is confined to its organization",
+    permsFor("BRAND_ADMIN").financeScope(),
+    "organization"
+  );
+  check("artist is confined to their own", permsFor("ARTIST").financeScope(), "own");
+  check(
+    "order manager holds no payment-royalty grant at all",
+    permsFor("HITBOX_ORDER_MANAGER").financeScope(),
+    null
+  );
+  check(
+    "a role with no grant is refused rather than shown an empty list",
+    permsFor("HITBOX_ORDER_MANAGER").canReadFinance(),
+    false
+  );
+
+  console.log("\n`manage` does NOT imply `override` or `configure` on money\n");
+  // buildFinanceAccess matches these by EXACT action — only `read` is
+  // satisfied by a wider verb. A UI using the usual `can()` here would offer
+  // a Reverse button to anyone holding manage, and the controller would 403.
+  const manageOnly = new Permissions(["payment-royalty:manage:global"]);
+  check("manage alone can manage", manageOnly.canManageFinance(), true);
+  check("manage alone cannot override", manageOnly.canOverrideRoyalties(), false);
+  check("manage alone cannot configure", manageOnly.canConfigureGateways(), false);
+  check(
+    "system admin holds all three explicitly",
+    [
+      permsFor("HITBOX_SYSTEM_ADMIN").canManageFinance(),
+      permsFor("HITBOX_SYSTEM_ADMIN").canOverrideRoyalties(),
+      permsFor("HITBOX_SYSTEM_ADMIN").canConfigureGateways(),
+    ],
+    [true, true, true]
+  );
+  check(
+    "an organization-scoped manage grant is not enough — writes are global-only",
+    new Permissions(["payment-royalty:manage:organization"]).canManageFinance(),
+    false
+  );
+
+  console.log("\nFinance Admin reads everything and writes nothing\n");
+  const financeAdmin = permsFor("HITBOX_FINANCE_ADMIN");
+  check("reads finance", financeAdmin.canReadFinance(), true);
+  check("cannot schedule a payout", financeAdmin.canManageFinance(), false);
+  check("cannot reverse an accrual", financeAdmin.canOverrideRoyalties(), false);
+  check("cannot configure a gateway", financeAdmin.canConfigureGateways(), false);
+  check("cannot work the refund queue", financeAdmin.canWorkRefunds(), false);
+
+  console.log("\nThe refund workflow needs BOTH grants, which is the rough edge\n");
+  // Every refund handler calls buildPaymentAccess() before it runs, and that
+  // throws 403 when the caller holds no payment-royalty grant. Order Manager
+  // holds `order:refund:global` and no payment-royalty grant, so it is
+  // refused on the workflow it was named for. Checking only the refund
+  // capability would render four buttons that each answer 403.
+  check(
+    "system admin can work refunds",
+    permsFor("HITBOX_SYSTEM_ADMIN").canWorkRefunds(),
+    true
+  );
+  check(
+    "order manager holds order:refund:global",
+    permsFor("HITBOX_ORDER_MANAGER").hasAction("order", "refund", "global"),
+    true
+  );
+  check(
+    "…and is still refused, because it holds no payment-royalty grant",
+    permsFor("HITBOX_ORDER_MANAGER").canWorkRefunds(),
+    false
+  );
+  check(
+    "adding a read grant to that role would fix it",
+    new Permissions([
+      "order:refund:global",
+      "payment-royalty:read:global",
+    ]).canWorkRefunds(),
+    true
+  );
+
+  console.log("\nThe money entries follow the grant, not the job title\n");
+  check(
+    "finance admin gets Payments",
+    navFor("HITBOX_FINANCE_ADMIN").includes("/payments"),
+    true
+  );
+  check(
+    "order manager gets neither Finance nor Payments",
+    navFor("HITBOX_ORDER_MANAGER").some((h) => h === "/finance" || h === "/payments"),
+    false
+  );
+  check(
+    "brand admin does NOT get Payments (no-context routes refuse org grants)",
+    navFor("BRAND_ADMIN").includes("/payments"),
+    false
+  );
+  check(
+    "a technical role gets neither",
+    navFor("HITBOX_PLATFORM_ENGINEER").some(
+      (h) => h === "/finance" || h === "/payments"
+    ),
+    false
+  );
+
+  // Publishing is a transition on one drop, offered from its detail — not a
+  // screen of its own.
+  console.log("\nPublish drop has no nav entry — it is an action on a drop\n");
+  check(
+    "no role is offered a publish-drop route",
+    Object.keys(ROLE_GRANTS).some((r) => navFor(r).includes("/publish-drop")),
+    false
+  );
+
+  /*
+   * drop-approval-lifecycle.md §9, row by row. These assert which ROUTES a
+   * role reaches. Whether it may approve a particular drop turns on the
+   * review's frozen authority and comes back as canApprove from the server;
+   * the table's "own drops" qualifiers are exactly that server-side narrowing.
+   *
+   *   role   read  submit  amend  decide  reopen  catalog (edit / publish)
+   */
+  const LIFECYCLE: Record<string, [boolean, boolean, boolean, boolean, boolean, boolean]> = {
+    ARTIST: [true, true, false, true, false, false],
+    BRAND_ADMIN: [true, true, false, true, false, false],
+    BRAND_EMPLOYEE: [true, true, false, false, false, false],
+    HITBOX_SYSTEM_ADMIN: [true, true, true, true, true, true],
+    HITBOX_DROP_MANAGER: [true, true, false, false, false, true],
+    BUYER_COLLECTOR: [false, false, false, false, false, false],
+    HITBOX_PLATFORM_ENGINEER: [false, false, false, false, false, false],
+  };
+  console.log("\nRelease lifecycle — who reaches which route (§9)\n");
+  for (const [role, [read, submit, amend, decide, reopen, catalog]] of Object.entries(
+    LIFECYCLE
+  )) {
+    const p = permsFor(role);
+    check(`${role} reads reviews`, p.canRead("release-approval"), read);
+    check(`${role} submits for review`, p.canSubmitRelease(), submit);
+    check(`${role} amends review notes`, p.canAmendRelease(), amend);
+    check(`${role} reaches the decision route`, p.canReachReleaseDecision(), decide);
+    check(`${role} reopens a decided review`, p.canReopenRelease(), reopen);
+    check(`${role} edits and publishes drops`, p.canManageCatalog(), catalog);
+  }
+
+  console.log("\nThe decision route admits approve, reject OR manage — none implies another\n");
+  check(
+    "approve alone reaches it (the bug §9 records: it used to need manage)",
+    new Permissions(["release-approval:approve:organization"]).canReachReleaseDecision(),
+    true
+  );
+  check(
+    "reject alone reaches it",
+    new Permissions(["release-approval:reject:global"]).canReachReleaseDecision(),
+    true
+  );
+  check(
+    "read alone does not",
+    new Permissions(["release-approval:read:global"]).canReachReleaseDecision(),
+    false
+  );
+  check(
+    "approve does not imply manage, so it cannot amend notes",
+    new Permissions(["release-approval:approve:global"]).canAmendRelease(),
+    false
+  );
+  check(
+    "manage does not imply override, so it cannot reopen",
+    new Permissions(["release-approval:manage:global"]).canReopenRelease(),
+    false
+  );
+
+  console.log("\nSubmit rides on drop:manage at any scope; catalog writes need GLOBAL\n");
+  check(
+    "org-scoped drop:manage submits",
+    new Permissions(["drop:manage:organization"]).canSubmitRelease(),
+    true
+  );
+  check(
+    "org-scoped drop:manage cannot edit or publish (globalOnly routes)",
+    new Permissions(["drop:manage:organization"]).canManageCatalog(),
+    false
+  );
+  check(
+    "drop:read cannot submit",
+    new Permissions(["drop:read:global"]).canSubmitRelease(),
+    false
+  );
+  check(
+    "public drop:read cannot submit (BUYER_COLLECTOR's grant)",
+    new Permissions(["drop:read:public"]).canSubmitRelease(),
+    false
+  );
+
+  /*
+   * Every console route × role, against what the backend guard admits
+   * (authorization-engine.ts: ORGANIZATION grants need an organization
+   * context, OWN grants an owner context; most admin routes supply neither).
+   */
+  console.log("\nConsole routes offered exactly where the backend admits the load\n");
+  const MATRIX: Record<string, Record<string, boolean>> = {
+    "/orders": { ARTIST: false, BRAND_ADMIN: false, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: true, HITBOX_FINANCE_ADMIN: true },
+    // Packing: viewing takes order:read; the scan-first station takes order:manage.
+    "/packing": { HITBOX_SYSTEM_ADMIN: true, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: true, HITBOX_FINANCE_ADMIN: true },
+    "/packing/scan": { HITBOX_SYSTEM_ADMIN: true, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: false, HITBOX_FINANCE_ADMIN: false },
+    "/finance": { ARTIST: true, BRAND_ADMIN: false, BRAND_EMPLOYEE: false, HITBOX_FINANCE_ADMIN: true, HITBOX_ORDER_MANAGER: false },
+    "/payments": { ARTIST: false, BRAND_ADMIN: false, HITBOX_FINANCE_ADMIN: true },
+    "/resale": { ARTIST: false, BRAND_ADMIN: true, HITBOX_ORDER_MANAGER: true },
+    "/products": { ARTIST: true, BRAND_ADMIN: true, HITBOX_DROP_MANAGER: true, HITBOX_ORDER_MANAGER: false },
+    "/products/detail": { ARTIST: false, BRAND_ADMIN: false, BRAND_EMPLOYEE: false, HITBOX_DROP_MANAGER: true, HITBOX_SYSTEM_ADMIN: true },
+    "/release-approvals": { ARTIST: true, BRAND_ADMIN: true, BRAND_EMPLOYEE: true, HITBOX_DROP_MANAGER: true, HITBOX_ORDER_MANAGER: false },
+    "/supply": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true, HITBOX_FINANCE_ADMIN: true },
+    "/supply/consignments": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true },
+    "/supply/chips": { ARTIST: false, HITBOX_DROP_MANAGER: false, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: true },
+    "/supply/vendors": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true, VENDOR: false },
+    "/inventory": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true, HITBOX_SUPPORT: true },
+    "/media": { ARTIST: false, BRAND_ADMIN: false, HITBOX_DROP_MANAGER: true },
+    "/provenance": { ARTIST: false, HITBOX_DROP_MANAGER: false, HITBOX_ORDER_MANAGER: true, HITBOX_SUPPORT: true },
+    "/demand": { ARTIST: true, BRAND_ADMIN: true, HITBOX_ORDER_MANAGER: false },
+    "/vendor": { VENDOR: true, HITBOX_SYSTEM_ADMIN: false, ARTIST: false },
+    "/artist/drops": { ARTIST: true, BRAND_ADMIN: false, HITBOX_SYSTEM_ADMIN: false },
+    "/team": { BRAND_ADMIN: false, HITBOX_SYSTEM_ADMIN: true },
+    "/roles": { BRAND_ADMIN: false, HITBOX_SYSTEM_ADMIN: true },
+  };
+  for (const [route, roles] of Object.entries(MATRIX)) {
+    for (const [role, expected] of Object.entries(roles)) {
+      if (!ROLE_GRANTS[role]) continue;
+      check(`${role} ${expected ? "may" : "may NOT"} open ${route}`, permsFor(role).canOpen(route), expected);
+    }
+  }
+  check("a sub-route inherits its parent's rule", permsFor("ARTIST").canOpen("/finance/balances"), true);
+  check("ledger stays hidden at own scope", permsFor("ARTIST").canOpen("/finance/ledger"), false);
 
   console.log(
-    failures === 0
-      ? "\nAll checks passed.\n"
-      : `\n${failures} check(s) FAILED.\n`
+    failures === 0 ? "\nAll checks passed.\n" : `\n${failures} check(s) FAILED.\n`
   );
   process.exit(failures === 0 ? 0 : 1);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main();
