@@ -276,3 +276,48 @@ h1, h2, h3, h4 {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── Toasts (sonner) ─────────────────────────────────────────────
+ * Neutral by default; success is green, warning yellow, error red.
+ * Selectors match sonner's own data attributes so they outrank its
+ * built-in theme without needing !important on every property. */
+[data-sonner-toaster] [data-sonner-toast].hb-toast {
+  --hb-toast-bg: var(--surface-3);
+  --hb-toast-border: var(--hairline-strong);
+  --hb-toast-fg: var(--text-1);
+  --hb-toast-sub: var(--text-2);
+  background: var(--hb-toast-bg);
+  border: 1px solid var(--hb-toast-border);
+  color: var(--hb-toast-fg);
+  border-radius: 8px;
+  font-size: 13px;
+}
+[data-sonner-toaster] [data-sonner-toast].hb-toast[data-type="success"] {
+  --hb-toast-bg: #2f7d52;
+  --hb-toast-border: #3f9866;
+  --hb-toast-fg: #ffffff;
+  --hb-toast-sub: rgba(255, 255, 255, 0.82);
+}
+[data-sonner-toaster] [data-sonner-toast].hb-toast[data-type="warning"] {
+  --hb-toast-bg: #d8a634;
+  --hb-toast-border: #e8b94a;
+  --hb-toast-fg: #1f1806;
+  --hb-toast-sub: rgba(31, 24, 6, 0.78);
+}
+[data-sonner-toaster] [data-sonner-toast].hb-toast[data-type="error"] {
+  --hb-toast-bg: #b84444;
+  --hb-toast-border: #cf5a5a;
+  --hb-toast-fg: #ffffff;
+  --hb-toast-sub: rgba(255, 255, 255, 0.82);
+}
+[data-sonner-toaster] [data-sonner-toast].hb-toast [data-icon] {
+  color: var(--hb-toast-fg);
+}
+[data-sonner-toaster] [data-sonner-toast].hb-toast [data-description] {
+  color: var(--hb-toast-sub);
+}
+[data-sonner-toaster] [data-sonner-toast][data-styled="true"].hb-toast [data-close-button] {
+  background: var(--hb-toast-bg);
+  border-color: var(--hb-toast-border);
+  color: var(--hb-toast-fg);
+}
